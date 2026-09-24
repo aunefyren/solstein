@@ -67,6 +67,14 @@ type wireGuardServer struct {
 
 func startWireGuardServer(t *testing.T, clientPublic PublicKey) wireGuardServer {
 	t.Helper()
+	return startWireGuardServerWith(t, clientPublic, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		fmt.Fprintf(writer, "hello from inside the tunnel, %s", strings.Split(request.RemoteAddr, ":")[0])
+	}))
+}
+
+// startWireGuardServerWith is startWireGuardServer with its own web handler.
+func startWireGuardServerWith(t *testing.T, clientPublic PublicKey, handler http.Handler) wireGuardServer {
+	t.Helper()
 	key := generateKey(t)
 	tunDevice, tunNet, err := netstack.CreateNetTUN([]netip.Addr{serverTunnelAddress}, nil, defaultMTU)
 	if err != nil {
@@ -86,9 +94,7 @@ func startWireGuardServer(t *testing.T, clientPublic PublicKey) wireGuardServer 
 	if err != nil {
 		t.Fatal(err)
 	}
-	go http.Serve(listener, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		fmt.Fprintf(writer, "hello from inside the tunnel, %s", strings.Split(request.RemoteAddr, ":")[0])
-	}))
+	go http.Serve(listener, handler)
 
 	dnsConn, err := tunNet.ListenUDP(&net.UDPAddr{IP: serverTunnelAddress.AsSlice(), Port: 53})
 	if err != nil {

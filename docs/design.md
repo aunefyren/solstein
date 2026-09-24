@@ -343,7 +343,10 @@ Each step testable on its own; the core already routes every request through `ou
    - A failing server is benched for 1 minute, doubling per failure in a row up to 30 minutes; a success resets it.
    - A failure only counts against a server when the tunnel is at fault: before use, a tunnel must have a live WireGuard handshake — Solstein sends one throwaway packet (to TEST-NET-1, discard port) to trigger it and waits up to 6 s (WireGuard resends a lost handshake after 5). A failed connection over a tunnel with a fresh handshake is the destination's problem and benches nothing.
    - Each lookup or dial tries the chosen server, then one replacement, so a dead server is failed over within the same request (about 6 s).
-4. **Wiring:** providers registered with `outbound.Manager`; exits selectable per feed and through the feed API; a module that can't run logs a warning and stays off.
+4. ✅ **Wiring:** providers registered with `outbound.Manager`; exits selectable per feed and through the feed API; a module that can't run logs a warning and stays off.
+   - `exits.Setup` loads the `vpn` block, reads `.conf` files (relative paths from the config directory), builds the module and returns warnings; `main.go` logs them, registers the module as an `outbound.Provider` and runs it with the other background loops.
+   - Start-up also warns about feeds whose exit isn't available.
+   - Tested end to end: a feed on a host that exists only inside a WireGuard tunnel is subscribed, polled and rendered through an exit, and is unreachable through `direct`.
 5. **Proton provider:** gluetun-servers data (embedded snapshot, periodic refresh, last good copy in the config directory), `tier` and `filter`.
 6. **Live checks with a real key:** whether one Proton key holds two tunnels at once, and what country an exit IP geolocates to.
 

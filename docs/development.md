@@ -25,7 +25,7 @@ rss/               feed parsing and byte-preserving rewriting; no Solstein depen
 feeds/             core: source URLs, subscribe, refresh, render (publish rules, signed URLs)   (exists)
 signing/           HMAC signatures for feed and episode URLs                               (exists)
 outbound/          core: exit Manager, direct exit, guarded dialling (private-address block) (exists)
-modules/exits/     module: config, .conf parsing, netstack tunnels, pool, geography, server selection and health (exists); wiring into main (next)
+modules/exits/     module: config, .conf parsing, netstack tunnels, pool, geography, selection, health, Setup (exists); Proton provider (next)
 modules/exits/wireguard/  generic provider: servers from wg-quick .conf files
 modules/exits/proton/     server-list provider for Proton VPN (gluetun-servers data)
 modules/regiondiff/     module: dual download, diff engine, cutting
@@ -120,7 +120,8 @@ Notes:
 
 ## Background work
 
-- `main.go` starts three long-running loops, all stopped by the signal context and waited for before the database closes: `feeds.Poller.Run`, `episodes.Pipeline.Run` and `episodes.Housekeeper.Run`.
+- `main.go` starts the long-running loops, all stopped by the signal context and waited for before the database closes: `feeds.Poller.Run`, `episodes.Pipeline.Run`, `episodes.Housekeeper.Run`, and `exits.Module.Run` (closes idle tunnels, and all tunnels on shutdown) when the VPN module is on.
+- `main.go` is the only place a module is wired in: `exits.Setup` returns the module (or nil) and warnings; the module goes into `outbound.Options.Providers`. The core never imports `modules/…`.
 - Loops take a clock (`Now func() time.Time`) and expose a single-step function (`Poller.PollDue`, `Pipeline.ProcessNext`, `Housekeeper.Sweep`), so tests drive them deterministically instead of waiting on timers.
 - The poller wakes the pipeline through a callback (`pipeline.Wake`), so `feeds` doesn't import `episodes`.
 - On shutdown, in-flight downloads are abandoned; `Pipeline.Recover` at the next start resets them and removes `.part` files.

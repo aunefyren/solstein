@@ -9,7 +9,7 @@ A self-hosted podcast RSS proxy that sits between podcast hosts and Audiobookshe
 
 The name comes from the Viking sunstone (Iceland spar), which shows everything twice through double refraction.
 
-> **Status:** early development. The core proxy works: subscribing, rewritten feeds, background polling, caching new episodes, serving audio (from the cache with range support, or streamed from the source) and cache clean-up. The VPN module and ad removal are not implemented yet. See `docs/design.md`.
+> **Status:** early development. The core proxy works: subscribing, rewritten feeds, background polling, caching new episodes, serving audio (from the cache with range support, or streamed from the source) and cache clean-up. VPN exits work with any WireGuard VPN through `.conf` files; the Proton provider and ad removal are not implemented yet. See `docs/design.md`.
 
 ## Running
 
@@ -75,6 +75,40 @@ Audiobookshelf refuses to fetch from private addresses by default, so a Solstein
     environment:
       SSRF_REQUEST_FILTER_WHITELIST: solstein
 ```
+
+## VPN exits
+
+A feed can be fetched through a VPN exit instead of your own connection, for example to get another country's version of a feed. Tunnels run inside Solstein: no `NET_ADMIN`, no `/dev/net/tun`, no gluetun or `network_mode`. Any WireGuard VPN works: export its `.conf` files and point Solstein at them.
+
+In `config.json` (paths are relative to the config directory, `/app/config` in Docker):
+
+```json
+"vpn": {
+  "providers": {
+    "myvpn": {
+      "type": "wireguard",
+      "config_dir": "wireguard/myvpn",
+      "servers": {
+        "se-sto-001": { "country": "SE", "city": "Stockholm" },
+        "de-fra-002": { "country": "DE", "city": "Frankfurt" }
+      }
+    },
+    "vps": { "type": "wireguard", "config_file": "wireguard/vps.conf", "country": "DE" }
+  },
+  "exits": {
+    "sweden": { "provider": "myvpn", "locations": ["SE"], "strict": true },
+    "europe": { "provider": "myvpn", "locations": ["SE", "area:northern-europe", "continent:europe"], "exclude": ["NO"] }
+  }
+}
+```
+
+- **Providers** are pools of servers. `config_file`, `config_files` or `config_dir` (every `*.conf` in it); `servers` gives each file's location by name (file name without `.conf`). `max_tunnels` caps simultaneous tunnels.
+- **Exits** pick a server from one provider. `locations` is an ordered preference list: a country (`SE`), city (`SE/Stockholm`), server (`server:se-sto-001`), UN M49 area (`area:northern-europe`) or continent (`continent:europe`, plus `north-america` and `south-america`). With `strict`, only the first location is used; otherwise the list is worked down. `exclude` lists countries never to use. `selection` is `sticky` (default), `random` or `least-failed`.
+- Use an exit per feed with `"exit": "sweden"` when adding it through the API, or `PATCH` an existing feed. `direct` is always available.
+- Tunnels open when first needed and close after 5 minutes unused. A server that stops handshaking is left out for a while (1 minute, growing to 30) and the next one is used.
+- DNS goes through the tunnel, using the `DNS` line of the `.conf`.
+- Keys can stay out of `config.json`: in Proton-style providers `private_keys` accepts `env:NAME` and `file:PATH`.
+- A mistake in one provider or exit only disables that one; Solstein logs why at start-up.
 
 ## Configuration
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -17,6 +18,7 @@ import (
 	"aunefyren/solstein/episodes"
 	"aunefyren/solstein/feeds"
 	"aunefyren/solstein/logger"
+	"aunefyren/solstein/modules/exits"
 	"aunefyren/solstein/outbound"
 	"aunefyren/solstein/server"
 	"aunefyren/solstein/settings"
@@ -91,15 +93,28 @@ func run() int {
 	defer store.Close()
 	logger.Log.Info("Database opened.")
 
-	exits, err := outbound.New(outbound.Options{
+	// The VPN module is optional: with no usable providers it stays off and
+	// only "direct" exists.
+	vpnModule, vpnWarnings := exits.Setup(cfg.VPN, startup.ConfigDir, os.Getenv)
+	for _, warning := range vpnWarnings {
+		logger.Log.Warn("VPN: " + warning)
+	}
+	var exitProviders []outbound.Provider
+	if vpnModule != nil {
+		exitProviders = append(exitProviders, vpnModule)
+		logger.Log.Info("VPN module on: " + vpnModule.Summary() + ".")
+	}
+
+	exitManager, err := outbound.New(outbound.Options{
 		UserAgent:                "Solstein/" + version + " (+https://github.com/aunefyren/solstein)",
 		AllowPrivateDestinations: cfg.AllowPrivateDestinations,
+		Providers:                exitProviders,
 	})
 	if err != nil {
 		logger.Log.Error("Failed to set up exits. Error: " + err.Error())
 		return 1
 	}
-	logger.Log.Info("Exits available: " + strings.Join(exits.Exits(), ", ") + ".")
+	logger.Log.Info("Exits available: " + strings.Join(exitManager.Exits(), ", ") + ".")
 	if cfg.AllowPrivateDestinations {
 		logger.Log.Warn("Private destinations are allowed; Solstein can fetch from loopback and internal network addresses.")
 	}
@@ -107,10 +122,11 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	feedService := feeds.New(store, exits, feeds.Options{
+	feedService := feeds.New(store, exitManager, feeds.Options{
 		DefaultDeliveryMode: cfg.DeliveryMode,
 		AllowedSourceHosts:  cfg.AllowedSourceHosts,
 	})
+	warnAboutMissingExits(ctx, feedService, exitManager.Exits())
 	if cfg.DisableAuth {
 		logger.Log.Warn("Auth is disabled: anyone who can reach Solstein can subscribe to feeds through it. Only use this on a private network.")
 	} else {
@@ -122,7 +138,7 @@ func run() int {
 		logger.Log.Error("Failed to set up the episode cache. Error: " + err.Error())
 		return 1
 	}
-	pipeline := episodes.NewPipeline(store, exits, cache, episodes.Options{
+	pipeline := episodes.NewPipeline(store, exitManager, cache, episodes.Options{
 		DefaultDeliveryMode: cfg.DeliveryMode,
 		Workers:             downloadWorkers,
 	})
@@ -132,7 +148,7 @@ func run() int {
 	}
 	poller := feeds.NewPoller(feedService, time.Duration(cfg.PollIntervalMinutes)*time.Minute, pipeline.Wake)
 
-	episodeServer := episodes.NewServer(store, exits, cache, feedService, episodes.Options{})
+	episodeServer := episodes.NewServer(store, exitManager, cache, feedService, episodes.Options{})
 
 	srv, err := server.New(server.Options{Config: cfg, Version: version, Feeds: feedService, Episodes: episodeServer})
 	if err != nil {
@@ -148,6 +164,9 @@ func run() int {
 	background.Go(func() { pipeline.Run(ctx) })
 	background.Go(func() { poller.Run(ctx) })
 	background.Go(func() { housekeeper.Run(ctx) })
+	if vpnModule != nil {
+		background.Go(func() { vpnModule.Run(ctx) })
+	}
 
 	exitCode := 0
 	logger.Log.Info("Starting HTTP server on " + srv.Addr + ".")
@@ -160,4 +179,20 @@ func run() int {
 
 	logger.Log.Info("Solstein stopped.")
 	return exitCode
+}
+
+// warnAboutMissingExits flags feeds whose exit no longer exists (removed from
+// config.json, or its provider disabled). Their polls and downloads fail
+// until the exit is back or the feed is changed.
+func warnAboutMissingExits(ctx context.Context, feedService *feeds.Service, available []string) {
+	list, err := feedService.List(ctx)
+	if err != nil {
+		logger.Log.Error("Failed to check feeds' exits. Error: " + err.Error())
+		return
+	}
+	for _, feed := range list {
+		if feed.Exit != "" && !slices.Contains(available, feed.Exit) {
+			logger.Log.Warn("Feed '" + feed.Title + "' uses exit '" + feed.Exit + "', which isn't available; it can't be polled or downloaded until the exit is back or the feed's exit is changed.")
+		}
+	}
 }
