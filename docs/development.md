@@ -19,7 +19,7 @@ logger/            logrus wrapper, logger.Log                                   
 server/            Gin router, access checks, feed routes, feed API               (exists)
 models/            persisted records (Base with UUID ID, Feed, Episode) and their GORM mapping (exists)
 feeds/             core: polling, parsing, rewriting feeds
-episodes/          core: episode pipeline, cache, serving audio                    (planned)
+episodes/          core: download pipeline and cache; serving audio next             (exists)
 database/          SQLite via GORM: Store with named query functions, one file per model   (exists)
 rss/               feed parsing and byte-preserving rewriting; no Solstein dependencies   (exists)
 feeds/             core: source URLs, subscribe, refresh, render (publish rules, signed URLs)   (exists)
@@ -110,10 +110,18 @@ Notes:
 - Errors to branch on with `errors.Is`: `outbound.ErrUnknownExit`, `ErrExitUnavailable`, `ErrDestinationBlocked`.
 - Tests use a fake `Dialer` that resolves made-up hostnames to chosen IPs and connects to a local `httptest` server, so public/private behaviour is tested without real network.
 
+## Background work
+
+- `main.go` starts two long-running loops, both stopped by the signal context and waited for before the database closes: `feeds.Poller.Run` and `episodes.Pipeline.Run`.
+- Loops take a clock (`Now func() time.Time`) and expose a single-step function (`Poller.PollDue`, `Pipeline.ProcessNext`), so tests drive them deterministically instead of waiting on timers.
+- The poller wakes the pipeline through a callback (`pipeline.Wake`), so `feeds` doesn't import `episodes`.
+- On shutdown, in-flight downloads are abandoned; `Pipeline.Recover` at the next start resets them and removes `.part` files.
+
 ## Database
 
 - `database.Open(configDir)` opens `solstein.db` in the config directory and auto-migrates every model. The connection is opened with `modernc.org/sqlite` and handed to GORM's SQLite dialector, so the binary stays CGO-free (`CGO_ENABLED=0 go build` must keep working).
-- Pragmas are set in the DSN so every pooled connection gets them: `busy_timeout(5000)`, `journal_mode(WAL)`, `foreign_keys(1)`.
+- Pragmas are set in the DSN so every pooled connection gets them: `busy_timeout(5000)`, `journal_mode(WAL)`, `foreign_keys(1)`, plus `_txlock=immediate`.
+- **Transactions start with the write lock** (`_txlock=immediate`). Most transactions read then write (check for a duplicate, then insert); in SQLite's default deferred mode a transaction that has read can't wait to become a writer and fails at once with `SQLITE_BUSY`, whatever `busy_timeout` says. A concurrency test (`TestClaimNextEpisodeConcurrent`) catches regressions.
 - **No database global.** `main.go` opens a `*database.Store` and passes it to what needs it. (Pønskelisten's `database.Instance` global is what forces its tests to share and restore state.)
 - **Only `database` imports `gorm.io/*`.** Everything else calls named methods on `Store` (`CreateFeed`, `GetEpisode`, …), one file per model.
 - Every persisted model embeds `models.Base`: a UUID primary key assigned by a `BeforeCreate` hook, plus timestamps. Never set IDs by hand at call sites. There is **no soft delete**: a removed feed must be re-addable under the same source URL, which a soft-deleted row would block through the unique index.

@@ -114,6 +114,16 @@ A small JSON API behind the subscribe token for the explicit subscribe flow: lis
 - Polls are conditional (`If-None-Match` / `If-Modified-Since`); a failed poll keeps the last good document and records the error on the feed.
 - Checked against real feeds (NPR, 355 items; Acast, 27 items): only the enclosure URLs, `atom:link rel="self"` and `itunes:new-feed-url` differ from the source; everything else is byte-identical.
 
+### Polling and the pipeline, as built
+
+- The poller checks every minute which feeds are due (per-feed interval, else `poll_interval_minutes`) and refreshes them one at a time, so requests aren't burst at hosts. New episodes wake the pipeline at once.
+- Two download workers. Each claims the oldest waiting episode in one database transaction, so no episode is downloaded twice and older episodes go first (matching the publish-in-order rule).
+- Downloads go through the feed's exit into `cache/{feedID}/{episodeID}.{ext}` via a `.part` file renamed into place when complete, so a partial file is never served. A download is abandoned after 2 minutes without data, or after 1 hour in total.
+- A response that isn't audio (HTML, XML, JSON, text) is refused, so a host's error page served with status 200 is never cached as an episode. A short or empty body is retried.
+- Retries after 1 min, 5 min, 15 min, 1 h and 3 h. Permanent failures (4xx other than 408/429, blocked destination, not audio) and the sixth failure mark the episode **failed**: it is then published and streamed from the source, so it can't hold the feed back.
+- On start-up, episodes left mid-download are reset and leftover `.part` files removed.
+- Checked end to end against Acast's CDN (`sphinx.acast.com`): a new episode was found by the poller, 20.5 MB downloaded in about a second as a valid MP3, and the served feed listed it with its real byte length.
+
 ### Core build order
 
 Each step is testable on its own; usable with ABS after step 6.
@@ -122,7 +132,7 @@ Each step is testable on its own; usable with ABS after step 6.
 2. ✅ Outbound: the exit interface and the built-in `direct` exit, with the private-address block, timeouts and a fixed User-Agent.
 3. ✅ Feed parsing and rewriting, preserving every element, tested against realistic feed samples.
 4. ✅ Subscribing and access: prefix URL route, feed API, token, signed URLs, client network check.
-5. Polling and the episode pipeline: scheduler, download worker pool, publishing in date order.
+5. ✅ Polling and the episode pipeline: scheduler, download worker pool, publishing in date order.
 6. Serving episodes: from the cache with range support, plus `stream` and `original`.
 7. Housekeeping: cache retention, keeping the last good feed when the source fails.
 

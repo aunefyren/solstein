@@ -89,6 +89,12 @@ func (clock *testClock) Now() time.Time {
 	return clock.now
 }
 
+func (clock *testClock) advance(duration time.Duration) {
+	clock.mutex.Lock()
+	defer clock.mutex.Unlock()
+	clock.now = clock.now.Add(duration)
+}
+
 func newTestService(t *testing.T, options Options) (*Service, *database.Store) {
 	t.Helper()
 	store, err := database.Open(t.TempDir())

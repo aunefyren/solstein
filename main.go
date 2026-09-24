@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"aunefyren/solstein/database"
+	"aunefyren/solstein/episodes"
 	"aunefyren/solstein/feeds"
 	"aunefyren/solstein/logger"
 	"aunefyren/solstein/outbound"
@@ -22,6 +25,10 @@ import (
 	// (Windows, minimal containers).
 	_ "time/tzdata"
 )
+
+// downloadWorkers is how many episodes are downloaded at once. Two keeps a
+// backlog of new episodes moving without bursting requests at one host.
+const downloadWorkers = 2
 
 // version is set at build time with -ldflags "-X main.version=<tag>". It is
 // never written to config.json, so a config file can't report a stale version.
@@ -110,17 +117,42 @@ func run() int {
 		logger.Log.Info("Subscribe with <external URL>/api/rss/<auth_token>/<feed URL>; the token is auth_token in config.json.")
 	}
 
+	cache, err := episodes.NewCache(filepath.Join(startup.ConfigDir, "cache"))
+	if err != nil {
+		logger.Log.Error("Failed to set up the episode cache. Error: " + err.Error())
+		return 1
+	}
+	pipeline := episodes.NewPipeline(store, exits, cache, episodes.Options{
+		DefaultDeliveryMode: cfg.DeliveryMode,
+		Workers:             downloadWorkers,
+	})
+	if err := pipeline.Recover(ctx); err != nil {
+		logger.Log.Error("Failed to recover interrupted downloads. Error: " + err.Error())
+		return 1
+	}
+	poller := feeds.NewPoller(feedService, time.Duration(cfg.PollIntervalMinutes)*time.Minute, pipeline.Wake)
+
 	srv, err := server.New(server.Options{Config: cfg, Version: version, Feeds: feedService})
 	if err != nil {
 		logger.Log.Error("Failed to set up HTTP server. Error: " + err.Error())
 		return 1
 	}
+
+	// The poller and pipeline stop with ctx; they are waited for before the
+	// database closes.
+	var background sync.WaitGroup
+	background.Go(func() { pipeline.Run(ctx) })
+	background.Go(func() { poller.Run(ctx) })
+
+	exitCode := 0
 	logger.Log.Info("Starting HTTP server on " + srv.Addr + ".")
 	if err := server.Run(ctx, srv); err != nil {
 		logger.Log.Error("HTTP server stopped. Error: " + err.Error())
-		return 1
+		exitCode = 1
 	}
+	stop()
+	background.Wait()
 
 	logger.Log.Info("Solstein stopped.")
-	return 0
+	return exitCode
 }

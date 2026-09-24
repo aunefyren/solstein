@@ -28,7 +28,13 @@ const fileName = "solstein.db"
 // them writes; busy_timeout makes a writer wait for the lock instead of
 // failing; foreign_keys is off by default in SQLite and is needed for the
 // feed → episode cascade.
-const pragmas = "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+//
+// _txlock=immediate starts every transaction with the write lock. Most of our
+// transactions read, then write (check for a duplicate, then insert); in
+// SQLite's default deferred mode, a transaction that has read can't wait to
+// upgrade to a writer and fails at once with SQLITE_BUSY, whatever
+// busy_timeout says. Taking the lock up front makes it wait its turn instead.
+const pragmas = "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_txlock=immediate"
 
 // Store is an open database. It is safe for concurrent use.
 type Store struct {
