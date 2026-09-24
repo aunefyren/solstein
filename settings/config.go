@@ -37,6 +37,10 @@ type Config struct {
 	// Timezone is an IANA name such as "Europe/Oslo". Empty means the system
 	// time zone, which in Docker comes from the standard TZ variable.
 	Timezone string `json:"timezone"`
+	// AllowPrivateDestinations lets Solstein fetch from loopback, private and
+	// other non-public addresses. Off by default, so the proxy can't be used
+	// to reach the operator's internal network.
+	AllowPrivateDestinations bool `json:"allow_private_destinations"`
 }
 
 // Load reads config.json from configDir and fills in defaults for missing

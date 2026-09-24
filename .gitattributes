@@ -4,3 +4,7 @@
 # Shell scripts run inside Linux containers; a CRLF checkout on Windows would
 # break the shebang line.
 *.sh text eol=lf
+
+# Feed fixtures are compared byte for byte (and one is Latin-1); keep them
+# exactly as committed.
+rss/testdata/* -text

@@ -21,6 +21,8 @@ models/            persisted records (Base with UUID ID, Feed, Episode) and thei
 feeds/             core: polling, parsing, rewriting feeds
 episodes/          core: episode records, processing pipeline, cache, serving
 database/          SQLite via GORM: Store with named query functions, one file per model   (exists)
+rss/               feed parsing and byte-preserving rewriting; no Solstein dependencies   (exists)
+outbound/          core: exit Manager, direct exit, guarded dialling (private-address block) (exists)
 modules/exits/     module: exit manager, WireGuard/netstack tunnels, location matching, health
 modules/exits/wireguard/  generic provider: servers from wg-quick .conf files
 modules/exits/proton/     server-list provider for Proton VPN (gluetun-servers data)
@@ -55,11 +57,11 @@ Keep the list short; every new dependency needs a reason.
 | VPN server lists | `github.com/qdm12/gluetun-servers` (MIT; embedded snapshot, refreshed at runtime) | Proposed |
 | Database | `gorm.io/gorm` + `gorm.io/driver/sqlite` on the CGO-free `modernc.org/sqlite` connection, as Pønskelisten | In use |
 | IDs | `github.com/google/uuid` | In use |
-| Feed rewriting | `encoding/xml` token stream (Decoder → Encoder) | Proposed |
+| Feed rewriting | Own `rss` package on `encoding/xml` `RawToken` + byte offsets; `golang.org/x/text/encoding/charmap` for Latin-1/Windows-1252 feeds | In use |
 | MP3 frames | Own `mp3` package | Proposed |
 
 Notes:
-- **Feed rewriting:** the proxied feed must keep every element and namespace the source had (`itunes:`, `podcast:`, `acast:` …). Unmarshalling into structs and marshalling back drops anything we didn't model, so rewrite by streaming tokens and changing only what we must (enclosure `url`/`length`, `itunes:duration`). Read-only parsers such as `gofeed` are fine for *reading* metadata but not for producing the output feed.
+- **Feed rewriting:** the proxied feed must keep every element and namespace the source had (`itunes:`, `podcast:`, `acast:` …). Unmarshalling into structs drops what we didn't model, and `encoding/xml`'s encoder rewrites namespace prefixes — which breaks ABS, since it looks elements up by literal prefix (`itunes:new-feed-url`). So `rss` copies the **original bytes** through and splices in only the changed values (enclosure `url`/`length`, `media:content`/`podcast:source` URLs, `itunes:duration`, self-links), using the decoder's byte offsets. A rewrite with no changes is byte-identical to the input; a test enforces it. Elements are matched by namespace URI, not prefix. Non-UTF-8 feeds (ISO-8859-1/15, Windows-1252) are converted to UTF-8 first and the declaration updated.
 - **MP3:** frame parsing (sync word, header, frame length, Xing/LAME/ID3 handling) is small enough to own, and the diff engine needs exact byte-level control. Evaluate an existing library only if we end up needing decoding for audio-level alignment.
 - Run `go mod tidy` after adding or removing imports; commit `go.sum`.
 
@@ -80,11 +82,23 @@ Notes:
   ```
   `400` for caller mistakes, `404` for unknown feed/episode IDs, `500` for internal failures. Internal error text goes to the log, never to the client.
 - **Serving audio:** use `http.ServeContent` (via `context.Writer`/`context.Request`) for cached files. It handles `Range`, `If-Range`, `HEAD` and `Content-Length` correctly; don't reimplement range parsing.
-- **Context and cancellation:** every network call and long-running job takes a `context.Context` and respects cancellation. No `http.Get`/`http.DefaultClient` — always a client with timeouts, obtained from the exit layer (the `direct` exit included) so traffic never leaves through an unintended route.
+- **Context and cancellation:** every network call and long-running job takes a `context.Context` and respects cancellation. No `http.Get`/`http.DefaultClient` — always a client from `outbound.Manager.Client(exit)` (the `direct` exit included) so traffic never leaves through an unintended route and the safeguards always apply. Those clients have no overall timeout (episode downloads are large); bound each request with a context deadline.
 - **Concurrency:** goroutines are owned by something that can stop them (a context plus `sync.WaitGroup` or `errgroup`). Shared state is guarded by a mutex or owned by a single goroutine; `go test -race` must stay clean.
 - **Secrets:** WireGuard private keys and similar never appear in logs, errors or API responses. Redact them in any config dump.
 - **Comments explain *why*, not *what*.** Use them for non-obvious constraints (why the diff runs on frames, why a header is stripped), not to restate code.
 - **gofmt is enforced.** Run `gofmt -w .` before handing work over.
+
+## Outbound requests
+
+- `outbound.Manager` is the only source of HTTP clients for outgoing requests. `main.go` builds it; code that fetches takes it (or a client from it) as a dependency.
+- Every client, for every exit, is built in `outbound` on top of the exit's `Dialer`. It:
+  - resolves the host through the exit and checks **each resolved IP** before dialling, refusing loopback, private, link-local, CGNAT, documentation, multicast and reserved ranges (including IPv4-mapped, NAT64 and 6to4 forms) unless `allow_private_destinations` is on. Redirects are dialled the same way, so a public URL that redirects inward is refused too;
+  - allows only `http` and `https`, at most 10 redirects;
+  - ignores `HTTP_PROXY`/`HTTPS_PROXY`, which would carry traffic out of another route;
+  - sets `Solstein/<version> (+https://github.com/aunefyren/solstein)` as User-Agent unless the request sets one;
+  - has dial, TLS-handshake and response-header timeouts, but no overall timeout.
+- Errors to branch on with `errors.Is`: `outbound.ErrUnknownExit`, `ErrExitUnavailable`, `ErrDestinationBlocked`.
+- Tests use a fake `Dialer` that resolves made-up hostnames to chosen IPs and connects to a local `httptest` server, so public/private behaviour is tested without real network.
 
 ## Database
 

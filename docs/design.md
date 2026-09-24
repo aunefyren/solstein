@@ -51,7 +51,8 @@ Parsing the embedded source URL:
 ### Feed rewriting
 
 The rewritten feed keeps every element and namespace of the source (`itunes:`, `podcast:`, `acast:` …) and changes only what it must:
-- Enclosure `url` → a Solstein episode URL with stable IDs (`/api/episodes/{feedID}/{episodeID}.mp3`), not the source URL embedded. Unchanged in `original` delivery mode.
+- Enclosure `url` → a Solstein episode URL with stable IDs (`/api/episodes/{feedID}/{episodeID}.mp3`), not the source URL embedded. Every other attribute in the item holding the same audio URL (`<media:content url>`, `<podcast:source uri>`) is rewritten too, so no route to the original audio remains. Unchanged in `original` delivery mode.
+- Items with no `<enclosure>` but an audio `<media:content>` use that as their audio, as ABS does.
 - Enclosure `length` and `itunes:duration` → the real values when Solstein holds the file (cached or processed).
 - `itunes:new-feed-url` and `atom:link rel="self"` → Solstein's feed URL. Otherwise a client may follow them straight back to the source.
 - Episode `guid` values are **never** changed, so a client whose feed URL is switched over to Solstein can recognise episodes it already has.
@@ -121,13 +122,20 @@ Each step is testable on its own; usable with ABS after step 6.
 
 How modules slot into the core without the core knowing about them (proposed; Go names are illustrative):
 
-- **Exit provider.** The core asks for an HTTP client by exit name. The core itself provides `direct`; the exits module registers additional exits (`se`, `de`, …). All outbound traffic — feed polls, cache downloads, streams, processor downloads — goes through this interface, so outbound safeguards live in one place.
+- **Exit provider (decided, built in `outbound`).** The core asks `outbound.Manager` for an HTTP client by exit name. The core itself provides `direct`; the exits module registers additional exits (`sweden`, `nordic`, …) through a `Provider`. All outbound traffic — feed polls, cache downloads, streams, processor downloads — goes through this, so outbound safeguards live in one place.
+
+  A module supplies a **dialer**, not a ready-made HTTP client: if modules built their own clients, the core couldn't enforce the private-address block, timeouts, User-Agent or proxy handling on them. The core builds every client on top of the module's dialer.
   ```go
-  type ExitProvider interface {
-      Client(exit string) (*http.Client, error) // ErrExitUnavailable if down or unknown
+  type Dialer interface {
+      LookupIP(ctx context.Context, host string) ([]netip.Addr, error)            // through the tunnel's DNS
+      Dial(ctx context.Context, network string, address netip.AddrPort) (net.Conn, error)
+  }
+  type Provider interface {
       Exits() []string
+      Dialer(exit string) (Dialer, error) // wraps ErrExitUnavailable when the tunnel is down
   }
   ```
+  The dialer is looked up per connection, so a module can switch servers or restore a tunnel without the core rebuilding clients.
 - **Episode processor.** The core hands a processor a job and gets a file back. The processor can download the source through any exit via the job, so region diff needs nothing else from the core.
   ```go
   type Processor interface {
@@ -165,8 +173,8 @@ Inbound:
 
 Outbound (enforced in the exit layer, so it covers every fetch):
 - Only `http` and `https`.
-- `allow_private_destinations` — `false` by default: refuse loopback, private, link-local and similar ranges. Checked on the IP each connection actually dials, not the hostname, so DNS tricks can't get round it.
-- `allowed_source_hosts` — optional allowlist of source hosts (e.g. Acast domains). Empty allows any host.
+- `allow_private_destinations` (built; `-allowprivatedestinations` / `SOLSTEIN_ALLOW_PRIVATE_DESTINATIONS`) — `false` by default: refuse loopback, private, link-local and similar ranges. Checked on the IP each connection actually dials, not the hostname, so DNS tricks can't get round it.
+- `allowed_source_hosts` — optional allowlist of source hosts (e.g. Acast domains). Empty allows any host. Applies to the **feed URLs** that can be subscribed to, not to every fetch: enclosures and redirects legitimately point at other hosts (CDNs, ad servers).
 
 ## Module: Exits (VPN)
 

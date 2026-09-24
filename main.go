@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"aunefyren/solstein/database"
 	"aunefyren/solstein/logger"
+	"aunefyren/solstein/outbound"
 	"aunefyren/solstein/server"
 	"aunefyren/solstein/settings"
 
@@ -80,6 +82,19 @@ func run() int {
 	}
 	defer store.Close()
 	logger.Log.Info("Database opened.")
+
+	exits, err := outbound.New(outbound.Options{
+		UserAgent:                "Solstein/" + version + " (+https://github.com/aunefyren/solstein)",
+		AllowPrivateDestinations: cfg.AllowPrivateDestinations,
+	})
+	if err != nil {
+		logger.Log.Error("Failed to set up exits. Error: " + err.Error())
+		return 1
+	}
+	logger.Log.Info("Exits available: " + strings.Join(exits.Exits(), ", ") + ".")
+	if cfg.AllowPrivateDestinations {
+		logger.Log.Warn("Private destinations are allowed; Solstein can fetch from loopback and internal network addresses.")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

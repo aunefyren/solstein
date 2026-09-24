@@ -28,7 +28,9 @@ type setting struct {
 	flag  string
 	env   string
 	usage string
-	apply func(cfg *Config, value string) error
+	// boolean flags can be given bare (-flag) as well as -flag=true/false.
+	boolean bool
+	apply   func(cfg *Config, value string) error
 }
 
 var settings = []setting{
@@ -64,6 +66,20 @@ var settings = []setting{
 		},
 	},
 	{
+		flag:    "allowprivatedestinations",
+		env:     "SOLSTEIN_ALLOW_PRIVATE_DESTINATIONS",
+		usage:   "Allow fetching feeds and episodes from private and loopback addresses.",
+		boolean: true,
+		apply: func(cfg *Config, value string) error {
+			allow, err := strconv.ParseBool(value)
+			if err != nil {
+				return fmt.Errorf("not true or false: %q", value)
+			}
+			cfg.AllowPrivateDestinations = allow
+			return nil
+		},
+	},
+	{
 		flag:  "timezone",
 		env:   "SOLSTEIN_TIMEZONE",
 		usage: "IANA time zone, e.g. Europe/Oslo. Empty uses the system time zone (TZ).",
@@ -88,10 +104,15 @@ func Resolve(args []string, getenv func(string) string, output io.Writer) (Confi
 	// config.json can only be loaded once -configdir is known.
 	provided := map[string]string{}
 	for _, s := range settings {
-		fs.Func(s.flag, s.usage+" Env: "+s.env+".", func(value string) error {
+		collect := func(value string) error {
 			provided[s.flag] = value
 			return nil
-		})
+		}
+		if s.boolean {
+			fs.BoolFunc(s.flag, s.usage+" Env: "+s.env+".", collect)
+		} else {
+			fs.Func(s.flag, s.usage+" Env: "+s.env+".", collect)
+		}
 	}
 
 	var startup Startup

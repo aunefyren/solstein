@@ -48,6 +48,7 @@ On first run Solstein creates `config.json` in its config directory (`/config` i
 | `external_url` | `-externalurl` | `SOLSTEIN_EXTERNAL_URL` | — | URL Audiobookshelf uses to reach Solstein. |
 | `log_level` | `-loglevel` | `SOLSTEIN_LOG_LEVEL` | `info` | `trace`, `debug`, `info`, `warn` or `error`. |
 | `timezone` | `-timezone` | `SOLSTEIN_TIMEZONE` | system (`TZ`) | IANA time zone such as `Europe/Oslo`, used for log timestamps and schedules. An unknown name stops start-up. |
+| `allow_private_destinations` | `-allowprivatedestinations` | `SOLSTEIN_ALLOW_PRIVATE_DESTINATIONS` | `false` | Allow fetching from private and loopback addresses, e.g. a feed hosted on your LAN. Off by default so Solstein can't be used to reach your internal network. |
 | — | `-configdir` | `SOLSTEIN_CONFIG_DIR` | `config` (`/config` in Docker) | Directory for `config.json`, the database, logs and cache. |
 | — | `-version` | — | — | Print the version and exit. |
 

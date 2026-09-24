@@ -159,6 +159,7 @@ func TestResolveErrors(t *testing.T) {
 		{name: "invalid value fails validation", args: []string{"-loglevel", "loud"}, wantErr: "invalid log level"},
 		{name: "unknown flag", args: []string{"-nope"}, wantErr: "not defined"},
 		{name: "stray argument", args: []string{"serve"}, wantErr: "unexpected argument"},
+		{name: "bad bool env", env: map[string]string{"SOLSTEIN_ALLOW_PRIVATE_DESTINATIONS": "maybe"}, wantErr: "SOLSTEIN_ALLOW_PRIVATE_DESTINATIONS"},
 	}
 
 	for _, c := range cases {
@@ -182,5 +183,42 @@ func TestResolveHelp(t *testing.T) {
 		if !strings.Contains(output.String(), s.env) {
 			t.Errorf("help text does not mention %s", s.env)
 		}
+	}
+}
+
+func TestResolveAllowPrivateDestinations(t *testing.T) {
+	configDir := t.TempDir()
+
+	cfg, _, err := Resolve([]string{"-configdir", configDir}, envFrom(nil), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AllowPrivateDestinations {
+		t.Error("private destinations allowed by default")
+	}
+
+	cfg, _, err = Resolve([]string{"-configdir", configDir}, envFrom(map[string]string{"SOLSTEIN_ALLOW_PRIVATE_DESTINATIONS": "true"}), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AllowPrivateDestinations {
+		t.Error("env var not applied")
+	}
+
+	cfg, _, err = Resolve([]string{"-configdir", configDir, "-allowprivatedestinations=false"}, envFrom(nil), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AllowPrivateDestinations {
+		t.Error("-allowprivatedestinations=false not applied")
+	}
+
+	// A bare boolean flag means true.
+	cfg, _, err = Resolve([]string{"-configdir", configDir, "-allowprivatedestinations"}, envFrom(nil), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AllowPrivateDestinations {
+		t.Error("bare -allowprivatedestinations not applied")
 	}
 }
