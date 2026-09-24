@@ -331,7 +331,12 @@ Where exits are used:
 Each step testable on its own; the core already routes every request through `outbound.Manager`, and feeds already have an `exit` setting, so exits become usable as soon as step 4 lands.
 
 1. ✅ **Config and secrets:** the `vpn.providers` / `vpn.exits` blocks in `config.json`, validation, and `env:` / `file:` secret references. Plain data types live in `settings` (`settings.VPN`), validation in `modules/exits` (`exits.Load`), so the core doesn't depend on the module. A provider or exit with a problem is disabled on its own and reported; the rest keeps working. Keys are held in a type that prints as `[redacted]` in any format or JSON. `UK` is accepted for `GB`.
-2. **Generic WireGuard:** parse wg-quick `.conf` files; one netstack tunnel per server implementing `outbound.Dialer` (DNS through the tunnel); open on demand, close when idle, `max_tunnels`.
+2. ✅ **Generic WireGuard:** parse wg-quick `.conf` files; one netstack tunnel per server implementing `outbound.Dialer` (DNS through the tunnel); open on demand, close when idle, `max_tunnels`.
+   - `.conf` parsing takes `[Interface]` `PrivateKey`, `Address`, `DNS`, `MTU` and one `[Peer]` with `PublicKey`, `PresharedKey`, `Endpoint`, `AllowedIPs`, `PersistentKeepalive`. Host-network settings (`PostUp`, `Table`, …) and DNS search domains are ignored with a warning; errors never include key material.
+   - The VPN server's own endpoint name is resolved through the host (the tunnel isn't up yet), preferring IPv4. Everything else resolves through the tunnel's DNS; a tunnel without DNS refuses lookups rather than leak them.
+   - A tunnel counts its open connections and is only idle once all are closed, so a long download is never cut by the 5-minute idle close. At `max_tunnels`, the least recently used idle tunnel is closed to make room; if all are busy, the request fails with `ErrTunnelLimit` rather than cut a transfer.
+   - The core's private-address block applies inside tunnels too (tested).
+   - Tested with a real WireGuard peer inside the test process (its own netstack, web server and DNS server on local UDP): handshake, DNS and HTTP through the tunnel, a wrong peer key failing cleanly. Builds for every release platform including 32-bit ARM.
 3. **Exit resolution:** location matching (country, city, server, area, continent) with built-in ISO 3166 and UN M49 tables; strict/loose, `exclude`, `selection`; health and benching of failing servers.
 4. **Wiring:** providers registered with `outbound.Manager`; exits selectable per feed and through the feed API; a module that can't run logs a warning and stays off.
 5. **Proton provider:** gluetun-servers data (embedded snapshot, periodic refresh, last good copy in the config directory), `tier` and `filter`.

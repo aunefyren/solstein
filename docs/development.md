@@ -25,7 +25,7 @@ rss/               feed parsing and byte-preserving rewriting; no Solstein depen
 feeds/             core: source URLs, subscribe, refresh, render (publish rules, signed URLs)   (exists)
 signing/           HMAC signatures for feed and episode URLs                               (exists)
 outbound/          core: exit Manager, direct exit, guarded dialling (private-address block) (exists)
-modules/exits/     module: config validation (exists); tunnels, location matching, health (next)
+modules/exits/     module: config validation, .conf parsing, netstack tunnels, tunnel pool (exists); location matching, health (next)
 modules/exits/wireguard/  generic provider: servers from wg-quick .conf files
 modules/exits/proton/     server-list provider for Proton VPN (gluetun-servers data)
 modules/regiondiff/     module: dual download, diff engine, cutting
@@ -56,6 +56,7 @@ Keep the list short; every new dependency needs a reason.
 | HTTP router | `github.com/gin-gonic/gin` | In use |
 | Logging | `github.com/sirupsen/logrus` + `github.com/t-tomalak/logrus-easy-formatter` | In use |
 | WireGuard | `golang.zx2c4.com/wireguard` incl. `tun/netstack` | Agreed |
+| WireGuard (in use) | `golang.zx2c4.com/wireguard` `device` + `tun/netstack` (pulls in gVisor's network stack); `golang.org/x/crypto/curve25519` for public keys | In use |
 | VPN server lists | `github.com/qdm12/gluetun-servers` (MIT; embedded snapshot, refreshed at runtime) | Proposed |
 | Database | `gorm.io/gorm` + `gorm.io/driver/sqlite` on the CGO-free `modernc.org/sqlite` connection, as Pønskelisten | In use |
 | IDs | `github.com/google/uuid` | In use |
@@ -114,6 +115,7 @@ Notes:
   - sets `Solstein/<version> (+https://github.com/aunefyren/solstein)` as User-Agent unless the request sets one;
   - has dial, TLS-handshake and response-header timeouts, but no overall timeout.
 - Errors to branch on with `errors.Is`: `outbound.ErrUnknownExit`, `ErrExitUnavailable`, `ErrDestinationBlocked`.
+- Tunnel tests in `modules/exits` run a real WireGuard peer inside the test process (its own netstack device on a local UDP port, with a web server and a DNS server reachable only through the tunnel), so the handshake, DNS and HTTP paths are tested for real without root or network setup. Pool tests use a fake opener.
 - Tests use a fake `Dialer` that resolves made-up hostnames to chosen IPs and connects to a local `httptest` server, so public/private behaviour is tested without real network.
 
 ## Background work

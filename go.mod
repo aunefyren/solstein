@@ -7,7 +7,10 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/sirupsen/logrus v1.10.2
 	github.com/t-tomalak/logrus-easy-formatter v0.0.0-20190827215021-c074f06c5816
+	golang.org/x/crypto v0.48.0
+	golang.org/x/net v0.51.0
 	golang.org/x/text v0.34.0
+	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
 	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.31.2
 	modernc.org/sqlite v1.59.0
@@ -26,6 +29,7 @@ require (
 	github.com/go-playground/validator/v10 v10.30.1 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
+	github.com/google/btree v1.1.2 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -44,10 +48,11 @@ require (
 	github.com/ugorji/go/codec v1.3.1 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
 	golang.org/x/arch v0.22.0 // indirect
-	golang.org/x/crypto v0.48.0 // indirect
-	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/time v0.7.0 // indirect
+	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
+	gvisor.dev/gvisor v0.0.0-20250503011706-39ed1f5ac29c // indirect
 	modernc.org/libc v1.75.7 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect

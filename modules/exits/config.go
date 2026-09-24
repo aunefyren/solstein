@@ -7,6 +7,7 @@ package exits
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -16,6 +17,8 @@ import (
 	"strings"
 
 	"aunefyren/solstein/settings"
+
+	"golang.org/x/crypto/curve25519"
 )
 
 // Provider types.
@@ -54,6 +57,39 @@ func (Key) GoString() string             { return "[redacted]" }
 func (Key) MarshalJSON() ([]byte, error) { return []byte(`"[redacted]"`), nil }
 func (Key) MarshalText() ([]byte, error) { return []byte("[redacted]"), nil }
 func (key Key) Bytes() [32]byte          { return key.bytes }
+
+// Public derives the public key. Used for tests and for logging which peer
+// a tunnel talks to; the public key isn't secret.
+func (key Key) Public() PublicKey {
+	public, err := curve25519.X25519(key.bytes[:], curve25519.Basepoint)
+	if err != nil {
+		// Only fails for low-order points, which a private key can't give.
+		panic("derive WireGuard public key: " + err.Error())
+	}
+	var result PublicKey
+	copy(result.bytes[:], public)
+	return result
+}
+
+// hex is the form the WireGuard device's configuration interface takes.
+func (key Key) hex() string { return hex.EncodeToString(key.bytes[:]) }
+
+// PublicKey is a WireGuard public key. Unlike Key it may be printed.
+type PublicKey struct {
+	bytes [32]byte
+}
+
+func (key PublicKey) String() string { return base64.StdEncoding.EncodeToString(key.bytes[:]) }
+func (key PublicKey) hex() string    { return hex.EncodeToString(key.bytes[:]) }
+
+// ParsePublicKey reads a base64 WireGuard public key.
+func ParsePublicKey(text string) (PublicKey, error) {
+	key, err := ParseKey(text)
+	if err != nil {
+		return PublicKey{}, err
+	}
+	return PublicKey{bytes: key.bytes}, nil
+}
 
 // ParseKey reads a base64 WireGuard key, as in a .conf file.
 func ParseKey(text string) (Key, error) {
