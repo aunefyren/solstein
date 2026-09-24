@@ -25,7 +25,7 @@ rss/               feed parsing and byte-preserving rewriting; no Solstein depen
 feeds/             core: source URLs, subscribe, refresh, render (publish rules, signed URLs)   (exists)
 signing/           HMAC signatures for feed and episode URLs                               (exists)
 outbound/          core: exit Manager, direct exit, guarded dialling (private-address block) (exists)
-modules/exits/     module: config, .conf parsing, netstack tunnels, pool, geography, selection, health, Setup (exists); Proton provider (next)
+modules/exits/     module: config, .conf parsing, netstack tunnels, pool, geography, selection, health, Setup, Proton provider (exists)
 modules/exits/wireguard/  generic provider: servers from wg-quick .conf files
 modules/exits/proton/     server-list provider for Proton VPN (gluetun-servers data)
 modules/regiondiff/     module: dual download, diff engine, cutting
@@ -57,7 +57,7 @@ Keep the list short; every new dependency needs a reason.
 | Logging | `github.com/sirupsen/logrus` + `github.com/t-tomalak/logrus-easy-formatter` | In use |
 | WireGuard | `golang.zx2c4.com/wireguard` incl. `tun/netstack` | Agreed |
 | WireGuard (in use) | `golang.zx2c4.com/wireguard` `device` + `tun/netstack` (pulls in gVisor's network stack); `golang.org/x/crypto/curve25519` for public keys | In use |
-| VPN server lists | `github.com/qdm12/gluetun-servers` (MIT; embedded snapshot, refreshed at runtime) | Proposed |
+| VPN server lists | Proton's list from `qdm12/gluetun-servers` (MIT), embedded as a gzip file in `modules/exits/data/` (not the Go module); refreshed at runtime. How to update the snapshot: `modules/exits/data/README.md` | In use |
 | Database | `gorm.io/gorm` + `gorm.io/driver/sqlite` on the CGO-free `modernc.org/sqlite` connection, as Pønskelisten | In use |
 | IDs | `github.com/google/uuid` | In use |
 | Feed rewriting | Own `rss` package on `encoding/xml` `RawToken` + byte offsets; `golang.org/x/text/encoding/charmap` for Latin-1/Windows-1252 feeds | In use |

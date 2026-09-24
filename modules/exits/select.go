@@ -75,7 +75,9 @@ func matches(server Server, location Location) bool {
 	code := server.Location.Country
 	switch location.Kind {
 	case LocationServer:
-		return strings.EqualFold(server.Name, location.Name) || (server.Hostname != "" && strings.EqualFold(server.Hostname, location.Name))
+		return strings.EqualFold(server.Name, location.Name) ||
+			(server.ServerName != "" && strings.EqualFold(server.ServerName, location.Name)) ||
+			(server.Hostname != "" && strings.EqualFold(server.Hostname, location.Name))
 	case LocationCity:
 		return code == location.Country && strings.EqualFold(server.Location.City, location.City)
 	case LocationCountry:

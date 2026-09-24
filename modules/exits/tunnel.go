@@ -36,6 +36,8 @@ type tunnel struct {
 	lastUsed time.Time // last dial or connection close
 	closed   bool
 	now      func() time.Time
+	// keyIndex is which of the pool's keys the tunnel uses, -1 for its own.
+	keyIndex int
 }
 
 // openTunnel brings a tunnel up. It returns once the device is configured;
@@ -70,7 +72,7 @@ func openTunnel(ctx context.Context, server Server, now func() time.Time) (*tunn
 		wgDevice.Close()
 		return nil, fmt.Errorf("bring WireGuard up: %w", err)
 	}
-	return &tunnel{server: server, device: wgDevice, net: tunNet, now: now, lastUsed: now()}, nil
+	return &tunnel{server: server, device: wgDevice, net: tunNet, now: now, lastUsed: now(), keyIndex: -1}, nil
 }
 
 // deviceConfig is the WireGuard configuration-protocol text for a server.

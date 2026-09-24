@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net"
+	"net/http"
 	"net/netip"
 	"slices"
 	"sort"
@@ -30,6 +31,14 @@ type Module struct {
 	states map[string]*exitState // by exit
 	health map[string]*health    // by provider + "/" + server
 	random *rand.Rand
+
+	// Proton server list, refreshed daily when a Proton provider is used.
+	configDir      string
+	protonList     protonList
+	protonCachedAt time.Time
+	protonSource   string
+	protonListURL  string
+	fetchClient    *http.Client
 }
 
 // New builds the module from a validated config and each provider's servers.
@@ -45,9 +54,11 @@ func New(config Config, servers map[string][]Server, now func() time.Time) *Modu
 		states:  map[string]*exitState{},
 		health:  map[string]*health{},
 		random:  rand.New(rand.NewPCG(uint64(now().UnixNano()), 0x50_4c_53_54)),
+
+		protonListURL: protonListURL,
 	}
 	for name, provider := range config.Providers {
-		module.pools[name] = newPool(name, provider.MaxTunnels, now)
+		module.pools[name] = newPool(name, provider.MaxTunnels, provider.PrivateKeys, now)
 	}
 	for name := range config.Exits {
 		module.states[name] = &exitState{}
@@ -84,7 +95,27 @@ func (module *Module) Run(ctx context.Context) {
 	for _, pool := range module.pools {
 		wait.Go(func() { pool.run(ctx) })
 	}
+	if module.usesProton() {
+		wait.Go(func() { module.runProtonRefresh(ctx, module.protonCachedAt) })
+	}
 	wait.Wait()
+}
+
+func (module *Module) usesProton() bool {
+	for _, provider := range module.config.Providers {
+		if provider.Type == TypeProtonVPN {
+			return true
+		}
+	}
+	return false
+}
+
+// serversOf returns a provider's current servers; the Proton list can be
+// replaced at runtime.
+func (module *Module) serversOf(provider string) []Server {
+	module.mutex.Lock()
+	defer module.mutex.Unlock()
+	return module.servers[provider]
 }
 
 func (module *Module) pick(exit Exit) (Server, error) {
@@ -204,7 +235,7 @@ func (dialer exitDialer) through(ctx context.Context, operation func(*tunnel) er
 // ServerNames lists each provider's server names, for status output.
 func (module *Module) ServerNames(provider string) []string {
 	var names []string
-	for _, server := range module.servers[provider] {
+	for _, server := range module.serversOf(provider) {
 		names = append(names, server.Name)
 	}
 	slices.Sort(names)

@@ -19,8 +19,10 @@ type Server struct {
 	// Name identifies the server within its provider: the .conf file name
 	// without extension, or the server list's name (e.g. "SE#12").
 	Name string
-	// Hostname is the server's host name where the provider publishes one;
-	// "server:" locations match it as well as Name.
+	// ServerName and Hostname are the provider's own names for the server,
+	// where it publishes them; "server:" locations match them as well as
+	// Name. Name differs from ServerName when the provider reuses a name.
+	ServerName string
 	Hostname   string
 	PrivateKey Key
 	// Addresses are the tunnel's own addresses (the [Interface] Address

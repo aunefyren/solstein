@@ -8,3 +8,4 @@
 # Feed fixtures are compared byte for byte (and one is Latin-1); keep them
 # exactly as committed.
 rss/testdata/* -text
+modules/exits/data/*.gz binary

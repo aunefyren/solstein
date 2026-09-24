@@ -9,7 +9,7 @@ A self-hosted podcast RSS proxy that sits between podcast hosts and Audiobookshe
 
 The name comes from the Viking sunstone (Iceland spar), which shows everything twice through double refraction.
 
-> **Status:** early development. The core proxy works: subscribing, rewritten feeds, background polling, caching new episodes, serving audio (from the cache with range support, or streamed from the source) and cache clean-up. VPN exits work with any WireGuard VPN through `.conf` files; the Proton provider and ad removal are not implemented yet. See `docs/design.md`.
+> **Status:** early development. The core proxy works: subscribing, rewritten feeds, background polling, caching new episodes, serving audio (from the cache with range support, or streamed from the source) and cache clean-up. VPN exits work with any WireGuard VPN through `.conf` files, and with Proton VPN from its server list; ad removal is not implemented yet. See `docs/design.md`.
 
 ## Running
 
@@ -103,11 +103,22 @@ In `config.json` (paths are relative to the config directory, `/app/config` in D
 ```
 
 - **Providers** are pools of servers. `config_file`, `config_files` or `config_dir` (every `*.conf` in it); `servers` gives each file's location by name (file name without `.conf`). `max_tunnels` caps simultaneous tunnels.
+- **Proton VPN** needs only WireGuard private keys; the servers come from Proton's published list (via [gluetun-servers](https://github.com/qdm12/gluetun-servers)), built in and refreshed daily:
+
+  ```json
+  "proton": {
+    "type": "protonvpn",
+    "private_keys": ["env:PROTON_KEY_1", "env:PROTON_KEY_2"],
+    "filter": { "countries": ["SE", "DE", "NL"] }
+  }
+  ```
+
+  Generate the keys in Proton's dashboard (Downloads → WireGuard configuration; only the `PrivateKey` line is needed, and one key works on every server). Each open tunnel uses its own key; `max_tunnels` defaults to the number of keys. `tier: "free"` limits the pool to free servers. `filter` narrows it by `countries`, `cities` or `servers` (names like `SE#12` or hostnames); Secure Core and Tor servers are left out unless `secure_core` / `tor` is `include` or `only`.
 - **Exits** pick a server from one provider. `locations` is an ordered preference list: a country (`SE`), city (`SE/Stockholm`), server (`server:se-sto-001`), UN M49 area (`area:northern-europe`) or continent (`continent:europe`, plus `north-america` and `south-america`). With `strict`, only the first location is used; otherwise the list is worked down. `exclude` lists countries never to use. `selection` is `sticky` (default), `random` or `least-failed`.
 - Use an exit per feed with `"exit": "sweden"` when adding it through the API, or `PATCH` an existing feed. `direct` is always available.
 - Tunnels open when first needed and close after 5 minutes unused. A server that stops handshaking is left out for a while (1 minute, growing to 30) and the next one is used.
 - DNS goes through the tunnel, using the `DNS` line of the `.conf`.
-- Keys can stay out of `config.json`: in Proton-style providers `private_keys` accepts `env:NAME` and `file:PATH`.
+- Keys can stay out of `config.json`: `private_keys` accepts `env:NAME` (e.g. from Docker's `env_file`) and `file:PATH` (e.g. a Docker secret) as well as the key itself.
 - A mistake in one provider or exit only disables that one; Solstein logs why at start-up.
 
 ## Configuration

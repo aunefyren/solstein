@@ -24,21 +24,29 @@ var ErrTunnelLimit = errors.New("tunnel limit reached; all tunnels are in use")
 type pool struct {
 	provider string
 	max      int // zero is no limit
-	idle     time.Duration
-	now      func() time.Time
-	open     func(ctx context.Context, server Server) (*tunnel, error)
+	// keys are handed to tunnels of servers that don't carry their own
+	// (server-list providers): each opening tunnel gets the least used key,
+	// so with max_tunnels equal to the number of keys every tunnel has its
+	// own. keyUse counts open tunnels per key.
+	keys   []Key
+	keyUse []int
+	idle   time.Duration
+	now    func() time.Time
+	open   func(ctx context.Context, server Server) (*tunnel, error)
 
 	mutex   sync.Mutex
 	tunnels map[string]*tunnel // by server name
 }
 
-func newPool(provider string, max int, now func() time.Time) *pool {
+func newPool(provider string, max int, keys []Key, now func() time.Time) *pool {
 	if now == nil {
 		now = time.Now
 	}
 	return &pool{
 		provider: provider,
 		max:      max,
+		keys:     keys,
+		keyUse:   make([]int, len(keys)),
 		idle:     idleTimeout,
 		now:      now,
 		open: func(ctx context.Context, server Server) (*tunnel, error) {
@@ -74,13 +82,26 @@ func (pool *pool) get(ctx context.Context, server Server) (*tunnel, error) {
 			return nil, fmt.Errorf("provider '%s': %w (max_tunnels %d)", pool.provider, ErrTunnelLimit, pool.max)
 		}
 		logger.Log.Debug("Closing idle tunnel to " + victim + " to make room for " + server.Name + ".")
-		pool.tunnels[victim].close()
-		delete(pool.tunnels, victim)
+		pool.remove(victim)
 	}
 
+	keyIndex := -1
+	if len(pool.keys) > 0 {
+		keyIndex = 0
+		for i, uses := range pool.keyUse {
+			if uses < pool.keyUse[keyIndex] {
+				keyIndex = i
+			}
+		}
+		server.PrivateKey = pool.keys[keyIndex]
+	}
 	opened, err := pool.open(ctx, server)
 	if err != nil {
 		return nil, fmt.Errorf("open tunnel to %s: %w", server.Name, err)
+	}
+	opened.keyIndex = keyIndex
+	if keyIndex >= 0 {
+		pool.keyUse[keyIndex]++
 	}
 	pool.tunnels[server.Name] = opened
 	logger.Log.Info("Opened WireGuard tunnel to " + server.Name + " (provider '" + pool.provider + "').")
@@ -93,29 +114,37 @@ func (pool *pool) reap() {
 	defer pool.mutex.Unlock()
 	for name, candidate := range pool.tunnels {
 		if candidate.idleFor() >= pool.idle {
-			candidate.close()
-			delete(pool.tunnels, name)
+			pool.remove(name)
 			logger.Log.Info("Closed idle WireGuard tunnel to " + name + ".")
 		}
 	}
+}
+
+// remove closes a tunnel and frees its key. The caller holds the mutex.
+func (pool *pool) remove(serverName string) {
+	candidate, ok := pool.tunnels[serverName]
+	if !ok {
+		return
+	}
+	candidate.close()
+	if candidate.keyIndex >= 0 {
+		pool.keyUse[candidate.keyIndex]--
+	}
+	delete(pool.tunnels, serverName)
 }
 
 // forget closes and drops one tunnel, e.g. after it failed.
 func (pool *pool) forget(serverName string) {
 	pool.mutex.Lock()
 	defer pool.mutex.Unlock()
-	if candidate, ok := pool.tunnels[serverName]; ok {
-		candidate.close()
-		delete(pool.tunnels, serverName)
-	}
+	pool.remove(serverName)
 }
 
 func (pool *pool) closeAll() {
 	pool.mutex.Lock()
 	defer pool.mutex.Unlock()
-	for name, candidate := range pool.tunnels {
-		candidate.close()
-		delete(pool.tunnels, name)
+	for name := range pool.tunnels {
+		pool.remove(name)
 	}
 }
 

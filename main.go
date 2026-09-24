@@ -115,6 +115,15 @@ func run() int {
 		return 1
 	}
 	logger.Log.Info("Exits available: " + strings.Join(exitManager.Exits(), ", ") + ".")
+	if vpnModule != nil {
+		// Server-list refreshes go out directly, with the core's safeguards.
+		directClient, err := exitManager.Client(outbound.DirectExit)
+		if err != nil {
+			logger.Log.Error("Failed to get the direct client. Error: " + err.Error())
+			return 1
+		}
+		vpnModule.SetFetchClient(directClient)
+	}
 	if cfg.AllowPrivateDestinations {
 		logger.Log.Warn("Private destinations are allowed; Solstein can fetch from loopback and internal network addresses.")
 	}

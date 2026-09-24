@@ -63,18 +63,20 @@ func TestSetupWarnings(t *testing.T) {
 	joined := strings.Join(warnings, "\n")
 	for _, want := range []string{
 		"provider 'local': broken: [Interface] has no PrivateKey",
-		"provider 'proton': type protonvpn is not supported yet",
-		"exit 'proton': its provider 'proton' is disabled",
 		"exit 'japan': no server of provider 'local' is in JP",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("warnings lack %q:\n%s", want, joined)
 		}
 	}
-	if got := strings.Join(module.Exits(), ","); got != "japan,sweden" {
+	if strings.Contains(joined, "Proton servers from") {
+		t.Error("where the Proton list came from is information, not a warning")
+	}
+	if got := strings.Join(module.Exits(), ","); got != "japan,proton,sweden" {
 		t.Errorf("exits = %s (japan stays: servers may appear later)", got)
 	}
-	if summary := module.Summary(); !strings.Contains(summary, "local (wireguard, 1 servers)") {
+	summary := module.Summary()
+	if !strings.Contains(summary, "local (wireguard, 1 servers)") || !strings.Contains(summary, "Proton servers from the built-in list, dated 2026-08-06") {
 		t.Errorf("summary = %s", summary)
 	}
 }

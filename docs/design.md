@@ -347,7 +347,12 @@ Each step testable on its own; the core already routes every request through `ou
    - `exits.Setup` loads the `vpn` block, reads `.conf` files (relative paths from the config directory), builds the module and returns warnings; `main.go` logs them, registers the module as an `outbound.Provider` and runs it with the other background loops.
    - Start-up also warns about feeds whose exit isn't available.
    - Tested end to end: a feed on a host that exists only inside a WireGuard tunnel is subscribed, polled and rendered through an exit, and is unreachable through `direct`.
-5. **Proton provider:** gluetun-servers data (embedded snapshot, periodic refresh, last good copy in the config directory), `tier` and `filter`.
+5. ✅ **Proton provider:** gluetun-servers data (embedded snapshot, periodic refresh, last good copy in the config directory), `tier` and `filter`.
+   - Only `pkg/servers/protonvpn.json` is embedded (gzip, 57 KB, with gluetun-servers' MIT licence in `modules/exits/data/`), not the Go module, which would embed every provider's list (8.7 MB).
+   - Proton's country names are mapped to ISO codes through the UN names plus 15 aliases (`Korea` → KR, `United Kingdom` → GB, …). All 148 countries in the snapshot map, checked by a test and cross-checked against Proton's hostnames.
+   - Server names aren't unique in Proton's list (Secure Core routes reuse them), nor are hostnames; the IP is. A server's internal name is Proton's name, or `name@ip` where shared; `server:` locations and the `servers` filter still match Proton's name and hostname.
+   - Every Proton server gets address `10.2.0.2/32`, DNS `10.2.0.1`, port 51820 and the server's public key from the list. Each opening tunnel takes the provider's least-used key, so with the default `max_tunnels` (= number of keys) every tunnel has its own.
+   - Start-up uses the cached list in `vpn/protonvpn.json` when it's valid and newer than the snapshot. A refresh a minute after start (unless the cache was checked within a day) and then daily fetches the list through the core's `direct` client; it's accepted only if it's format version 4, has at least 100 WireGuard servers and is newer, then saved atomically and the providers' servers rebuilt in place.
 6. **Live checks with a real key:** whether one Proton key holds two tunnels at once, and what country an exit IP geolocates to.
 
 ### Exits decisions (decided 2026-09-24)

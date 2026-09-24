@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"aunefyren/solstein/settings"
 )
@@ -22,6 +23,12 @@ func Setup(vpn settings.VPN, configDir string, getenv func(string) string) (*Mod
 	}
 
 	servers := map[string][]Server{}
+	var (
+		list      protonList
+		cachedAt  time.Time
+		source    string
+		listSetup bool
+	)
 	for _, name := range slices.Sorted(maps.Keys(config.Providers)) {
 		provider := config.Providers[name]
 		switch provider.Type {
@@ -38,9 +45,15 @@ func Setup(vpn settings.VPN, configDir string, getenv func(string) string) (*Mod
 			}
 			servers[name] = loaded
 		case TypeProtonVPN:
-			// The server list arrives with the Proton provider (build step 5).
-			warnings = append(warnings, fmt.Sprintf("provider '%s': type protonvpn is not supported yet; its exits are disabled", name))
-			delete(config.Providers, name)
+			if !listSetup {
+				list, cachedAt, source = loadProtonList(configDir)
+				listSetup = true
+			}
+			loaded, listWarnings := protonServers(list, provider)
+			for _, warning := range listWarnings {
+				warnings = append(warnings, fmt.Sprintf("provider '%s': %s", name, warning))
+			}
+			servers[name] = loaded
 		}
 	}
 
@@ -69,7 +82,9 @@ func Setup(vpn settings.VPN, configDir string, getenv func(string) string) (*Mod
 		}
 		return nil, warnings
 	}
-	return New(config, servers, nil), warnings
+	module := New(config, servers, nil)
+	module.configDir, module.protonList, module.protonCachedAt, module.protonSource = configDir, list, cachedAt, source
+	return module, warnings
 }
 
 // withBaseDir makes relative .conf paths relative to the config directory,
@@ -94,7 +109,11 @@ func withBaseDir(provider Provider, configDir string) Provider {
 func (module *Module) Summary() string {
 	var parts []string
 	for _, name := range slices.Sorted(maps.Keys(module.config.Providers)) {
-		parts = append(parts, fmt.Sprintf("%s (%s, %d servers)", name, module.config.Providers[name].Type, len(module.servers[name])))
+		parts = append(parts, fmt.Sprintf("%s (%s, %d servers)", name, module.config.Providers[name].Type, len(module.serversOf(name))))
 	}
-	return fmt.Sprintf("exits %s over providers %s", strings.Join(module.Exits(), ", "), strings.Join(parts, ", "))
+	summary := fmt.Sprintf("exits %s over providers %s", strings.Join(module.Exits(), ", "), strings.Join(parts, ", "))
+	if module.usesProton() {
+		summary += fmt.Sprintf("; Proton servers from the %s, dated %s, refreshed daily", module.protonSource, module.protonList.UpdatedAt().UTC().Format(time.DateOnly))
+	}
+	return summary
 }
