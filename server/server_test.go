@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -87,6 +88,14 @@ func testConfig() settings.Config {
 
 func newTestRouter(t *testing.T, modify func(cfg *settings.Config)) *gin.Engine {
 	t.Helper()
+	router, _ := newTestRouterWithDir(t, modify)
+	return router
+}
+
+// newTestRouterWithDir also returns the config directory, for tests that
+// look at the cache.
+func newTestRouterWithDir(t *testing.T, modify func(cfg *settings.Config)) (*gin.Engine, string) {
+	t.Helper()
 	captureLog(t, logrus.DebugLevel)
 	cfg := testConfig()
 	if modify != nil {
@@ -112,7 +121,7 @@ func newTestRouter(t *testing.T, modify func(cfg *settings.Config)) *gin.Engine 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return router
+	return router, configDir
 }
 
 func do(router http.Handler, method, target, body string, headers map[string]string) *httptest.ResponseRecorder {
@@ -549,6 +558,28 @@ func TestEpisodeRoute(t *testing.T) {
 				t.Errorf("status = %d, want %d", recorder.Code, c.status)
 			}
 		})
+	}
+}
+
+func TestDeleteFeedRemovesCachedAudio(t *testing.T) {
+	host := startPodcastHost(t)
+	router, configDir := newTestRouterWithDir(t, nil)
+	signed := enclosurePath(t, router, host.URL+"/feed")
+	if recorder := do(router, http.MethodGet, signed, "", nil); recorder.Code != http.StatusOK {
+		t.Fatalf("GET episode: %d", recorder.Code)
+	}
+	feedID := strings.Split(signed, "/")[3]
+	feedCache := filepath.Join(configDir, "cache", feedID)
+	if _, err := os.Stat(feedCache); err != nil {
+		t.Fatalf("episode not cached: %v", err)
+	}
+
+	bearer := map[string]string{"Authorization": "Bearer " + testToken}
+	if recorder := do(router, http.MethodDelete, "/api/v1/feeds/"+feedID, "", bearer); recorder.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d", recorder.Code)
+	}
+	if _, err := os.Stat(feedCache); !os.IsNotExist(err) {
+		t.Errorf("cached audio of the deleted feed is still there: %v", err)
 	}
 }
 

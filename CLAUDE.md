@@ -11,7 +11,7 @@ Solstein — a self-hosted Go podcast RSS proxy that sits between podcast hosts 
 
 The name is the Viking sunstone (Iceland spar), which shows everything twice through double refraction — a nod to the region-diff module. Licence: GPL-3.0.
 
-**Status: building the core proxy.** The core (feeds, episodes, serving, auth) is decided and is built in the order under **Core build order** in `docs/design.md`. The exits (VPN) and region-diff modules are still in planning: do not write code for them until the maintainer says their design is done. The working design lives in `docs/design.md` — read it at the start of every session and keep it current as decisions are made; record open questions there rather than silently picking an answer.
+**Status: core proxy built; modules in planning.** The core (feeds, episodes, serving, auth, housekeeping) is complete — see **Core build order** in `docs/design.md`. The exits (VPN) and region-diff modules are still in planning: do not write code for them until the maintainer says their design is done. The working design lives in `docs/design.md` — read it at the start of every session and keep it current as decisions are made; record open questions there rather than silently picking an answer.
 
 Never run `git` commands that change state (commit, push, branch, reset, etc.) — git is managed by the maintainer.
 

@@ -147,6 +147,12 @@ func contentTypeFor(filePath string) string {
 	}
 }
 
+// RemoveFeed deletes a deleted feed's cached audio at once, instead of
+// leaving it for the hourly clean-up.
+func (server *Server) RemoveFeed(feedID uuid.UUID) error {
+	return server.cache.RemoveFeed(feedID)
+}
+
 func (server *Server) startTee(episodeID uuid.UUID) bool {
 	server.mutex.Lock()
 	defer server.mutex.Unlock()

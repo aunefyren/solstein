@@ -125,6 +125,16 @@ func TestPublishedEpisodes(t *testing.T) {
 		t.Error("a failed episode must not hold back newer ones")
 	}
 
+	// Nothing ready and no backlog: the oldest is published anyway.
+	first, second := episode(models.EpisodeDiscovered, false), episode(models.EpisodeAcquiring, false)
+	onlyPending := publishedEpisodes([]models.Episode{first, second}, "cache")
+	if len(onlyPending) != 1 || !onlyPending[first.ID] {
+		t.Errorf("feed with only pending episodes published %v, want just the oldest", onlyPending)
+	}
+	if empty := publishedEpisodes(nil, "cache"); len(empty) != 0 {
+		t.Errorf("no episodes: published %v", empty)
+	}
+
 	for _, mode := range []string{"stream", "original"} {
 		all := publishedEpisodes(episodes, mode)
 		if len(all) != len(episodes) {

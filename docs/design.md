@@ -2,7 +2,7 @@
 
 Planning-phase document. Update as decisions land; keep unresolved items under **Open questions**. Items marked **(proposed)** are the current recommendation, not yet confirmed; **(decided)** items are agreed.
 
-**Status (2026-09-24):** the core proxy is decided and being built, following the build order under **Core build order**. The exits and region-diff modules are still being designed.
+**Status (2026-09-24):** the core proxy is built (all seven steps under **Core build order**). The exits and region-diff modules are still being designed.
 
 ## Overview
 
@@ -134,6 +134,15 @@ A small JSON API behind the subscribe token for the explicit subscribe flow: lis
 - Every download writes to its own uniquely named `.part` file, so the pipeline and a tee can never write into the same file.
 - Checked against Acast's CDN: a backlog episode (21.5 MB) streamed and cached in 0.9 s, the second play came from the cache, a Range request returned `206`.
 
+### Housekeeping, as built
+
+- Hourly sweep (and once at start-up):
+  - **Retention:** cache copies older than `cache_retention_days` (by `cached_at`) are deleted and the episode's cache fields cleared. The episode stays published; a later play streams it and, in cache mode, caches it again. A file that can't be deleted (e.g. being served, on Windows) is left for the next sweep rather than forgotten.
+  - **Strays:** files in the cache no episode refers to — a deleted feed's audio, abandoned `.part` files — are removed, then empty feed directories. Files younger than 70 minutes (the longest a download can run, plus a margin) are left alone, so a download that has finished but not yet been recorded is never removed.
+- Deleting a feed through the API removes its cache directory at once.
+- **Never an empty feed:** if the publish rules would hide every episode, the oldest one is published anyway and streamed, because ABS treats a feed without items as a failed check (and turns auto-download off after 24).
+- The last good source document is kept when a poll fails (step 4).
+
 ### Core build order
 
 Each step is testable on its own; usable with ABS after step 6.
@@ -144,7 +153,7 @@ Each step is testable on its own; usable with ABS after step 6.
 4. ✅ Subscribing and access: prefix URL route, feed API, token, signed URLs, client network check.
 5. ✅ Polling and the episode pipeline: scheduler, download worker pool, publishing in date order.
 6. ✅ Serving episodes: from the cache with range support, plus `stream` and `original`.
-7. Housekeeping: cache retention, keeping the last good feed when the source fails.
+7. ✅ Housekeeping: cache retention, keeping the last good feed when the source fails.
 
 ## Extension points
 

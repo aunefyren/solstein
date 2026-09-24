@@ -1,6 +1,7 @@
 # Solstein
 
 [![CI](https://img.shields.io/github/actions/workflow/status/aunefyren/solstein/go.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/aunefyren/solstein/actions/workflows/go.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/aunefyren/28cb38a6289c7b2b21694175a243e7eb/raw/solstein-coverage.json&style=for-the-badge)](https://github.com/aunefyren/solstein/actions/workflows/go.yml)
 [![CodeQL](https://img.shields.io/github/actions/workflow/status/aunefyren/solstein/codeql-analysis.yml?branch=main&style=for-the-badge&label=CodeQL)](https://github.com/aunefyren/solstein/actions/workflows/codeql-analysis.yml)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/aunefyren/solstein?style=for-the-badge)](https://go.dev/dl/)
 
@@ -8,7 +9,7 @@ A self-hosted podcast RSS proxy that sits between podcast hosts and Audiobookshe
 
 The name comes from the Viking sunstone (Iceland spar), which shows everything twice through double refraction.
 
-> **Status:** early development. The core proxy works: subscribing, rewritten feeds, background polling, caching new episodes and serving audio (from the cache with range support, or streamed from the source). Cache clean-up, the VPN module and ad removal are not implemented yet. See `docs/design.md`.
+> **Status:** early development. The core proxy works: subscribing, rewritten feeds, background polling, caching new episodes, serving audio (from the cache with range support, or streamed from the source) and cache clean-up. The VPN module and ad removal are not implemented yet. See `docs/design.md`.
 
 ## Running
 
@@ -17,7 +18,7 @@ With Docker:
 ```yaml
 services:
   solstein:
-    image: aunefyren/solstein:latest
+    image: ghcr.io/aunefyren/solstein:latest
     environment:
       SOLSTEIN_EXTERNAL_URL: http://solstein:8080
       SOLSTEIN_TIMEZONE: Europe/Oslo
@@ -94,7 +95,7 @@ On first run Solstein creates `config.json` in its config directory (`/config` i
 | `allowed_source_hosts` | `-allowedsourcehosts` | `SOLSTEIN_ALLOWED_SOURCE_HOSTS` | `[]` (any) | Hosts feeds may be subscribed from; subdomains included, e.g. `acast.com`. |
 | `delivery_mode` | `-deliverymode` | `SOLSTEIN_DELIVERY_MODE` | `cache` | Default for feeds: `cache` (download and serve from disk), `stream` (pass through live) or `original` (only proxy the feed). |
 | `poll_interval_minutes` | `-pollinterval` | `SOLSTEIN_POLL_INTERVAL` | `15` | Minutes between feed polls. |
-| `cache_retention_days` | `-cacheretention` | `SOLSTEIN_CACHE_RETENTION` | `14` | Days cached episodes are kept. |
+| `cache_retention_days` | `-cacheretention` | `SOLSTEIN_CACHE_RETENTION` | `14` | Days cached episodes are kept on disk. Expired episodes stay in the feed and are fetched from the source again if played. |
 | — | `-configdir` | `SOLSTEIN_CONFIG_DIR` | `config` (`/config` in Docker) | Directory for `config.json`, the database, logs and cache. |
 | — | `-version` | — | — | Print the version and exit. |
 

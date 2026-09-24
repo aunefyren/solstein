@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 
+# New files (database, log, cache) are not world-readable: the database holds
+# feed URLs, and private feeds often carry an access token in theirs.
+umask 027
+
 # A first argument that isn't a flag is a command to run instead of the app
 # (e.g. `docker run -it <image> sh` for debugging).
 if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then

@@ -28,7 +28,9 @@ WORKDIR /app
 RUN apk add --no-cache ca-certificates tzdata su-exec
 COPY --from=builder /app/solstein /app/solstein
 COPY --chmod=755 entrypoint.sh /app/entrypoint.sh
-RUN mkdir -p /config
+# Owned by the default PUID/PGID: Docker copies this directory's ownership
+# into a fresh named volume, so `user: "1000:1000"` works out of the box.
+RUN mkdir -p /config && chown 1000:1000 /config
 VOLUME /config
 EXPOSE 8080
 ENTRYPOINT ["/app/entrypoint.sh"]

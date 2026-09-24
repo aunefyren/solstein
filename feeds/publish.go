@@ -23,6 +23,11 @@ import (
 //
 // In stream and original mode nothing needs preparing, so everything is
 // published at once.
+//
+// A feed is never left without episodes: ABS counts a feed with no items as
+// a failed check and turns auto-download off after 24 of them. If nothing
+// else would be published, the oldest episode is, and is streamed from the
+// source until it is cached.
 func publishedEpisodes(episodes []models.Episode, mode string) map[uuid.UUID]bool {
 	published := make(map[uuid.UUID]bool, len(episodes))
 	holding := false
@@ -36,6 +41,9 @@ func publishedEpisodes(episodes []models.Episode, mode string) map[uuid.UUID]boo
 		default:
 			holding = true
 		}
+	}
+	if len(published) == 0 && len(episodes) > 0 {
+		published[episodes[0].ID] = true
 	}
 	return published
 }

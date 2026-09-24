@@ -140,11 +140,14 @@ func run() int {
 		return 1
 	}
 
-	// The poller and pipeline stop with ctx; they are waited for before the
+	// The poller, pipeline and housekeeper stop with ctx; they are waited for before the
 	// database closes.
+	housekeeper := episodes.NewHousekeeper(store, cache, time.Duration(cfg.CacheRetentionDays)*24*time.Hour, nil)
+
 	var background sync.WaitGroup
 	background.Go(func() { pipeline.Run(ctx) })
 	background.Go(func() { poller.Run(ctx) })
+	background.Go(func() { housekeeper.Run(ctx) })
 
 	exitCode := 0
 	logger.Log.Info("Starting HTTP server on " + srv.Addr + ".")

@@ -138,6 +138,12 @@ func (handlers *handlers) apiDeleteFeed(context *gin.Context) {
 		context.Abort()
 		return
 	}
+	if handlers.episodes != nil {
+		if err := handlers.episodes.RemoveFeed(feed.ID); err != nil {
+			// The hourly clean-up will get it; the feed itself is gone.
+			logger.Log.Warn("Failed to delete cached audio of feed '" + feed.Title + "'. Error: " + err.Error())
+		}
+	}
 	logger.Log.Info("Deleted feed '" + feed.Title + "'.")
 	context.Status(http.StatusNoContent)
 }

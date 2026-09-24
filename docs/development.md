@@ -112,8 +112,8 @@ Notes:
 
 ## Background work
 
-- `main.go` starts two long-running loops, both stopped by the signal context and waited for before the database closes: `feeds.Poller.Run` and `episodes.Pipeline.Run`.
-- Loops take a clock (`Now func() time.Time`) and expose a single-step function (`Poller.PollDue`, `Pipeline.ProcessNext`), so tests drive them deterministically instead of waiting on timers.
+- `main.go` starts three long-running loops, all stopped by the signal context and waited for before the database closes: `feeds.Poller.Run`, `episodes.Pipeline.Run` and `episodes.Housekeeper.Run`.
+- Loops take a clock (`Now func() time.Time`) and expose a single-step function (`Poller.PollDue`, `Pipeline.ProcessNext`, `Housekeeper.Sweep`), so tests drive them deterministically instead of waiting on timers.
 - The poller wakes the pipeline through a callback (`pipeline.Wake`), so `feeds` doesn't import `episodes`.
 - On shutdown, in-flight downloads are abandoned; `Pipeline.Recover` at the next start resets them and removes `.part` files.
 
@@ -207,14 +207,13 @@ Conventions:
 
 - `go.yml` — on push and pull request to `main` and `dev`: gofmt check, `go mod tidy` check, build, vet, `go test -race` with coverage in the job summary, the coverage badge (push to `main` only) and, last, the coverage gate. The gate's minimum is `COVERAGE_MIN` in that file (65% while the total is ~70%); raise it as the suite grows, never lower it to get a change through.
 - `codeql-analysis.yml` — CodeQL with the `security-extended` queries, on push/PR to `main` and `dev` and weekly.
-- `docker-image-beta.yml` — on push to `main`: multi-arch image tagged `beta`, version `beta-<sha>`.
-- `docker-image.yml` — on a published release: multi-arch image tagged with the release and `latest`.
+- `docker-image-beta.yml` — on push to `main`: multi-arch image `ghcr.io/aunefyren/solstein:beta`, version `beta-<sha>`.
+- `docker-image.yml` — on a published release: multi-arch image tagged with the release and `latest`, on GHCR only (no Docker Hub).
 - `release.yaml` — on a published release: binaries for linux/windows/darwin, version stamped via ldflags.
 
 Secrets and variables:
-- `DOCKER_USERNAME`, `DOCKER_PASSWORD` (secrets) for Docker Hub.
-- `GIST_TOKEN` (secret, personal access token with the `gist` scope) and `COVERAGE_GIST_ID` (repository variable) for the coverage badge. The badge step skips itself until both exist, so CI stays green before it is set up. Once set, add the badge to `README.md`: `https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/aunefyren/<gist-id>/raw/solstein-coverage.json&style=for-the-badge`.
-- GHCR and release uploads use the built-in `GITHUB_TOKEN` (the workflows request `packages: write` / `contents: write`).
+- `GIST_TOKEN` (secret, personal access token with the `gist` scope) and `COVERAGE_GIST_ID` (repository variable) for the coverage badge. The badge step skips itself until both exist, so CI stays green before it is set up. The badge in `README.md` reads gist `28cb38a6289c7b2b21694175a243e7eb`; if the gist ever changes, update both the variable and the README URL.
+- GHCR and release uploads use the built-in `GITHUB_TOKEN` (the workflows request `packages: write` / `contents: write`); no other secrets are needed.
 
 
 ## Docker
@@ -222,9 +221,12 @@ Secrets and variables:
 - Multi-stage build. The builder runs on `$BUILDPLATFORM` and cross-compiles with `CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH GOARM=${TARGETVARIANT#v}`, so multi-arch images don't compile under QEMU. Platforms: `linux/amd64`, `linux/arm64`, `linux/arm/v7`.
 - Runtime on Alpine with `ca-certificates`, `tzdata` and `su-exec`. `SOLSTEIN_CONFIG_DIR=/config`, declared as a volume: config, database, log and cache all live there.
 - `entrypoint.sh` only handles privileges: when started as root it fixes ownership of the config directory and drops to `PUID`/`PGID` (default `1000`); started as non-root it runs as-is. A non-flag first argument runs that command instead (`docker run -it <image> sh`). Settings come from `SOLSTEIN_*` env vars, which the binary reads itself, so the entrypoint doesn't map each one to a flag (Pønskelisten's entrypoint does, and every new setting had to be added in two places).
+- `/config` is created in the image owned by `1000:1000`. Docker copies an image directory's ownership into a fresh named volume on first mount, so a root-owned `/config` would make `user: "1000:1000"` fail with "permission denied" on a new volume.
+- `entrypoint.sh` sets `umask 027`, so the database, log and cache aren't world-readable (the database holds feed URLs, which can carry private-feed tokens). `config.json` is `0600` regardless.
+- Tested with Docker Desktop (2026-09-24): single- and multi-arch builds (amd64, arm64, arm/v7; the ARM images run), privilege drop to default and custom `PUID`/`PGID`, `user: "1000:1000"` on a fresh volume, env vars and flags reaching `config.json`, the token surviving a restart, a real Acast subscription from inside the container, `docker stop` in about half a second. Image size about 55 MB.
 - `.gitattributes` forces LF for `*.sh`, since a CRLF checkout on Windows would break the entrypoint inside the container.
 - No `NET_ADMIN`, no `/dev/net/tun`, no `network_mode` — the WireGuard tunnels are userspace and in-process. If a change seems to need any of these, it's the wrong change.
-- Images: `aunefyren/solstein` on Docker Hub and `ghcr.io/aunefyren/solstein`.
+- Image: `ghcr.io/aunefyren/solstein` (GHCR only).
 
 
 ## Working notes
