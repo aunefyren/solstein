@@ -8,7 +8,7 @@ A self-hosted podcast RSS proxy that sits between podcast hosts and Audiobookshe
 
 The name comes from the Viking sunstone (Iceland spar), which shows everything twice through double refraction.
 
-> **Status:** early development. Subscribing, serving rewritten feeds, background polling and downloading new episodes into the cache work; serving the episode audio to clients and the VPN and ad-removal modules are not implemented yet. See `docs/design.md`.
+> **Status:** early development. The core proxy works: subscribing, rewritten feeds, background polling, caching new episodes and serving audio (from the cache with range support, or streamed from the source). Cache clean-up, the VPN module and ad removal are not implemented yet. See `docs/design.md`.
 
 ## Running
 

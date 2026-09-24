@@ -9,12 +9,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"aunefyren/solstein/database"
+	"aunefyren/solstein/episodes"
 	"aunefyren/solstein/feeds"
 	"aunefyren/solstein/logger"
 	"aunefyren/solstein/outbound"
@@ -41,20 +43,28 @@ func captureLog(t *testing.T, level logrus.Level) *strings.Builder {
 	return &output
 }
 
-// startPodcastHost serves a small valid feed at /feed, and HTML at /page.
+const testAudio = "ID3fake-audio"
+
+// startPodcastHost serves a small valid feed at /feed whose one episode's
+// audio is at /ep-1.mp3 on the same host, and HTML at /page.
 func startPodcastHost(t *testing.T) *httptest.Server {
 	t.Helper()
-	host := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/page" {
+	var host *httptest.Server
+	host = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/page":
 			fmt.Fprint(writer, "<html><body>Not a feed</body></html>")
-			return
-		}
-		fmt.Fprint(writer, `<?xml version="1.0" encoding="UTF-8"?>
+		case "/ep-1.mp3":
+			writer.Header().Set("Content-Type", "audio/mpeg")
+			fmt.Fprint(writer, testAudio)
+		default:
+			fmt.Fprintf(writer, `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Fake Show</title>
 <atom:link href="https://source.example.com/feed" rel="self"/>
 <item><title>One</title><guid>ep-1</guid><pubDate>Mon, 21 Sep 2026 06:00:00 +0000</pubDate>
-<enclosure url="https://media.example.com/ep-1.mp3" type="audio/mpeg" length="100"/></item>
-</channel></rss>`)
+<enclosure url="%s/ep-1.mp3" type="audio/mpeg" length="100"/></item>
+</channel></rss>`, host.URL)
+		}
 	}))
 	t.Cleanup(host.Close)
 	return host
@@ -82,7 +92,8 @@ func newTestRouter(t *testing.T, modify func(cfg *settings.Config)) *gin.Engine 
 	if modify != nil {
 		modify(&cfg)
 	}
-	store, err := database.Open(t.TempDir())
+	configDir := t.TempDir()
+	store, err := database.Open(configDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +103,12 @@ func newTestRouter(t *testing.T, modify func(cfg *settings.Config)) *gin.Engine 
 		t.Fatal(err)
 	}
 	service := feeds.New(store, exits, feeds.Options{DefaultDeliveryMode: cfg.DeliveryMode, AllowedSourceHosts: cfg.AllowedSourceHosts})
-	router, err := newRouter(Options{Config: cfg, Version: "v1.2.3", Feeds: service})
+	cache, err := episodes.NewCache(filepath.Join(configDir, "cache"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	episodeServer := episodes.NewServer(store, exits, cache, service, episodes.Options{})
+	router, err := newRouter(Options{Config: cfg, Version: "v1.2.3", Feeds: service, Episodes: episodeServer})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +160,7 @@ func TestSubscribeByPrefix(t *testing.T) {
 		if !strings.Contains(body, `<atom:link href="http://example.com/api/feeds/`) || !strings.Contains(body, "sig=") {
 			t.Errorf("self link not rewritten to a signed Solstein URL:\n%s", body)
 		}
-		if strings.Contains(body, "media.example.com") {
+		if strings.Contains(body, host.URL+"/ep-1.mp3") {
 			t.Error("original audio URL left in the feed")
 		}
 	}
@@ -476,5 +492,73 @@ func TestRunReportsListenError(t *testing.T) {
 
 	if err := Run(context.Background(), srv); err == nil {
 		t.Error("expected an error when the port is taken")
+	}
+}
+
+// enclosurePath subscribes and returns the path and query of the first
+// episode's signed enclosure URL.
+func enclosurePath(t *testing.T, router http.Handler, source string) string {
+	t.Helper()
+	recorder := do(router, http.MethodGet, "/api/rss/"+testToken+"/"+source, "", nil)
+	feed, err := rss.Parse(recorder.Body.Bytes())
+	if err != nil || len(feed.Items) == 0 || feed.Items[0].Enclosure == nil {
+		t.Fatalf("no enclosure in served feed: %v\n%s", err, recorder.Body)
+	}
+	link, err := url.Parse(feed.Items[0].Enclosure.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return link.RequestURI()
+}
+
+func TestEpisodeRoute(t *testing.T) {
+	host := startPodcastHost(t)
+	router := newTestRouter(t, nil)
+	signed := enclosurePath(t, router, host.URL+"/feed")
+	path, query, _ := strings.Cut(signed, "?")
+
+	recorder := do(router, http.MethodGet, signed, "", nil)
+	if recorder.Code != http.StatusOK || recorder.Body.String() != testAudio {
+		t.Fatalf("GET signed episode: %d %q", recorder.Code, recorder.Body)
+	}
+	// Now cached: served with range support.
+	recorder = do(router, http.MethodGet, signed, "", map[string]string{"Range": "bytes=0-2"})
+	if recorder.Code != http.StatusPartialContent || recorder.Body.String() != testAudio[:3] {
+		t.Errorf("range: %d %q", recorder.Code, recorder.Body)
+	}
+	if recorder := do(router, http.MethodHead, signed, "", nil); recorder.Code != http.StatusOK || recorder.Body.Len() != 0 {
+		t.Errorf("HEAD: %d %q", recorder.Code, recorder.Body)
+	}
+
+	feedID := strings.Split(path, "/")[3]
+	otherPath := "/api/episodes/" + feedID + "/00000000-0000-0000-0000-000000000001.mp3"
+	cases := []struct {
+		name   string
+		target string
+		status int
+	}{
+		{"no signature", path, http.StatusForbidden},
+		{"other extension, same signature", strings.TrimSuffix(path, ".mp3") + ".m4a?" + query, http.StatusForbidden},
+		{"bad extension", strings.TrimSuffix(path, ".mp3") + ".mp3x!?" + query, http.StatusNotFound},
+		{"not a UUID", "/api/episodes/" + feedID + "/abc.mp3", http.StatusNotFound},
+		{"unknown episode, valid signature", otherPath + "?sig=" + signing.New("test-signing-key").Sign(otherPath), http.StatusNotFound},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if recorder := do(router, http.MethodGet, c.target, "", nil); recorder.Code != c.status {
+				t.Errorf("status = %d, want %d", recorder.Code, c.status)
+			}
+		})
+	}
+}
+
+func TestEpisodeRouteSourceFailure(t *testing.T) {
+	host := startPodcastHost(t)
+	router := newTestRouter(t, nil)
+	signed := enclosurePath(t, router, host.URL+"/feed")
+	host.Close() // the source is gone
+
+	if recorder := do(router, http.MethodGet, signed, "", nil); recorder.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", recorder.Code)
 	}
 }

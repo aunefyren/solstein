@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,14 +23,18 @@ import (
 
 const audio = "ID3fake-mp3-audio-bytes"
 
+// hits counts requests for /ok.mp3, to tell cache hits from source fetches.
+var hits atomic.Int32
+
 // startAudioHost serves the kinds of responses a podcast CDN can give.
 func startAudioHost(t *testing.T) *httptest.Server {
 	t.Helper()
 	host := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/ok.mp3":
+			hits.Add(1)
 			writer.Header().Set("Content-Type", "audio/mpeg")
-			writer.Write([]byte(audio))
+			http.ServeContent(writer, request, "", time.Time{}, strings.NewReader(audio)) // supports Range
 		case "/untyped":
 			writer.Write([]byte(audio)) // no Content-Type: sniffed as octet-stream
 		case "/html.mp3":

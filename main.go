@@ -132,7 +132,9 @@ func run() int {
 	}
 	poller := feeds.NewPoller(feedService, time.Duration(cfg.PollIntervalMinutes)*time.Minute, pipeline.Wake)
 
-	srv, err := server.New(server.Options{Config: cfg, Version: version, Feeds: feedService})
+	episodeServer := episodes.NewServer(store, exits, cache, feedService, episodes.Options{})
+
+	srv, err := server.New(server.Options{Config: cfg, Version: version, Feeds: feedService, Episodes: episodeServer})
 	if err != nil {
 		logger.Log.Error("Failed to set up HTTP server. Error: " + err.Error())
 		return 1

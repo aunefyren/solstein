@@ -124,6 +124,16 @@ A small JSON API behind the subscribe token for the explicit subscribe flow: lis
 - On start-up, episodes left mid-download are reset and leftover `.part` files removed.
 - Checked end to end against Acast's CDN (`sphinx.acast.com`): a new episode was found by the poller, 20.5 MB downloaded in about a second as a valid MP3, and the served feed listed it with its real byte length.
 
+### Serving episodes, as built
+
+`GET`/`HEAD /api/episodes/{feedID}/{episodeID}.{ext}?sig=…`, signature checked over that exact path:
+- **Cached:** served from disk with `http.ServeContent` (Range, If-Range, conditional requests, HEAD). A cached file that has gone missing is forgotten and the episode falls back to the source.
+- **`original` mode:** `302` to the source.
+- **Otherwise streamed** from the source through the feed's exit. `Range` is forwarded; only `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Ranges` and `Last-Modified` are passed back (no cookies or tracking headers). A source error or non-audio response becomes `502` before anything is sent.
+- **Tee into the cache:** in cache mode, a full (non-Range) `GET` of an episode the pipeline won't download — backlog, given up on, or ready but uncached — is written to the cache while it streams. The source request then runs on its own context, so if the listener disconnects the download still completes and the next play comes from disk. At most one tee per episode at a time; a second listener meanwhile gets a plain stream. A failed episode that caches this way becomes ready.
+- Every download writes to its own uniquely named `.part` file, so the pipeline and a tee can never write into the same file.
+- Checked against Acast's CDN: a backlog episode (21.5 MB) streamed and cached in 0.9 s, the second play came from the cache, a Range request returned `206`.
+
 ### Core build order
 
 Each step is testable on its own; usable with ABS after step 6.
@@ -133,7 +143,7 @@ Each step is testable on its own; usable with ABS after step 6.
 3. ✅ Feed parsing and rewriting, preserving every element, tested against realistic feed samples.
 4. ✅ Subscribing and access: prefix URL route, feed API, token, signed URLs, client network check.
 5. ✅ Polling and the episode pipeline: scheduler, download worker pool, publishing in date order.
-6. Serving episodes: from the cache with range support, plus `stream` and `original`.
+6. ✅ Serving episodes: from the cache with range support, plus `stream` and `original`.
 7. Housekeeping: cache retention, keeping the last good feed when the source fails.
 
 ## Extension points
@@ -352,7 +362,7 @@ Other behaviour that matters:
 ### Region diff and exits
 - **Rest of the brief.** The original specification was cut off mid-sentence in the region-diff section; everything after it is still to be supplied.
 - **Acast stitching format.** Frame-level splice vs re-encode; whether ID3 tags, Xing/LAME headers or bit-reservoir boundaries differ between downloads. Needs empirical inspection of real downloads from two regions.
-- **Other variance sources.** Whether ad selection also depends on User-Agent, cookies, time or random rotation (two downloads from the *same* region may differ); whether host-read/baked-in ads exist that no diff can catch.
+- **Other variance sources.** Whether ad selection also depends on User-Agent, cookies, time or random rotation (two downloads from the *same* region may differ); whether host-read/baked-in ads exist that no diff can catch. First data point (2026-09-24): one Acast episode (`Out of Place`, served from `sphinx.acast.com`) downloaded four times from Norway, twice direct and twice through Solstein, gave byte-identical files (same MD5). That show may carry no dynamic ads, so this says nothing yet about DAI shows; test with one that does.
 - **Identical-download fallback.** Serve as-is, retry with a third exit, or flag for review.
 - **Concurrent tunnels on one Proton key.** Plan limits are confirmed (Free 1, Plus 10), but not whether one key can hold tunnels to two servers at once or how that is counted. Design already handles either answer (list of keys); test empirically with the exits module. Region diff from Norway with `direct` plus one exit needs only one tunnel regardless.
 - **Geolocation drift.** What decides the ads is how Acast geolocates the exit IP, not the country in the server list; VPN IPs are sometimes misplaced. Optional check via an IP-geolocation service through the tunnel (off by default, as it adds an external dependency)? The real test remains whether the two downloads differ.

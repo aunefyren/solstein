@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"aunefyren/solstein/episodes"
 	"aunefyren/solstein/feeds"
 	"aunefyren/solstein/logger"
 	"aunefyren/solstein/settings"
@@ -25,14 +26,16 @@ const (
 
 // Options are the server's dependencies.
 type Options struct {
-	Config  settings.Config
-	Version string
-	Feeds   *feeds.Service
+	Config   settings.Config
+	Version  string
+	Feeds    *feeds.Service
+	Episodes *episodes.Server
 }
 
 // handlers carries what the route handlers need.
 type handlers struct {
 	feeds       *feeds.Service
+	episodes    *episodes.Server
 	access      access
 	signer      signing.Signer
 	externalURL string
@@ -68,7 +71,8 @@ func newRouter(options Options) (*gin.Engine, error) {
 		return nil, fmt.Errorf("trusted proxies: %w", err)
 	}
 	handlers := &handlers{
-		feeds: options.Feeds,
+		feeds:    options.Feeds,
+		episodes: options.Episodes,
 		access: access{
 			disableAuth:    cfg.DisableAuth,
 			token:          cfg.AuthToken,
@@ -93,6 +97,8 @@ func newRouter(options Options) (*gin.Engine, error) {
 	router.GET(healthPath, healthHandler(options.Version))
 	router.GET(rssPrefix+":token/*source", handlers.subscribeByPrefix)
 	router.GET("/api/feeds/:file", handlers.feedByID)
+	router.GET("/api/episodes/:feedID/:file", handlers.episode)
+	router.HEAD("/api/episodes/:feedID/:file", handlers.episode)
 
 	api := router.Group("/api/v1", handlers.access.requireToken())
 	{

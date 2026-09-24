@@ -19,7 +19,7 @@ logger/            logrus wrapper, logger.Log                                   
 server/            Gin router, access checks, feed routes, feed API               (exists)
 models/            persisted records (Base with UUID ID, Feed, Episode) and their GORM mapping (exists)
 feeds/             core: polling, parsing, rewriting feeds
-episodes/          core: download pipeline and cache; serving audio next             (exists)
+episodes/          core: download pipeline, cache, serving audio (cache, stream, tee)  (exists)
 database/          SQLite via GORM: Store with named query functions, one file per model   (exists)
 rss/               feed parsing and byte-preserving rewriting; no Solstein dependencies   (exists)
 feeds/             core: source URLs, subscribe, refresh, render (publish rules, signed URLs)   (exists)

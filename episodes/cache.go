@@ -54,11 +54,13 @@ func (cache Cache) create(feedID, episodeID uuid.UUID, extension string) (file *
 	if err := os.MkdirAll(filepath.Dir(final), 0o750); err != nil {
 		return nil, nil, nil, fmt.Errorf("create feed cache directory: %w", err)
 	}
-	part := final + partSuffix
-	file, err = os.OpenFile(part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
+	// A unique name per download, so a background download and a listener's
+	// stream of the same episode can never write into one file.
+	file, err = os.CreateTemp(filepath.Dir(final), filepath.Base(final)+".*"+partSuffix)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("create %s: %w", part, err)
+		return nil, nil, nil, fmt.Errorf("create download file for %s: %w", final, err)
 	}
+	part := file.Name()
 
 	discard = func() {
 		file.Close()
