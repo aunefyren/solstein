@@ -104,16 +104,24 @@ Blocking a client request until processing finishes is ruled out: it contradicts
 
 ### Feed API (decided)
 
-A small JSON API behind the subscribe token for the explicit subscribe flow: list, add and remove feeds, and change per-feed settings. No web UI in the first version.
+A small JSON API behind the subscribe token for the explicit subscribe flow: list, add and remove feeds, and change per-feed settings. No web UI in the first version. Built as `/api/v1/feeds` (see README); token as `Authorization: Bearer` or `?token=`.
+
+### Subscribing, as built
+
+- A new subscription fetches the source at once (20 s limit, under ABS's 30 s) and is stored only if it parses as RSS, together with its document and episodes in one transaction, so a mistyped URL leaves nothing behind.
+- Every episode present at subscription is stored as **backlog**: published at once, fetched on demand.
+- The last good source document is stored per feed (`feed_documents` table) and the served feed is rendered from it on each request, so episode state changes show up immediately.
+- Polls are conditional (`If-None-Match` / `If-Modified-Since`); a failed poll keeps the last good document and records the error on the feed.
+- Checked against real feeds (NPR, 355 items; Acast, 27 items): only the enclosure URLs, `atom:link rel="self"` and `itunes:new-feed-url` differ from the source; everything else is byte-identical.
 
 ### Core build order
 
 Each step is testable on its own; usable with ABS after step 6.
 
-1. Storage: SQLite, feed and episode models.
-2. Outbound: the exit interface and the built-in `direct` exit, with the private-address block, timeouts and a fixed User-Agent.
-3. Feed parsing and rewriting, preserving every element, tested against realistic feed samples.
-4. Subscribing and access: prefix URL route, feed API, token, signed URLs, client network check.
+1. ✅ Storage: SQLite, feed and episode models.
+2. ✅ Outbound: the exit interface and the built-in `direct` exit, with the private-address block, timeouts and a fixed User-Agent.
+3. ✅ Feed parsing and rewriting, preserving every element, tested against realistic feed samples.
+4. ✅ Subscribing and access: prefix URL route, feed API, token, signed URLs, client network check.
 5. Polling and the episode pipeline: scheduler, download worker pool, publishing in date order.
 6. Serving episodes: from the cache with range support, plus `stream` and `original`.
 7. Housekeeping: cache retention, keeping the last good feed when the source fails.

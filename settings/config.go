@@ -7,12 +7,15 @@ package settings
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,9 +25,15 @@ import (
 const (
 	configFileName = "config.json"
 
-	defaultPort     = 8080
-	defaultLogLevel = "info"
+	defaultPort               = 8080
+	defaultLogLevel           = "info"
+	defaultDeliveryMode       = "cache"
+	defaultPollInterval       = 15
+	defaultCacheRetentionDays = 14
 )
+
+// DeliveryModes are the valid values for delivery_mode; see docs/design.md.
+var DeliveryModes = []string{"cache", "stream", "original"}
 
 // Config is the persisted configuration in config.json. Module settings get
 // their own nested blocks here as the modules are built.
@@ -41,6 +50,30 @@ type Config struct {
 	// other non-public addresses. Off by default, so the proxy can't be used
 	// to reach the operator's internal network.
 	AllowPrivateDestinations bool `json:"allow_private_destinations"`
+
+	// DisableAuth turns off the subscribe token and URL signatures, for
+	// private-network-only setups. Named as a negative so that a missing field
+	// means auth stays on.
+	DisableAuth bool `json:"disable_auth"`
+	// AuthToken is the subscribe token; generated on first run.
+	AuthToken string `json:"auth_token"`
+	// URLSigningKey signs the feed and episode URLs Solstein writes out;
+	// generated on first run. Changing it invalidates every subscribed URL.
+	URLSigningKey string `json:"url_signing_key"`
+	// AllowedClientNetworks are the CIDRs allowed to use Solstein at all;
+	// empty allows any address. Checked in addition to the token.
+	AllowedClientNetworks []string `json:"allowed_client_networks"`
+	// TrustedProxies are the CIDRs of reverse proxies whose X-Forwarded-For
+	// is believed when working out the client address.
+	TrustedProxies []string `json:"trusted_proxies"`
+	// AllowedSourceHosts limits which hosts feeds can be subscribed from; a
+	// name also allows its subdomains. Empty allows any host.
+	AllowedSourceHosts []string `json:"allowed_source_hosts"`
+
+	// DeliveryMode is the default for feeds that don't set their own.
+	DeliveryMode        string `json:"delivery_mode"`
+	PollIntervalMinutes int    `json:"poll_interval_minutes"`
+	CacheRetentionDays  int    `json:"cache_retention_days"`
 }
 
 // Load reads config.json from configDir and fills in defaults for missing
@@ -93,6 +126,34 @@ func (cfg *Config) applyDefaults() {
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = defaultLogLevel
 	}
+	// Generated secrets are persisted by the first Save, so they survive
+	// restarts; a new signing key would break every subscribed URL.
+	if cfg.AuthToken == "" {
+		cfg.AuthToken = rand.Text()
+	}
+	if cfg.URLSigningKey == "" {
+		cfg.URLSigningKey = rand.Text() + rand.Text()
+	}
+	// Empty lists are written as [] rather than null, so config.json shows
+	// the setting exists.
+	if cfg.AllowedClientNetworks == nil {
+		cfg.AllowedClientNetworks = []string{}
+	}
+	if cfg.TrustedProxies == nil {
+		cfg.TrustedProxies = []string{}
+	}
+	if cfg.AllowedSourceHosts == nil {
+		cfg.AllowedSourceHosts = []string{}
+	}
+	if cfg.DeliveryMode == "" {
+		cfg.DeliveryMode = defaultDeliveryMode
+	}
+	if cfg.PollIntervalMinutes == 0 {
+		cfg.PollIntervalMinutes = defaultPollInterval
+	}
+	if cfg.CacheRetentionDays == 0 {
+		cfg.CacheRetentionDays = defaultCacheRetentionDays
+	}
 }
 
 // Validate normalises values and rejects ones Solstein can't run with. It runs
@@ -113,6 +174,46 @@ func (cfg *Config) Validate() error {
 		return err
 	}
 
+	if strings.TrimSpace(cfg.AuthToken) == "" || strings.TrimSpace(cfg.URLSigningKey) == "" {
+		return errors.New("auth token and URL signing key must not be empty")
+	}
+	if len(cfg.AuthToken) < 16 {
+		return errors.New("auth token must be at least 16 characters")
+	}
+	if strings.ContainsAny(cfg.AuthToken, "/?#%& ") {
+		return errors.New("auth token must not contain / ? # % & or spaces, since it is part of URLs")
+	}
+
+	if cfg.AllowedClientNetworks, err = normaliseNetworks(cfg.AllowedClientNetworks); err != nil {
+		return fmt.Errorf("allowed client networks: %w", err)
+	}
+	if cfg.TrustedProxies, err = normaliseNetworks(cfg.TrustedProxies); err != nil {
+		return fmt.Errorf("trusted proxies: %w", err)
+	}
+	hosts := make([]string, 0, len(cfg.AllowedSourceHosts))
+	for _, host := range cfg.AllowedSourceHosts {
+		host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), ".")
+		if host == "" {
+			continue
+		}
+		if strings.ContainsAny(host, "/:?# ") {
+			return fmt.Errorf("allowed source host %q must be a host name only", host)
+		}
+		hosts = append(hosts, host)
+	}
+	cfg.AllowedSourceHosts = hosts
+
+	cfg.DeliveryMode = strings.ToLower(strings.TrimSpace(cfg.DeliveryMode))
+	if !slices.Contains(DeliveryModes, cfg.DeliveryMode) {
+		return fmt.Errorf("delivery mode %q must be one of %s", cfg.DeliveryMode, strings.Join(DeliveryModes, ", "))
+	}
+	if cfg.PollIntervalMinutes < 1 {
+		return fmt.Errorf("poll interval must be at least 1 minute, got %d", cfg.PollIntervalMinutes)
+	}
+	if cfg.CacheRetentionDays < 1 {
+		return fmt.Errorf("cache retention must be at least 1 day, got %d", cfg.CacheRetentionDays)
+	}
+
 	cfg.ExternalURL = strings.TrimRight(strings.TrimSpace(cfg.ExternalURL), "/")
 	if cfg.ExternalURL != "" {
 		parsed, err := url.Parse(cfg.ExternalURL)
@@ -122,6 +223,28 @@ func (cfg *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// normaliseNetworks validates CIDRs, accepting bare IPs as single-address
+// networks, and returns them in canonical form.
+func normaliseNetworks(networks []string) ([]string, error) {
+	result := make([]string, 0, len(networks))
+	for _, network := range networks {
+		network = strings.TrimSpace(network)
+		if network == "" {
+			continue
+		}
+		if ip, err := netip.ParseAddr(network); err == nil {
+			result = append(result, netip.PrefixFrom(ip, ip.BitLen()).String())
+			continue
+		}
+		prefix, err := netip.ParsePrefix(network)
+		if err != nil {
+			return nil, fmt.Errorf("%q is not an IP address or CIDR", network)
+		}
+		result = append(result, prefix.Masked().String())
+	}
+	return result, nil
 }
 
 // Location returns the configured time zone, or time.Local when none is set.

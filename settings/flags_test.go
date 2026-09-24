@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -64,22 +65,22 @@ func TestResolvePersistsOverrides(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 
-	cfg, err := Load(configDir)
+	saved, err := Load(configDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Config{Port: 9000, LogLevel: "debug", ExternalURL: "http://solstein:8080"}
-	if cfg != want {
-		t.Errorf("config.json = %+v, want %+v (overrides saved, normalised, untouched fields kept)", cfg, want)
+	if saved.Port != 9000 || saved.LogLevel != "debug" || saved.ExternalURL != "http://solstein:8080" {
+		t.Errorf("config.json = %+v (want overrides saved, normalised, untouched fields kept)", saved)
 	}
 
-	// With the flag and env var gone, the saved values remain.
-	cfg, _, err = Resolve([]string{"-configdir", configDir}, envFrom(nil), io.Discard)
+	// With the flag and env var gone, the saved values remain, and so do the
+	// generated secrets.
+	cfg, _, err := Resolve([]string{"-configdir", configDir}, envFrom(nil), io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg != want {
-		t.Errorf("after removing overrides got %+v, want %+v", cfg, want)
+	if !reflect.DeepEqual(cfg, saved) {
+		t.Errorf("after removing overrides got %+v, want %+v", cfg, saved)
 	}
 }
 
@@ -160,6 +161,9 @@ func TestResolveErrors(t *testing.T) {
 		{name: "unknown flag", args: []string{"-nope"}, wantErr: "not defined"},
 		{name: "stray argument", args: []string{"serve"}, wantErr: "unexpected argument"},
 		{name: "bad bool env", env: map[string]string{"SOLSTEIN_ALLOW_PRIVATE_DESTINATIONS": "maybe"}, wantErr: "SOLSTEIN_ALLOW_PRIVATE_DESTINATIONS"},
+		{name: "bad poll interval", args: []string{"-pollinterval", "often"}, wantErr: "flag -pollinterval"},
+		{name: "bad network list", env: map[string]string{"SOLSTEIN_ALLOWED_CLIENT_NETWORKS": "10.0.0.0/8,lan"}, wantErr: "allowed client networks"},
+		{name: "bad delivery mode", args: []string{"-deliverymode", "fax"}, wantErr: "delivery mode"},
 	}
 
 	for _, c := range cases {
@@ -220,5 +224,26 @@ func TestResolveAllowPrivateDestinations(t *testing.T) {
 	}
 	if !cfg.AllowPrivateDestinations {
 		t.Error("bare -allowprivatedestinations not applied")
+	}
+}
+
+func TestResolveListsAndNumbers(t *testing.T) {
+	env := envFrom(map[string]string{
+		"SOLSTEIN_ALLOWED_CLIENT_NETWORKS": " 172.18.0.0/16 , 192.168.1.10,",
+		"SOLSTEIN_ALLOWED_SOURCE_HOSTS":    "feeds.acast.com",
+		"SOLSTEIN_POLL_INTERVAL":           "30",
+	})
+	cfg, _, err := Resolve([]string{"-configdir", t.TempDir(), "-trustedproxies", "10.0.0.1", "-deliverymode", "stream", "-disableauth"}, env, io.Discard)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !reflect.DeepEqual(cfg.AllowedClientNetworks, []string{"172.18.0.0/16", "192.168.1.10/32"}) {
+		t.Errorf("client networks = %v", cfg.AllowedClientNetworks)
+	}
+	if !reflect.DeepEqual(cfg.TrustedProxies, []string{"10.0.0.1/32"}) || !reflect.DeepEqual(cfg.AllowedSourceHosts, []string{"feeds.acast.com"}) {
+		t.Errorf("proxies = %v, hosts = %v", cfg.TrustedProxies, cfg.AllowedSourceHosts)
+	}
+	if cfg.PollIntervalMinutes != 30 || cfg.DeliveryMode != "stream" || !cfg.DisableAuth {
+		t.Errorf("cfg = %+v", cfg)
 	}
 }

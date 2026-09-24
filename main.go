@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"aunefyren/solstein/database"
+	"aunefyren/solstein/feeds"
 	"aunefyren/solstein/logger"
 	"aunefyren/solstein/outbound"
 	"aunefyren/solstein/server"
@@ -99,7 +100,21 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	srv := server.New(cfg, version)
+	feedService := feeds.New(store, exits, feeds.Options{
+		DefaultDeliveryMode: cfg.DeliveryMode,
+		AllowedSourceHosts:  cfg.AllowedSourceHosts,
+	})
+	if cfg.DisableAuth {
+		logger.Log.Warn("Auth is disabled: anyone who can reach Solstein can subscribe to feeds through it. Only use this on a private network.")
+	} else {
+		logger.Log.Info("Subscribe with <external URL>/api/rss/<auth_token>/<feed URL>; the token is auth_token in config.json.")
+	}
+
+	srv, err := server.New(server.Options{Config: cfg, Version: version, Feeds: feedService})
+	if err != nil {
+		logger.Log.Error("Failed to set up HTTP server. Error: " + err.Error())
+		return 1
+	}
 	logger.Log.Info("Starting HTTP server on " + srv.Addr + ".")
 	if err := server.Run(ctx, srv); err != nil {
 		logger.Log.Error("HTTP server stopped. Error: " + err.Error())

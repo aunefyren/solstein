@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -33,19 +34,50 @@ type setting struct {
 	apply   func(cfg *Config, value string) error
 }
 
+// boolSetting builds the apply function for a boolean setting.
+func boolSetting(target func(cfg *Config) *bool) func(cfg *Config, value string) error {
+	return func(cfg *Config, value string) error {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("not true or false: %q", value)
+		}
+		*target(cfg) = parsed
+		return nil
+	}
+}
+
+// intSetting builds the apply function for a whole-number setting.
+func intSetting(target func(cfg *Config) *int) func(cfg *Config, value string) error {
+	return func(cfg *Config, value string) error {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("not a number: %q", value)
+		}
+		*target(cfg) = parsed
+		return nil
+	}
+}
+
+// listSetting builds the apply function for a comma-separated list setting.
+func listSetting(target func(cfg *Config) *[]string) func(cfg *Config, value string) error {
+	return func(cfg *Config, value string) error {
+		list := []string{}
+		for _, part := range strings.Split(value, ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				list = append(list, part)
+			}
+		}
+		*target(cfg) = list
+		return nil
+	}
+}
+
 var settings = []setting{
 	{
 		flag:  "port",
 		env:   "SOLSTEIN_PORT",
 		usage: "Port Solstein listens on.",
-		apply: func(cfg *Config, value string) error {
-			port, err := strconv.Atoi(value)
-			if err != nil {
-				return fmt.Errorf("not a number: %q", value)
-			}
-			cfg.Port = port
-			return nil
-		},
+		apply: intSetting(func(cfg *Config) *int { return &cfg.Port }),
 	},
 	{
 		flag:  "externalurl",
@@ -70,14 +102,62 @@ var settings = []setting{
 		env:     "SOLSTEIN_ALLOW_PRIVATE_DESTINATIONS",
 		usage:   "Allow fetching feeds and episodes from private and loopback addresses.",
 		boolean: true,
+		apply:   boolSetting(func(cfg *Config) *bool { return &cfg.AllowPrivateDestinations }),
+	},
+	{
+		flag:    "disableauth",
+		env:     "SOLSTEIN_DISABLE_AUTH",
+		usage:   "Turn off the subscribe token and URL signatures. Only for private networks.",
+		boolean: true,
+		apply:   boolSetting(func(cfg *Config) *bool { return &cfg.DisableAuth }),
+	},
+	{
+		flag:  "authtoken",
+		env:   "SOLSTEIN_AUTH_TOKEN",
+		usage: "Subscribe token; generated on first run if not set.",
 		apply: func(cfg *Config, value string) error {
-			allow, err := strconv.ParseBool(value)
-			if err != nil {
-				return fmt.Errorf("not true or false: %q", value)
-			}
-			cfg.AllowPrivateDestinations = allow
+			cfg.AuthToken = value
 			return nil
 		},
+	},
+	{
+		flag:  "allowedclientnetworks",
+		env:   "SOLSTEIN_ALLOWED_CLIENT_NETWORKS",
+		usage: "Comma-separated IPs/CIDRs allowed to use Solstein; empty allows any.",
+		apply: listSetting(func(cfg *Config) *[]string { return &cfg.AllowedClientNetworks }),
+	},
+	{
+		flag:  "trustedproxies",
+		env:   "SOLSTEIN_TRUSTED_PROXIES",
+		usage: "Comma-separated IPs/CIDRs of reverse proxies whose X-Forwarded-For is trusted.",
+		apply: listSetting(func(cfg *Config) *[]string { return &cfg.TrustedProxies }),
+	},
+	{
+		flag:  "allowedsourcehosts",
+		env:   "SOLSTEIN_ALLOWED_SOURCE_HOSTS",
+		usage: "Comma-separated hosts feeds may be subscribed from (subdomains included); empty allows any.",
+		apply: listSetting(func(cfg *Config) *[]string { return &cfg.AllowedSourceHosts }),
+	},
+	{
+		flag:  "deliverymode",
+		env:   "SOLSTEIN_DELIVERY_MODE",
+		usage: "Default episode delivery: cache, stream or original.",
+		apply: func(cfg *Config, value string) error {
+			cfg.DeliveryMode = value
+			return nil
+		},
+	},
+	{
+		flag:  "pollinterval",
+		env:   "SOLSTEIN_POLL_INTERVAL",
+		usage: "Minutes between feed polls.",
+		apply: intSetting(func(cfg *Config) *int { return &cfg.PollIntervalMinutes }),
+	},
+	{
+		flag:  "cacheretention",
+		env:   "SOLSTEIN_CACHE_RETENTION",
+		usage: "Days cached episodes are kept.",
+		apply: intSetting(func(cfg *Config) *int { return &cfg.CacheRetentionDays }),
 	},
 	{
 		flag:  "timezone",

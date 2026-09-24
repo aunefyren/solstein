@@ -64,7 +64,7 @@ func Open(configDir string) (*Store, error) {
 }
 
 func (store *Store) migrate() error {
-	if err := store.db.AutoMigrate(&models.Feed{}, &models.Episode{}); err != nil {
+	if err := store.db.AutoMigrate(&models.Feed{}, &models.Episode{}, &models.FeedDocument{}); err != nil {
 		return fmt.Errorf("migrate database: %w", err)
 	}
 	return nil

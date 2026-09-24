@@ -16,12 +16,14 @@ Anything marked **(proposed)** has not been agreed yet. Confirm it, or move it t
 main.go            wiring only: resolve config, init logger, build core, register enabled modules, run server
 settings/          Config struct, config.json load/save, flag + env overrides      (exists)
 logger/            logrus wrapper, logger.Log                                      (exists)
-server/            Gin router, middleware, HTTP handlers for feeds and audio       (exists)
+server/            Gin router, access checks, feed routes, feed API               (exists)
 models/            persisted records (Base with UUID ID, Feed, Episode) and their GORM mapping (exists)
 feeds/             core: polling, parsing, rewriting feeds
-episodes/          core: episode records, processing pipeline, cache, serving
+episodes/          core: episode pipeline, cache, serving audio                    (planned)
 database/          SQLite via GORM: Store with named query functions, one file per model   (exists)
 rss/               feed parsing and byte-preserving rewriting; no Solstein dependencies   (exists)
+feeds/             core: source URLs, subscribe, refresh, render (publish rules, signed URLs)   (exists)
+signing/           HMAC signatures for feed and episode URLs                               (exists)
 outbound/          core: exit Manager, direct exit, guarded dialling (private-address block) (exists)
 modules/exits/     module: exit manager, WireGuard/netstack tunnels, location matching, health
 modules/exits/wireguard/  generic provider: servers from wg-quick .conf files
@@ -87,6 +89,14 @@ Notes:
 - **Secrets:** WireGuard private keys and similar never appear in logs, errors or API responses. Redact them in any config dump.
 - **Comments explain *why*, not *what*.** Use them for non-obvious constraints (why the diff runs on frames, why a header is stripped), not to restate code.
 - **gofmt is enforced.** Run `gofmt -w .` before handing work over.
+
+## Access control
+
+- Three checks, in `server/access.go`: the **client network** check (every route but `/api/health`), the **subscribe token** (the `/api/rss/{token}/…` prefix route and the `/api/v1` feed API), and **URL signatures** (the feed and episode URLs Solstein writes out).
+- Tokens are compared with `subtle.ConstantTimeCompare`. Signatures are HMAC-SHA256 over the canonical path (`signing` package), URL-safe base64 in the `sig` query parameter; the handler checks the request path equals the canonical path, so a differently spelled path can't reuse a signature.
+- `disable_auth` turns off token and signature checks (the client network check stays). With it on, the token segment of the prefix route is optional.
+- `X-Forwarded-For` is only believed from `trusted_proxies` (via Gin's `SetTrustedProxies`), and `X-Forwarded-Proto`/`-Host` only from them too (for building links when `external_url` is unset).
+- **Never log secrets.** The request logger logs the path only (never the query string, which carries signatures and API tokens) and redacts the prefix route's token segment. Source URLs are logged without their query string, since private feeds often carry an access token there.
 
 ## Outbound requests
 

@@ -1,0 +1,328 @@
+// Package feeds is the core of the proxy: subscribing to source feeds,
+// refreshing them, and rendering the feed Solstein serves to clients.
+package feeds
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"slices"
+	"time"
+
+	"aunefyren/solstein/database"
+	"aunefyren/solstein/models"
+	"aunefyren/solstein/outbound"
+	"aunefyren/solstein/rss"
+	"aunefyren/solstein/settings"
+
+	"github.com/google/uuid"
+)
+
+// maxFeedBytes caps a source feed. Long-running shows can have feeds of
+// several megabytes; anything far beyond that is not a podcast feed.
+const maxFeedBytes = 50 << 20
+
+var (
+	ErrInvalidSettings = errors.New("invalid feed settings")
+	ErrFetchFailed     = errors.New("fetching the source feed failed")
+)
+
+// Settings are the per-feed overrides. Zero values mean "use the global
+// setting".
+type Settings struct {
+	Exit                string `json:"exit"`
+	DeliveryMode        string `json:"delivery_mode"`
+	PollIntervalMinutes int    `json:"poll_interval_minutes"`
+}
+
+// Options configures a Service.
+type Options struct {
+	DefaultDeliveryMode string
+	AllowedSourceHosts  []string
+	// Now is the clock; nil means time.Now.
+	Now func() time.Time
+}
+
+// Service subscribes to, refreshes and renders feeds.
+type Service struct {
+	store   *database.Store
+	exits   *outbound.Manager
+	options Options
+}
+
+// New builds a Service.
+func New(store *database.Store, exits *outbound.Manager, options Options) *Service {
+	if options.Now == nil {
+		options.Now = time.Now
+	}
+	return &Service{store: store, exits: exits, options: options}
+}
+
+// ValidateSettings checks per-feed settings: a known exit and delivery mode,
+// and a non-negative poll interval.
+func (service *Service) ValidateSettings(feedSettings Settings) error {
+	if feedSettings.Exit != "" {
+		if _, err := service.exits.Client(feedSettings.Exit); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidSettings, err)
+		}
+	}
+	if feedSettings.DeliveryMode != "" && !slices.Contains(settings.DeliveryModes, feedSettings.DeliveryMode) {
+		return fmt.Errorf("%w: delivery mode %q is not one of %v", ErrInvalidSettings, feedSettings.DeliveryMode, settings.DeliveryModes)
+	}
+	if feedSettings.PollIntervalMinutes < 0 {
+		return fmt.Errorf("%w: poll interval must not be negative", ErrInvalidSettings)
+	}
+	return nil
+}
+
+// DeliveryMode is the mode a feed actually uses.
+func (service *Service) DeliveryMode(feed models.Feed) string {
+	if feed.DeliveryMode != "" {
+		return feed.DeliveryMode
+	}
+	return service.options.DefaultDeliveryMode
+}
+
+// Subscribe returns the feed for a source URL, subscribing to it first if
+// needed. A new subscription fetches the source right away and is only
+// stored if it is a valid RSS feed, so a mistyped URL leaves nothing behind.
+// Every episode already in the feed is stored as backlog: published at once
+// and fetched on demand, since clients don't auto-download old episodes.
+// created reports whether the feed is new.
+func (service *Service) Subscribe(ctx context.Context, rawSourceURL string, feedSettings Settings) (feed models.Feed, created bool, err error) {
+	sourceURL, err := NormaliseSourceURL(rawSourceURL)
+	if err != nil {
+		return models.Feed{}, false, err
+	}
+	if !hostAllowed(sourceURL, service.options.AllowedSourceHosts) {
+		return models.Feed{}, false, ErrSourceNotAllowed
+	}
+
+	feed, err = service.store.GetFeedBySourceURL(ctx, sourceURL)
+	if err == nil {
+		return feed, false, nil
+	}
+	if !errors.Is(err, database.ErrFeedNotFound) {
+		return models.Feed{}, false, err
+	}
+
+	if err := service.ValidateSettings(feedSettings); err != nil {
+		return models.Feed{}, false, err
+	}
+	feed = models.Feed{
+		SourceURL:           sourceURL,
+		Exit:                feedSettings.Exit,
+		DeliveryMode:        feedSettings.DeliveryMode,
+		PollIntervalMinutes: feedSettings.PollIntervalMinutes,
+	}
+
+	result, err := service.fetch(ctx, feed)
+	if err != nil {
+		return models.Feed{}, false, err
+	}
+	parsed, err := rss.Parse(result.data)
+	if err != nil {
+		return models.Feed{}, false, fmt.Errorf("%w: %w", ErrFetchFailed, err)
+	}
+
+	now := service.options.Now().UTC()
+	feed.Title = parsed.Title
+	feed.ETag, feed.LastModified = result.etag, result.lastModified
+	feed.LastPolledAt, feed.LastSuccessAt = &now, &now
+
+	episodes := episodesFromItems(parsed.Items, models.EpisodeReady, true)
+	err = service.store.CreateSubscription(ctx, &feed, result.data, now, episodes)
+	if errors.Is(err, database.ErrFeedExists) {
+		// Another request subscribed to the same feed meanwhile.
+		feed, err = service.store.GetFeedBySourceURL(ctx, sourceURL)
+		return feed, false, err
+	}
+	if err != nil {
+		return models.Feed{}, false, err
+	}
+	return feed, true, nil
+}
+
+// Refresh polls a feed's source. New episodes are stored for the episode
+// pipeline (in cache mode) or as ready (in stream and original mode, which
+// need no preparation). A failed poll keeps the last good document, so
+// clients keep being served, and is recorded on the feed.
+func (service *Service) Refresh(ctx context.Context, feed *models.Feed) (added []models.Episode, err error) {
+	now := service.options.Now().UTC()
+	feed.LastPolledAt = &now
+	defer func() {
+		if err != nil {
+			feed.LastError = err.Error()
+		} else {
+			feed.LastError = ""
+			feed.LastSuccessAt = &now
+		}
+		if updateErr := service.store.UpdateFeed(ctx, feed); updateErr != nil && err == nil {
+			err = updateErr
+		}
+	}()
+
+	result, err := service.fetch(ctx, *feed)
+	if err != nil {
+		return nil, err
+	}
+	if result.notModified {
+		return nil, nil
+	}
+	parsed, err := rss.Parse(result.data)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrFetchFailed, err)
+	}
+	if err := service.store.SaveFeedDocument(ctx, feed.ID, result.data, now); err != nil {
+		return nil, err
+	}
+	feed.Title = parsed.Title
+	feed.ETag, feed.LastModified = result.etag, result.lastModified
+
+	state := models.EpisodeReady
+	if service.DeliveryMode(*feed) == "cache" {
+		state = models.EpisodeDiscovered
+	}
+	return service.store.AddNewEpisodes(ctx, feed.ID, episodesFromItems(parsed.Items, state, false))
+}
+
+// Render builds the feed served to clients from the stored source document
+// and the episodes' state.
+func (service *Service) Render(ctx context.Context, feed models.Feed, urls URLs) ([]byte, error) {
+	document, err := service.store.GetFeedDocument(ctx, feed.ID)
+	if err != nil {
+		return nil, err
+	}
+	episodes, err := service.store.ListEpisodes(ctx, feed.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	mode := service.DeliveryMode(feed)
+	published := publishedEpisodes(episodes, mode)
+	byGUID := make(map[string]models.Episode, len(episodes))
+	for _, episode := range episodes {
+		byGUID[episode.GUID] = episode
+	}
+
+	rewrite := rss.Rewrite{
+		FeedURL: urls.Feed(feed.ID),
+		Item: func(item rss.Item) rss.ItemChange {
+			if item.Enclosure == nil {
+				return rss.ItemChange{} // no audio: nothing to proxy
+			}
+			episode, ok := byGUID[item.Key]
+			if !ok || !published[episode.ID] {
+				return rss.ItemChange{Omit: true}
+			}
+			if mode == "original" {
+				return rss.ItemChange{}
+			}
+			change := rss.ItemChange{
+				EnclosureURL: urls.Episode(feed.ID, episode.ID, AudioExtension(item.Enclosure.URL, item.Enclosure.Type)),
+			}
+			if episode.CacheSize > 0 {
+				change.Length = episode.CacheSize
+			}
+			return change
+		},
+	}
+	return rewrite.Apply(document.Data)
+}
+
+// Feed returns a feed by ID.
+func (service *Service) Feed(ctx context.Context, feedID uuid.UUID) (models.Feed, error) {
+	return service.store.GetFeed(ctx, feedID)
+}
+
+// List returns every feed.
+func (service *Service) List(ctx context.Context) ([]models.Feed, error) {
+	return service.store.ListFeeds(ctx)
+}
+
+// Update saves a feed's settings after validating them.
+func (service *Service) Update(ctx context.Context, feed *models.Feed) error {
+	err := service.ValidateSettings(Settings{Exit: feed.Exit, DeliveryMode: feed.DeliveryMode, PollIntervalMinutes: feed.PollIntervalMinutes})
+	if err != nil {
+		return err
+	}
+	return service.store.UpdateFeed(ctx, feed)
+}
+
+// Delete removes a feed and everything stored for it.
+func (service *Service) Delete(ctx context.Context, feedID uuid.UUID) error {
+	return service.store.DeleteFeed(ctx, feedID)
+}
+
+func episodesFromItems(items []rss.Item, state models.EpisodeState, backlog bool) []models.Episode {
+	var episodes []models.Episode
+	for _, item := range items {
+		if item.Enclosure == nil || item.Key == "" {
+			continue
+		}
+		episodes = append(episodes, models.Episode{
+			GUID:        item.Key,
+			SourceURL:   item.Enclosure.URL,
+			Title:       item.Title,
+			PublishedAt: item.PublishedAt,
+			Backlog:     backlog,
+			State:       state,
+		})
+	}
+	return episodes
+}
+
+type fetchResult struct {
+	data         []byte
+	notModified  bool
+	etag         string
+	lastModified string
+}
+
+// fetch downloads a feed's source through its exit, conditionally when the
+// feed has an ETag or Last-Modified from an earlier poll.
+func (service *Service) fetch(ctx context.Context, feed models.Feed) (fetchResult, error) {
+	client, err := service.exits.Client(feed.Exit)
+	if err != nil {
+		return fetchResult{}, fmt.Errorf("%w: %w", ErrFetchFailed, err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, feed.SourceURL, nil)
+	if err != nil {
+		return fetchResult{}, fmt.Errorf("%w: %w", ErrFetchFailed, err)
+	}
+	request.Header.Set("Accept", "application/rss+xml, application/xml;q=0.9, text/xml;q=0.9, */*;q=0.8")
+	if feed.ETag != "" {
+		request.Header.Set("If-None-Match", feed.ETag)
+	}
+	if feed.LastModified != "" {
+		request.Header.Set("If-Modified-Since", feed.LastModified)
+	}
+
+	response, err := client.Do(request)
+	if err != nil {
+		return fetchResult{}, fmt.Errorf("%w: %w", ErrFetchFailed, err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode == http.StatusNotModified {
+		return fetchResult{notModified: true, etag: feed.ETag, lastModified: feed.LastModified}, nil
+	}
+	if response.StatusCode < 200 || response.StatusCode > 299 {
+		return fetchResult{}, fmt.Errorf("%w: source answered %s", ErrFetchFailed, response.Status)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxFeedBytes+1))
+	if err != nil {
+		return fetchResult{}, fmt.Errorf("%w: reading response: %w", ErrFetchFailed, err)
+	}
+	if len(data) > maxFeedBytes {
+		return fetchResult{}, fmt.Errorf("%w: feed is larger than %d MB", ErrFetchFailed, maxFeedBytes>>20)
+	}
+	return fetchResult{
+		data:         data,
+		etag:         response.Header.Get("ETag"),
+		lastModified: response.Header.Get("Last-Modified"),
+	}, nil
+}

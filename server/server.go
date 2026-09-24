@@ -10,48 +10,100 @@ import (
 	"strconv"
 	"time"
 
+	"aunefyren/solstein/feeds"
 	"aunefyren/solstein/logger"
 	"aunefyren/solstein/settings"
+	"aunefyren/solstein/signing"
 
 	"github.com/gin-gonic/gin"
 )
 
-const shutdownTimeout = 30 * time.Second
+const (
+	shutdownTimeout = 30 * time.Second
+	healthPath      = "/api/health"
+)
 
-// New builds the HTTP server for cfg. version is reported by /api/health.
-func New(cfg settings.Config, version string) *http.Server {
+// Options are the server's dependencies.
+type Options struct {
+	Config  settings.Config
+	Version string
+	Feeds   *feeds.Service
+}
+
+// handlers carries what the route handlers need.
+type handlers struct {
+	feeds       *feeds.Service
+	access      access
+	signer      signing.Signer
+	externalURL string
+}
+
+// New builds the HTTP server.
+func New(options Options) (*http.Server, error) {
+	router, err := newRouter(options)
+	if err != nil {
+		return nil, err
+	}
 	return &http.Server{
-		Addr:    ":" + strconv.Itoa(cfg.Port),
-		Handler: newRouter(version),
+		Addr:    ":" + strconv.Itoa(options.Config.Port),
+		Handler: router,
 		// Guards against clients that open a connection and never finish the
 		// headers. There is deliberately no WriteTimeout: episode downloads are
 		// large and Audiobookshelf may read them slowly.
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
-	}
+	}, nil
 }
 
-func newRouter(version string) *gin.Engine {
+func newRouter(options Options) (*gin.Engine, error) {
 	gin.SetMode(gin.ReleaseMode)
+	cfg := options.Config
+
+	clientNetworks, err := parsePrefixes(cfg.AllowedClientNetworks)
+	if err != nil {
+		return nil, fmt.Errorf("allowed client networks: %w", err)
+	}
+	trustedProxies, err := parsePrefixes(cfg.TrustedProxies)
+	if err != nil {
+		return nil, fmt.Errorf("trusted proxies: %w", err)
+	}
+	handlers := &handlers{
+		feeds: options.Feeds,
+		access: access{
+			disableAuth:    cfg.DisableAuth,
+			token:          cfg.AuthToken,
+			clientNetworks: clientNetworks,
+			trustedProxies: trustedProxies,
+		},
+		signer:      signing.New(cfg.URLSigningKey),
+		externalURL: cfg.ExternalURL,
+	}
 
 	// gin.New rather than gin.Default: Default's request logger writes to
 	// stdout in its own format, bypassing logrus and the log file.
 	router := gin.New()
-	router.Use(requestLogger(), gin.Recovery())
+	router.Use(requestLogger(), gin.Recovery(), handlers.access.clientNetworkCheck())
 
-	// Solstein is reached directly or through a reverse proxy the operator
-	// controls; trusting every proxy by default would let any client spoof
-	// its IP with X-Forwarded-For.
-	if err := router.SetTrustedProxies(nil); err != nil {
-		logger.Log.Warn("Failed to reset trusted proxies. Error: " + err.Error())
+	// Only the configured proxies' X-Forwarded-For is believed; with none,
+	// the client address is the connection's, so it can't be spoofed.
+	if err := router.SetTrustedProxies(cfg.TrustedProxies); err != nil {
+		return nil, fmt.Errorf("trusted proxies: %w", err)
 	}
 
-	api := router.Group("/api")
+	router.GET(healthPath, healthHandler(options.Version))
+	router.GET(rssPrefix+":token/*source", handlers.subscribeByPrefix)
+	router.GET("/api/feeds/:file", handlers.feedByID)
+
+	api := router.Group("/api/v1", handlers.access.requireToken())
 	{
-		api.GET("/health", healthHandler(version))
+		api.GET("/feeds", handlers.apiListFeeds)
+		api.POST("/feeds", handlers.apiCreateFeed)
+		api.GET("/feeds/:feedID", handlers.apiGetFeed)
+		api.PATCH("/feeds/:feedID", handlers.apiUpdateFeed)
+		api.DELETE("/feeds/:feedID", handlers.apiDeleteFeed)
 	}
 
-	return router
+	return router, nil
 }
 
 // Run serves until ctx is cancelled, then shuts down gracefully so in-flight

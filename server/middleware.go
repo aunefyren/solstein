@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"aunefyren/solstein/logger"
@@ -19,8 +20,10 @@ func requestLogger() gin.HandlerFunc {
 		context.Next()
 
 		status := context.Writer.Status()
+		// Only the path is logged, never the query string, which carries
+		// signatures and API tokens.
 		message := fmt.Sprintf("%d %s %s from %s in %s",
-			status, context.Request.Method, context.Request.URL.Path, context.ClientIP(), time.Since(start).Round(time.Microsecond))
+			status, context.Request.Method, redactPath(context.Request.URL.Path), context.ClientIP(), time.Since(start).Round(time.Microsecond))
 
 		switch {
 		case status >= http.StatusInternalServerError:
@@ -31,4 +34,16 @@ func requestLogger() gin.HandlerFunc {
 			logger.Log.Debug(message)
 		}
 	}
+}
+
+// redactPath hides the subscribe token in /api/rss/{token}/... paths.
+func redactPath(path string) string {
+	rest, ok := strings.CutPrefix(path, rssPrefix)
+	if !ok {
+		return path
+	}
+	if _, source, found := strings.Cut(rest, "/"); found {
+		return rssPrefix + "***/" + source
+	}
+	return rssPrefix + "***"
 }
