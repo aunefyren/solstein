@@ -74,6 +74,9 @@ type Config struct {
 	DeliveryMode        string `json:"delivery_mode"`
 	PollIntervalMinutes int    `json:"poll_interval_minutes"`
 	CacheRetentionDays  int    `json:"cache_retention_days"`
+
+	// VPN configures the exits module; validated by the module itself.
+	VPN VPN `json:"vpn"`
 }
 
 // Load reads config.json from configDir and fills in defaults for missing
@@ -153,6 +156,13 @@ func (cfg *Config) applyDefaults() {
 	}
 	if cfg.CacheRetentionDays == 0 {
 		cfg.CacheRetentionDays = defaultCacheRetentionDays
+	}
+	// Written as {} so config.json shows where VPN settings go.
+	if cfg.VPN.Providers == nil {
+		cfg.VPN.Providers = map[string]VPNProvider{}
+	}
+	if cfg.VPN.Exits == nil {
+		cfg.VPN.Exits = map[string]VPNExit{}
 	}
 }
 

@@ -186,7 +186,7 @@ How modules slot into the core without the core knowing about them (proposed; Go
   // differs from the source.
   ```
 - **Registration.** `main.go` builds the enabled modules from config and passes them to the core. v1 allows at most one processor per feed; the interface leaves room for chaining later.
-- **Dependencies.** A module that can't run (region diff with fewer than two usable exits) logs a warning and stays off; it doesn't stop start-up (proposed).
+- **Dependencies.** A module that can't run (region diff with fewer than two usable exits) logs a warning and stays off; it doesn't stop start-up (decided).
 
 ## Access and network security
 
@@ -244,7 +244,7 @@ Secrets Solstein generates itself (the subscribe token, the URL signing key) sta
 - Embedded userspace WireGuard: `golang.zx2c4.com/wireguard` with `tun/netstack`. No gluetun, no `NET_ADMIN`, no `network_mode` coupling.
 - Each tunnel gets its own `http.Transport` built on the netstack `DialContext`; tunnels run concurrently.
 - **DNS goes through the tunnel**, using the config's `DNS` server. Otherwise lookups leak to the host's resolver, and a CDN that picks its edge by resolver location could serve the wrong region.
-- Tunnels open on demand and close after an idle period (proposed), so an exit that is configured but unused costs nothing. `max_tunnels` per provider caps concurrent tunnels, to respect plan limits on simultaneous connections.
+- Tunnels open on demand and close after 5 minutes idle (decided), so an exit that is configured but unused costs nothing. `max_tunnels` per provider caps concurrent tunnels, to respect plan limits on simultaneous connections.
 - `direct` is always available as an exit, whether or not this module is on. It is provided by the core.
 
 ### Providers: what Solstein may use
@@ -301,49 +301,52 @@ Narrowing a provider — from "everything" to "one server":
 
 ### Exits: how Solstein uses providers
 
-An exit is a named route that feeds and region diff refer to. It picks servers from one provider by location:
+An exit is a named route that feeds and region diff refer to. It picks servers from one provider by location. Exits live in the same `vpn` block as the providers (decided when building step 1, so each module's settings sit together):
 
 ```jsonc
-"exits": {
-  "sweden":  { "provider": "proton", "locations": ["SE"], "strict": true },
-  "nordic":  { "provider": "proton", "locations": ["SE", "DK", "area:northern-europe"], "exclude": ["NO"] },
-  "germany": { "provider": "mullvad", "locations": ["DE", "AT", "CH"], "selection": "sticky" },
-  "europe":  { "provider": "proton", "locations": ["continent:europe"], "exclude": ["NO"] },
-  "vps":     { "provider": "vps" }
+"vpn": {
+  "providers": { … },
+  "exits": {
+    "sweden":  { "provider": "proton", "locations": ["SE"], "strict": true },
+    "nordic":  { "provider": "proton", "locations": ["SE", "DK", "area:northern-europe"], "exclude": ["NO"] },
+    "germany": { "provider": "mullvad", "locations": ["DE", "AT", "CH"], "selection": "sticky" },
+    "europe":  { "provider": "proton", "locations": ["continent:europe"], "exclude": ["NO"] },
+    "vps":     { "provider": "vps" }
+  }
 }
 ```
 
 - **`locations`** is an ordered preference list. Entries: country (`SE`), city (`SE/Stockholm`), server (`server:SE#12`), area (`area:northern-europe`, UN M49 sub-regions) or continent (`continent:europe`). Solstein uses the first entry with a healthy server. Omitted means anywhere the provider allows. Country codes are ISO 3166-1 alpha-2; Solstein maps them to the server list's country names and to areas with built-in tables.
 - **Strict vs loose.** `strict: true` uses only the first entry: if nothing there is healthy, the exit is unavailable and the feed's failure policy applies — right when the location is the point, as for region diff. Loose (default) works down the list and degrades gracefully.
 - **`exclude`** always wins (typically the home country, whose ads you already get via `direct`).
-- **`selection`** within the matching pool: `sticky` (proposed default: keep one server until it fails, optionally rotating on a schedule — keeps the ad market stable and avoids reconnecting), `random`, or `least-failed`.
+- **`selection`** within the matching pool: `sticky` (decided default: keep one server until it fails, optionally rotating on a schedule — keeps the ad market stable and avoids reconnecting), `random`, or `least-failed`.
 - **Health:** a tunnel is healthy while its WireGuard handshake is recent and a test request succeeds. A failing server is benched for a while and the next candidate tried.
 
 Where exits are used:
 - **Plain proxy:** every feed has an `exit` (default `direct`) for its polls and downloads. That gets another region's ads, or reaches geo-blocked feeds, without the diff module.
 - **Region diff:** a pair of exits, e.g. `["direct", "sweden"]`, as global default with per-feed override. From Norway, `direct` plus one VPN exit is a valid pair that needs only a single tunnel. Start-up warns if the two sides can resolve to the same country (e.g. `direct` plus a loose exit that can fall back to `NO`), since that diff would find nothing.
 
-### Exits build order (proposed)
+### Exits build order (decided)
 
 Each step testable on its own; the core already routes every request through `outbound.Manager`, and feeds already have an `exit` setting, so exits become usable as soon as step 4 lands.
 
-1. **Config and secrets:** the `vpn.providers` / `exits` blocks in `config.json`, validation, and `env:` / `file:` secret references.
+1. ✅ **Config and secrets:** the `vpn.providers` / `vpn.exits` blocks in `config.json`, validation, and `env:` / `file:` secret references. Plain data types live in `settings` (`settings.VPN`), validation in `modules/exits` (`exits.Load`), so the core doesn't depend on the module. A provider or exit with a problem is disabled on its own and reported; the rest keeps working. Keys are held in a type that prints as `[redacted]` in any format or JSON. `UK` is accepted for `GB`.
 2. **Generic WireGuard:** parse wg-quick `.conf` files; one netstack tunnel per server implementing `outbound.Dialer` (DNS through the tunnel); open on demand, close when idle, `max_tunnels`.
 3. **Exit resolution:** location matching (country, city, server, area, continent) with built-in ISO 3166 and UN M49 tables; strict/loose, `exclude`, `selection`; health and benching of failing servers.
 4. **Wiring:** providers registered with `outbound.Manager`; exits selectable per feed and through the feed API; a module that can't run logs a warning and stays off.
 5. **Proton provider:** gluetun-servers data (embedded snapshot, periodic refresh, last good copy in the config directory), `tier` and `filter`.
 6. **Live checks with a real key:** whether one Proton key holds two tunnels at once, and what country an exit IP geolocates to.
 
-### Exits decisions to confirm
+### Exits decisions (decided 2026-09-24)
 
-- **Tunnel lifecycle:** open on first use, close after 5 minutes idle (proposed).
-- **Server selection default:** `sticky` (proposed).
-- **Health checking:** a recent WireGuard handshake plus failures seen on real requests, with no extra test requests to a third-party site (proposed; avoids an external dependency and extra traffic).
-- **Unusable module:** log a warning and stay off rather than refuse to start (proposed).
-- **Server list source and refresh:** the gluetun-servers repository's `pkg/servers/protonvpn.json` on its default branch, fetched daily, falling back to the embedded snapshot (proposed).
+- **Tunnel lifecycle:** open on first use, close after 5 minutes idle.
+- **Server selection default:** `sticky`.
+- **Health checking:** a recent WireGuard handshake plus failures seen on real requests; no extra test requests to a third-party site (no external dependency, no extra traffic).
+- **Unusable module:** log a warning and stay off rather than refuse to start.
+- **Server list source and refresh:** the gluetun-servers repository's `pkg/servers/protonvpn.json` on its default branch, fetched daily, falling back to the embedded snapshot.
 - **Deferred to after v1:** file-name location inference for `.conf` files, the optional geolocation check, providers beyond Proton.
 
-For the live checks the maintainer supplies Proton WireGuard key(s), passed as `env:` references so they never enter the repository.
+**Keys for live testing:** the maintainer keeps Proton WireGuard keys in `.env` at the repository root (`PROTON_KEY_1=` / `PROTON_KEY_2=`), generated for Solstein with NetShield off. It is ignored by git (`.gitignore`) and excluded from the Docker build context (`.dockerignore`). Tests reference it only by path (`docker --env-file`) and `env:` references in `config.json`; the file is never opened or printed. `.env` files are excluded from git and from the Docker build context.
 
 ## Module: Region diff
 

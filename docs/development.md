@@ -25,7 +25,7 @@ rss/               feed parsing and byte-preserving rewriting; no Solstein depen
 feeds/             core: source URLs, subscribe, refresh, render (publish rules, signed URLs)   (exists)
 signing/           HMAC signatures for feed and episode URLs                               (exists)
 outbound/          core: exit Manager, direct exit, guarded dialling (private-address block) (exists)
-modules/exits/     module: exit manager, WireGuard/netstack tunnels, location matching, health
+modules/exits/     module: config validation (exists); tunnels, location matching, health (next)
 modules/exits/wireguard/  generic provider: servers from wg-quick .conf files
 modules/exits/proton/     server-list provider for Proton VPN (gluetun-servers data)
 modules/regiondiff/     module: dual download, diff engine, cutting
@@ -97,6 +97,12 @@ Notes:
 - `disable_auth` turns off token and signature checks (the client network check stays). With it on, the token segment of the prefix route is optional.
 - `X-Forwarded-For` is only believed from `trusted_proxies` (via Gin's `SetTrustedProxies`), and `X-Forwarded-Proto`/`-Host` only from them too (for building links when `external_url` is unset).
 - **Never log secrets.** The request logger logs the path only (never the query string, which carries signatures and API tokens) and redacts the prefix route's token segment. Source URLs are logged without their query string, since private feeds often carry an access token there.
+
+## Secrets
+
+- Any secret field in `config.json` may be a literal, `env:NAME` or `file:PATH`; `settings.ResolveSecret` turns it into the value. `config.json` keeps the reference.
+- Errors about secrets name the variable or file, never the value. A resolved key is held in a type that prints as `[redacted]` (`exits.Key`); tests assert keys never appear in `%v`, `%+v`, `%#v` or JSON output.
+- Never read, print or copy the maintainer's secret files (`.env`) while working; refer to them by path or reference only.
 
 ## Outbound requests
 

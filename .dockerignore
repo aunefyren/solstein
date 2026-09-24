@@ -5,3 +5,5 @@ config
 solstein
 solstein.exe
 *.out
+.env
+*.env
