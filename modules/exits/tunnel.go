@@ -190,6 +190,13 @@ func (tunnel *tunnel) idleFor() time.Duration {
 	return tunnel.now().Sub(tunnel.lastUsed)
 }
 
+// handshakeFresh reports whether the tunnel handshook recently enough to be
+// working: WireGuard re-handshakes every two minutes while traffic flows.
+func (tunnel *tunnel) handshakeFresh() bool {
+	handshake := tunnel.lastHandshake()
+	return !handshake.IsZero() && time.Since(handshake) < staleHandshake
+}
+
 // lastHandshake is when the peer last completed a handshake, zero if never.
 func (tunnel *tunnel) lastHandshake() time.Time {
 	if tunnel.device == nil {
@@ -213,6 +220,52 @@ func (tunnel *tunnel) lastHandshake() time.Time {
 		return time.Time{}
 	}
 	return time.Unix(seconds, nanoseconds)
+}
+
+// handshakeTimeout is how long a tunnel gets to complete a handshake before
+// its server counts as failing. A working server answers in well under a
+// second. WireGuard resends a lost handshake after five, so six lets one
+// lost packet be made up for rather than bench a working server.
+var handshakeTimeout = 6 * time.Second
+
+// pokeAddress receives the packet that makes WireGuard start a handshake:
+// TEST-NET-1, the discard port. Nothing there answers, and nothing needs to.
+var pokeAddress = netip.AddrPortFrom(netip.MustParseAddr("192.0.2.1"), 9)
+
+// awaitHandshake makes sure the tunnel has a live handshake, starting one if
+// needed. Without it, a dead server is only noticed when a lookup or dial
+// through it times out, which takes far longer.
+//
+// Handshake times come from WireGuard on the real clock, so they are compared
+// with the real clock too.
+func (tunnel *tunnel) awaitHandshake(ctx context.Context) error {
+	if tunnel.handshakeFresh() {
+		return nil
+	}
+	if tunnel.net == nil {
+		return errors.New("no network stack")
+	}
+	// WireGuard starts a handshake when it has a packet to send.
+	if poke, err := tunnel.net.DialUDPAddrPort(netip.AddrPort{}, pokeAddress); err == nil {
+		poke.Write([]byte{0})
+		poke.Close()
+	}
+	deadline := time.NewTimer(handshakeTimeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("no WireGuard handshake within %s; check the keys and that the endpoint is reachable", handshakeTimeout)
+		case <-ticker.C:
+			if tunnel.handshakeFresh() {
+				return nil
+			}
+		}
+	}
 }
 
 func (tunnel *tunnel) close() {

@@ -25,7 +25,7 @@ rss/               feed parsing and byte-preserving rewriting; no Solstein depen
 feeds/             core: source URLs, subscribe, refresh, render (publish rules, signed URLs)   (exists)
 signing/           HMAC signatures for feed and episode URLs                               (exists)
 outbound/          core: exit Manager, direct exit, guarded dialling (private-address block) (exists)
-modules/exits/     module: config validation, .conf parsing, netstack tunnels, tunnel pool (exists); location matching, health (next)
+modules/exits/     module: config, .conf parsing, netstack tunnels, pool, geography, server selection and health (exists); wiring into main (next)
 modules/exits/wireguard/  generic provider: servers from wg-quick .conf files
 modules/exits/proton/     server-list provider for Proton VPN (gluetun-servers data)
 modules/regiondiff/     module: dual download, diff engine, cutting

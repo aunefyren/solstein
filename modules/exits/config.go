@@ -146,12 +146,18 @@ func ParseLocation(text string) (Location, error) {
 				return Location{}, errors.New("server: needs a server name")
 			}
 			return Location{Kind: LocationServer, Name: rest}, nil
-		case LocationArea, LocationContinent:
+		case LocationArea:
 			name := strings.ToLower(rest)
-			if !regionPattern.MatchString(name) {
-				return Location{}, fmt.Errorf("%q is not a valid %s name", rest, strings.ToLower(kind))
+			if !regionPattern.MatchString(name) || !validArea(name) {
+				return Location{}, fmt.Errorf("unknown area %q; areas are UN M49 regions: %s", rest, strings.Join(areas(), ", "))
 			}
-			return Location{Kind: strings.ToLower(kind), Name: name}, nil
+			return Location{Kind: LocationArea, Name: name}, nil
+		case LocationContinent:
+			name := strings.ToLower(rest)
+			if !regionPattern.MatchString(name) || !validContinent(name) {
+				return Location{}, fmt.Errorf("unknown continent %q; one of %s", rest, strings.Join(continents(), ", "))
+			}
+			return Location{Kind: LocationContinent, Name: name}, nil
 		default:
 			return Location{}, fmt.Errorf("unknown location kind %q in %q", kind, text)
 		}
@@ -171,8 +177,7 @@ func ParseLocation(text string) (Location, error) {
 	return Location{Kind: LocationCountry, Country: country}, nil
 }
 
-// parseCountry normalises an ISO 3166-1 alpha-2 code. Whether the code
-// exists is checked against the country table when exits are resolved.
+// parseCountry normalises an ISO 3166-1 alpha-2 code and checks it exists.
 func parseCountry(text string) (string, error) {
 	code := strings.ToUpper(strings.TrimSpace(text))
 	if alias, ok := countryAliases[code]; ok {
@@ -180,6 +185,9 @@ func parseCountry(text string) (string, error) {
 	}
 	if !countryPattern.MatchString(code) {
 		return "", fmt.Errorf("%q is not a two-letter country code (ISO 3166-1, e.g. SE)", text)
+	}
+	if !knownCountry(code) {
+		return "", fmt.Errorf("%q is not an ISO 3166-1 country code", code)
 	}
 	return code, nil
 }

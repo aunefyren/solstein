@@ -18,7 +18,10 @@ import (
 type Server struct {
 	// Name identifies the server within its provider: the .conf file name
 	// without extension, or the server list's name (e.g. "SE#12").
-	Name       string
+	Name string
+	// Hostname is the server's host name where the provider publishes one;
+	// "server:" locations match it as well as Name.
+	Hostname   string
 	PrivateKey Key
 	// Addresses are the tunnel's own addresses (the [Interface] Address
 	// lines, without prefix lengths).
