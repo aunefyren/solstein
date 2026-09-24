@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    # Secrets and variables can't be referenced in step `if:` conditions
+    # directly, but env can, so the badge step below can skip itself until the
+    # gist is set up. GIST_TOKEN is a personal access token with the `gist`
+    # scope (the built-in GITHUB_TOKEN can't write gists); COVERAGE_GIST_ID is
+    # a repository variable holding the gist's ID.
+    env:
+      GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+      COVERAGE_GIST_ID: ${{ vars.COVERAGE_GIST_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.x'
+          cache: true
+
+      - name: Format check (gofmt)
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt-clean — run 'gofmt -w .':"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Module tidy check
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum || { echo "::error::go.mod/go.sum are not tidy — run 'go mod tidy'"; exit 1; }
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (race + coverage)
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Extract coverage total
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}' | tr -d '%')
+          echo "Total coverage: ${total}%"
+          echo "COVERAGE_TOTAL=${total}" >> "$GITHUB_ENV"
+
+      - name: Coverage summary
+        run: |
+          {
+            echo "### Test coverage: ${COVERAGE_TOTAL}%"
+            echo ""
+            echo '```'
+            go tool cover -func=coverage.out
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Publishes a shields.io coverage badge to a gist. Runs only on a push to
+      # main, and only when the gist is configured, so the build is never red
+      # just because the badge isn't set up yet. The gist ID and filename must
+      # match the badge URL in README.md.
+      - name: Update coverage badge
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && env.GIST_TOKEN != '' && env.COVERAGE_GIST_ID != '' }}
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: ${{ vars.COVERAGE_GIST_ID }}
+          filename: solstein-coverage.json
+          label: coverage
+          message: ${{ env.COVERAGE_TOTAL }}%
+          valColorRange: ${{ env.COVERAGE_TOTAL }}
+          minColorRange: "0"
+          maxColorRange: "100"
+
+      # Coverage gate — runs LAST so the badge and summary are still produced
+      # when coverage drops below the minimum. Set a little under the current
+      # total (70.1% at the time of writing, with main.go untested) so small
+      # swings don't fail CI; raise this single value as the suite grows.
+      - name: Coverage gate
+        env:
+          COVERAGE_MIN: "65"
+        run: |
+          echo "Total coverage: ${COVERAGE_TOTAL}% (required minimum: ${COVERAGE_MIN}%)"
+          awk -v c="${COVERAGE_TOTAL}" -v min="${COVERAGE_MIN}" 'BEGIN {
+            if (c+0 < min+0) {
+              print "::error::coverage " c "% is below the required " min "%"
+              exit 1
+            }
+          }'

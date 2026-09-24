@@ -1,0 +1,38 @@
+name: Release Go Binaries
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  releases-matrix:
+    name: Release Go Binary
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64, arm]
+        exclude:
+          - goarch: arm
+            goos: windows
+          - goarch: arm
+            goos: darwin
+    steps:
+    - uses: actions/checkout@v7
+    - uses: wangyoucao577/go-release-action@v1.55
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        goos: ${{ matrix.goos }}
+        goarch: ${{ matrix.goarch }}
+        goversion: "1.26"
+        binary_name: "solstein"
+        ldflags: "-s -w -X main.version=${{ github.event.release.tag_name }}"
+        extra_files: README.md LICENSE
+        retry: 10
+        overwrite: true
+        # No release_name: when it's set, go-release-action blanks the release tag,
+        # which leaves asset names like solstein--linux-amd64. On a release event
+        # the tag (and target release) come from the event itself.

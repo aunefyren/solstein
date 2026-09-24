@@ -1,0 +1,46 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+  # Weekly, so new CodeQL queries run against unchanged code too.
+  schedule:
+    - cron: '36 23 * * 6'
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+
+    - name: Setup Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: '1.26.x'
+        cache: true
+
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v4
+      with:
+        languages: go
+        # Adds the broader security queries on top of the default set.
+        queries: security-extended
+
+    # An explicit build instead of Autobuild, so the analysis sees exactly what
+    # CI compiles.
+    - name: Build
+      run: go build ./...
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v4
+      with:
+        category: /language:go
