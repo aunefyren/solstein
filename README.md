@@ -25,7 +25,7 @@ services:
       PUID: 1000
       PGID: 1000
     volumes:
-      - ./solstein:/config
+      - ./solstein:/app/config
     ports:
       - 8080:8080
     restart: unless-stopped
@@ -78,7 +78,7 @@ Audiobookshelf refuses to fetch from private addresses by default, so a Solstein
 
 ## Configuration
 
-On first run Solstein creates `config.json` in its config directory (`/config` in Docker); that file is the configuration. Every setting can also be changed with a flag or an environment variable. These are applied at start-up and saved back to `config.json`, so they stay in effect after the flag or variable is removed. If both are given, the flag wins.
+On first run Solstein creates `config.json` in its config directory (`/app/config` in Docker); that file is the configuration. Every setting can also be changed with a flag or an environment variable. These are applied at start-up and saved back to `config.json`, so they stay in effect after the flag or variable is removed. If both are given, the flag wins.
 
 | config.json | Flag | Environment variable | Default | Description |
 |---|---|---|---|---|
@@ -96,12 +96,12 @@ On first run Solstein creates `config.json` in its config directory (`/config` i
 | `delivery_mode` | `-deliverymode` | `SOLSTEIN_DELIVERY_MODE` | `cache` | Default for feeds: `cache` (download and serve from disk), `stream` (pass through live) or `original` (only proxy the feed). |
 | `poll_interval_minutes` | `-pollinterval` | `SOLSTEIN_POLL_INTERVAL` | `15` | Minutes between feed polls. |
 | `cache_retention_days` | `-cacheretention` | `SOLSTEIN_CACHE_RETENTION` | `14` | Days cached episodes are kept on disk. Expired episodes stay in the feed and are fetched from the source again if played. |
-| — | `-configdir` | `SOLSTEIN_CONFIG_DIR` | `config` (`/config` in Docker) | Directory for `config.json`, the database, logs and cache. |
+| — | `-configdir` | `SOLSTEIN_CONFIG_DIR` | `config` (`/app/config` in Docker) | Directory for `config.json`, the database, logs and cache. |
 | — | `-version` | — | — | Print the version and exit. |
 
 ### User and group (Docker)
 
-The container starts as root only to fix ownership of `/config`, then drops to `PUID`:`PGID` (default `1000`:`1000`) before starting Solstein. Set them to the user and group that should own the mounted volume on the host (`id -u` and `id -g`). If you run the container as a non-root user instead (`user: "1000:1000"` in compose), `PUID`/`PGID` are ignored and the volume must already be writable by that user.
+The container starts as root only to fix ownership of `/app/config`, then drops to `PUID`:`PGID` (default `1000`:`1000`) before starting Solstein. Set them to the user and group that should own the mounted volume on the host (`id -u` and `id -g`). If you run the container as a non-root user instead (`user: "1000:1000"` in compose), `PUID`/`PGID` are ignored and the volume must already be writable by that user.
 
 `GET /api/health` returns `{"status":"ok","version":"…"}` for health checks.
 

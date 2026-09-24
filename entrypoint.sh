@@ -31,7 +31,7 @@ if [ "$(id -u)" = "0" ]; then
             exit 1
             ;;
     esac
-    configDir="${SOLSTEIN_CONFIG_DIR:-/config}"
+    configDir="${SOLSTEIN_CONFIG_DIR:-/app/config}"
     mkdir -p "$configDir"
     find "$configDir" \( ! -user "$PUID" -o ! -group "$PGID" \) -exec chown "$PUID:$PGID" {} +
     exec su-exec "$PUID:$PGID" "$@"

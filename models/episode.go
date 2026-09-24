@@ -31,6 +31,10 @@ type Episode struct {
 	// Backlog marks episodes that already existed when the feed was added.
 	// They are fetched on demand instead of at poll time.
 	Backlog bool `json:"backlog"`
+	// ReleasedAt is when the episode first appeared in a feed Solstein
+	// served. The served pubDate is never earlier than this; see
+	// feeds.Service.Render for why.
+	ReleasedAt *time.Time `json:"released_at"`
 
 	State         EpisodeState `json:"state" gorm:"not null;index"`
 	Attempts      int          `json:"attempts"`

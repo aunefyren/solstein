@@ -32,7 +32,7 @@ modules/regiondiff/     module: dual download, diff engine, cutting
 mp3/               MP3 frame parsing and splicing, no Solstein dependencies
 utilities/         small shared helpers
 docs/              design.md, development.md, wip.md
-config/            default local config directory (config.json, database, log, cache); gitignored. /config in Docker
+config/            default local config directory (config.json, database, log, cache); gitignored. /app/config in Docker
 Dockerfile, entrypoint.sh, .github/workflows/   packaging and CI                  (exists)
 ```
 
@@ -126,7 +126,7 @@ Notes:
 - **Only `database` imports `gorm.io/*`.** Everything else calls named methods on `Store` (`CreateFeed`, `GetEpisode`, …), one file per model.
 - Every persisted model embeds `models.Base`: a UUID primary key assigned by a `BeforeCreate` hook, plus timestamps. Never set IDs by hand at call sites. There is **no soft delete**: a removed feed must be re-addable under the same source URL, which a soft-deleted row would block through the unique index.
 - Lookups that match nothing return the package's sentinel (`ErrFeedNotFound`, `ErrEpisodeNotFound`); duplicate inserts return `ErrFeedExists` / `ErrEpisodeExists`, checked in a transaction rather than by parsing driver-specific constraint errors.
-- `Update*` functions save every field (zero values included, so a per-feed override can be cleared) and return the not-found sentinel instead of inserting.
+- `Update*` functions save every field (zero values included, so a per-feed override can be cleared) and return the not-found sentinel instead of inserting. Exception: `UpdateEpisode` never writes `released_at` — only `MarkReleased` does — because a download or stream holding a copy loaded before the release would otherwise clear it.
 - Every query takes a `context.Context`.
 - Tests open a fresh file database in `t.TempDir()` (not `:memory:`, which gives each pooled connection its own empty database).
 
@@ -143,7 +143,7 @@ Rules:
 - Defaults live in one place, `Config.applyDefaults`. `Config.Validate` runs after overrides, so a bad flag or env var stops start-up with a clear error.
 - **Adding a setting:** add the field to `Config` (snake_case JSON tag), a default in `applyDefaults` if it needs one, a check in `Validate`, and one entry in the `settings` table in `settings/flags.go`. That entry declares the flag and env var together, so they can't drift apart, and the help text lists both. Flag names are lowercase without separators (`externalurl`), env vars are `SOLSTEIN_` plus upper snake case (`SOLSTEIN_EXTERNAL_URL`).
 - **Time zone:** `timezone` / `-timezone` / `SOLSTEIN_TIMEZONE`, an IANA name. Empty means the system zone, so Docker's standard `TZ` also works. `main` sets `time.Local` from it before the logger starts; the binary embeds `time/tzdata`, so it works on hosts without a zone database. An unknown name fails validation rather than silently falling back (Pønskelisten resets to Europe/Paris).
-- Process-level options that can't live in `config.json` go in `Startup`: `-configdir` / `SOLSTEIN_CONFIG_DIR` (default `./config` locally, relative to the working directory; `/config` in Docker) and `-version`.
+- Process-level options that can't live in `config.json` go in `Startup`: `-configdir` / `SOLSTEIN_CONFIG_DIR` (default `./config` locally, relative to the working directory; `/app/config` in Docker) and `-version`.
 - The resolved `Config` is a value passed explicitly to what needs it (`server.New(cfg, …)`); there is no mutable package-level config global, so tests don't need to restore shared state.
 - Each module gets its own nested block with an `enabled` switch when it is built; the exits module is also off whenever no VPN provider is configured. Per-feed overrides live with the feed's config.
 
@@ -219,9 +219,9 @@ Secrets and variables:
 ## Docker
 
 - Multi-stage build. The builder runs on `$BUILDPLATFORM` and cross-compiles with `CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH GOARM=${TARGETVARIANT#v}`, so multi-arch images don't compile under QEMU. Platforms: `linux/amd64`, `linux/arm64`, `linux/arm/v7`.
-- Runtime on Alpine with `ca-certificates`, `tzdata` and `su-exec`. `SOLSTEIN_CONFIG_DIR=/config`, declared as a volume: config, database, log and cache all live there.
+- Runtime on Alpine with `ca-certificates`, `tzdata` and `su-exec`. `SOLSTEIN_CONFIG_DIR=/app/config`, declared as a volume: config, database, log and cache all live there.
 - `entrypoint.sh` only handles privileges: when started as root it fixes ownership of the config directory and drops to `PUID`/`PGID` (default `1000`); started as non-root it runs as-is. A non-flag first argument runs that command instead (`docker run -it <image> sh`). Settings come from `SOLSTEIN_*` env vars, which the binary reads itself, so the entrypoint doesn't map each one to a flag (Pønskelisten's entrypoint does, and every new setting had to be added in two places).
-- `/config` is created in the image owned by `1000:1000`. Docker copies an image directory's ownership into a fresh named volume on first mount, so a root-owned `/config` would make `user: "1000:1000"` fail with "permission denied" on a new volume.
+- `/app/config` is created in the image owned by `1000:1000`. Docker copies an image directory's ownership into a fresh named volume on first mount, so a root-owned `/app/config` would make `user: "1000:1000"` fail with "permission denied" on a new volume.
 - `entrypoint.sh` sets `umask 027`, so the database, log and cache aren't world-readable (the database holds feed URLs, which can carry private-feed tokens). `config.json` is `0600` regardless.
 - Tested with Docker Desktop (2026-09-24): single- and multi-arch builds (amd64, arm64, arm/v7; the ARM images run), privilege drop to default and custom `PUID`/`PGID`, `user: "1000:1000"` on a fresh volume, env vars and flags reaching `config.json`, the token surviving a restart, a real Acast subscription from inside the container, `docker stop` in about half a second. Image size about 55 MB.
 - `.gitattributes` forces LF for `*.sh`, since a CRLF checkout on Windows would break the entrypoint inside the container.

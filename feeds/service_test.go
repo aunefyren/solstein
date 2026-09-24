@@ -408,3 +408,72 @@ func TestFeedManagement(t *testing.T) {
 		t.Errorf("after delete: err = %v", err)
 	}
 }
+
+func TestRenderDatesLateEpisodesFromTheirRelease(t *testing.T) {
+	host := newFakeHost(t)
+	clock := &testClock{now: time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)}
+	service, store := newTestService(t, Options{Now: clock.Now})
+	ctx := context.Background()
+	feed, _, _ := service.Subscribe(ctx, host.server.URL, Settings{})
+
+	// Published at the source at 11:55, found by Solstein at 12:00, held
+	// back until cached at 12:30.
+	host.addItem("ep-2", "Thu, 24 Sep 2026 11:55:00 +0000")
+	if _, err := service.Refresh(ctx, &feed); err != nil {
+		t.Fatal(err)
+	}
+	service.Render(ctx, feed, testURLs) // hidden: not released
+	clock.advance(30 * time.Minute)
+	episodes, _ := store.ListEpisodes(ctx, feed.ID)
+	for _, episode := range episodes {
+		if episode.GUID == "ep-2" {
+			episode.State = models.EpisodeReady
+			store.UpdateEpisode(ctx, &episode)
+		}
+	}
+
+	dates := func() map[string]time.Time {
+		output, err := service.Render(ctx, feed, testURLs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, _ := rss.Parse(output)
+		result := map[string]time.Time{}
+		for _, item := range parsed.Items {
+			result[item.GUID] = *item.PublishedAt
+		}
+		return result
+	}
+
+	first := dates()
+	releasedAt := time.Date(2026, 9, 24, 12, 30, 0, 0, time.UTC)
+	if !first["ep-2"].Equal(releasedAt) {
+		t.Errorf("late episode dated %v, want its release %v", first["ep-2"], releasedAt)
+	}
+	if !first["ep-1"].Equal(time.Date(2026, 9, 21, 6, 0, 0, 0, time.UTC)) {
+		t.Errorf("backlog episode's date changed to %v", first["ep-1"])
+	}
+
+	// The date is fixed at the first release, not moved on every render.
+	clock.advance(time.Hour)
+	if later := dates(); !later["ep-2"].Equal(releasedAt) {
+		t.Errorf("date moved to %v on a later render", later["ep-2"])
+	}
+}
+
+func TestRenderKeepsDatesAfterRelease(t *testing.T) {
+	host := newFakeHost(t)
+	// Solstein saw the episode before its stated time (a feed dated in the
+	// future): the source date is kept.
+	clock := &testClock{now: time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)}
+	service, _ := newTestService(t, Options{Now: clock.Now, DefaultDeliveryMode: "stream"})
+	ctx := context.Background()
+	feed, _, _ := service.Subscribe(ctx, host.server.URL, Settings{})
+	host.addItem("ep-2", "Thu, 24 Sep 2026 18:00:00 +0000")
+	service.Refresh(ctx, &feed)
+
+	output, _ := service.Render(ctx, feed, testURLs)
+	if !strings.Contains(string(output), "Thu, 24 Sep 2026 18:00:00 +0000") {
+		t.Errorf("future-dated episode's date changed:\n%s", output)
+	}
+}

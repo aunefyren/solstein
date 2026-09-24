@@ -202,6 +202,32 @@ func (service *Service) Render(ctx context.Context, feed models.Feed, urls URLs)
 
 	mode := service.DeliveryMode(feed)
 	published := publishedEpisodes(episodes, mode)
+
+	// An episode's served pubDate is never earlier than the first time
+	// Solstein served it. ABS only auto-downloads episodes dated after a
+	// reference point: the newest episode it has, or — for a podcast with
+	// none downloaded yet — the time of its previous check. An episode that
+	// reaches the served feed late (held back until cached, or simply found by
+	// Solstein's poll after the client last checked) would otherwise be dated
+	// before that check and skipped for good. Backlog episodes keep their
+	// dates; clients don't auto-download those anyway.
+	now := service.options.Now().UTC().Truncate(time.Second)
+	var newlyReleased []uuid.UUID
+	servedDate := make(map[uuid.UUID]time.Time)
+	for _, episode := range episodes {
+		if !published[episode.ID] || episode.Backlog {
+			continue
+		}
+		releasedAt := now
+		if episode.ReleasedAt != nil {
+			releasedAt = episode.ReleasedAt.UTC()
+		} else {
+			newlyReleased = append(newlyReleased, episode.ID)
+		}
+		if episode.PublishedAt == nil || releasedAt.After(*episode.PublishedAt) {
+			servedDate[episode.ID] = releasedAt
+		}
+	}
 	byGUID := make(map[string]models.Episode, len(episodes))
 	for _, episode := range episodes {
 		byGUID[episode.GUID] = episode
@@ -217,19 +243,30 @@ func (service *Service) Render(ctx context.Context, feed models.Feed, urls URLs)
 			if !ok || !published[episode.ID] {
 				return rss.ItemChange{Omit: true}
 			}
+			var change rss.ItemChange
+			if date, ok := servedDate[episode.ID]; ok {
+				change.PublishedAt = &date
+			}
 			if mode == "original" {
-				return rss.ItemChange{}
+				return change
 			}
-			change := rss.ItemChange{
-				EnclosureURL: urls.Episode(feed.ID, episode.ID, AudioExtension(item.Enclosure.URL, item.Enclosure.Type)),
-			}
+			change.EnclosureURL = urls.Episode(feed.ID, episode.ID, AudioExtension(item.Enclosure.URL, item.Enclosure.Type))
 			if episode.CacheSize > 0 {
 				change.Length = episode.CacheSize
 			}
 			return change
 		},
 	}
-	return rewrite.Apply(document.Data)
+	output, err := rewrite.Apply(document.Data)
+	if err != nil {
+		return nil, err
+	}
+	// Recorded after a successful render, so the dates clients saw are the
+	// ones kept.
+	if err := service.store.MarkReleased(ctx, newlyReleased, now); err != nil {
+		return nil, err
+	}
+	return output, nil
 }
 
 // Feed returns a feed by ID.

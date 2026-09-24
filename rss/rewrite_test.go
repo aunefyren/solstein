@@ -232,3 +232,27 @@ func TestFormatDuration(t *testing.T) {
 		}
 	}
 }
+
+func TestRewritePubDate(t *testing.T) {
+	data := readFixture(t, "show.xml")
+	released := time.Date(2026, 9, 24, 10, 50, 0, 0, time.FixedZone("CEST", 2*3600))
+	output, err := Rewrite{Item: func(item Item) ItemChange {
+		if item.GUID == "ep-3" {
+			return ItemChange{PublishedAt: &released}
+		}
+		return ItemChange{}
+	}}.Apply(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(output), "<pubDate>Thu, 24 Sep 2026 08:50:00 +0000</pubDate>") {
+		t.Errorf("pubDate not rewritten in UTC:\n%s", output)
+	}
+	if !strings.Contains(string(output), "<pubDate>Mon, 21 Sep 2026 06:00:00 +0200</pubDate>") {
+		t.Error("other items' pubDate changed")
+	}
+	reparsed, _ := Parse(output)
+	if !reparsed.Items[0].PublishedAt.Equal(released) {
+		t.Errorf("reparsed date = %v", reparsed.Items[0].PublishedAt)
+	}
+}

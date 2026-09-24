@@ -31,6 +31,8 @@ type ItemChange struct {
 	Length int64
 	// Duration, when non-empty, replaces <itunes:duration>. See FormatDuration.
 	Duration string
+	// PublishedAt, when set, replaces the item's <pubDate>.
+	PublishedAt *time.Time
 }
 
 // Apply rewrites a feed. Bytes outside the changed values are copied through
@@ -125,6 +127,9 @@ func (rewrite Rewrite) Apply(data []byte) ([]byte, error) {
 			case depth >= 4 && itemIndex >= 0 && walker.is(2, "", "item"):
 				if depth == 4 && change.Duration != "" && tok.frame.space == itunesNS && tok.frame.local == "duration" {
 					text, hasText = change.Duration, true
+				}
+				if depth == 4 && change.PublishedAt != nil && tok.frame.space == "" && tok.frame.local == "pubDate" {
+					text, hasText = change.PublishedAt.UTC().Format(time.RFC1123Z), true
 				}
 				holdsAudio := source != "" && hasAttributeValue(attrs, source)
 				if change.EnclosureURL != "" && holdsAudio {

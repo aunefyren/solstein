@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"aunefyren/solstein/models"
 
@@ -74,13 +75,31 @@ func (store *Store) ListEpisodes(ctx context.Context, feedID uuid.UUID) ([]model
 	return episodes, nil
 }
 
-// UpdateEpisode saves every field of an existing episode. It returns
-// ErrEpisodeNotFound if the episode doesn't exist, rather than creating it.
+// MarkReleased records when episodes first appeared in a served feed. An
+// episode already marked keeps its first time, so concurrent renders agree.
+func (store *Store) MarkReleased(ctx context.Context, episodeIDs []uuid.UUID, at time.Time) error {
+	if len(episodeIDs) == 0 {
+		return nil
+	}
+	err := store.withContext(ctx).Model(&models.Episode{}).
+		Where("id IN ? AND released_at IS NULL", episodeIDs).
+		Update("released_at", at).Error
+	if err != nil {
+		return fmt.Errorf("mark episodes released: %w", err)
+	}
+	return nil
+}
+
+// UpdateEpisode saves every field of an existing episode except
+// released_at, which only MarkReleased sets: a download or stream that loaded
+// the episode before it was released would otherwise clear it again when it
+// saves. It returns ErrEpisodeNotFound if the episode doesn't exist, rather
+// than creating it.
 func (store *Store) UpdateEpisode(ctx context.Context, episode *models.Episode) error {
 	if episode.ID == uuid.Nil {
 		return ErrEpisodeNotFound
 	}
-	result := store.withContext(ctx).Model(episode).Select("*").Omit("id", "created_at").Updates(episode)
+	result := store.withContext(ctx).Model(episode).Select("*").Omit("id", "created_at", "released_at").Updates(episode)
 	if result.Error != nil {
 		return fmt.Errorf("update episode: %w", result.Error)
 	}

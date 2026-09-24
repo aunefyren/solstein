@@ -128,3 +128,36 @@ func TestUpdateEpisode(t *testing.T) {
 		t.Errorf("unknown ID: err = %v, want ErrEpisodeNotFound", err)
 	}
 }
+
+func TestMarkReleased(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	feed := createTestFeed(t, store, "https://example.com/feed")
+	episode := createTestEpisode(t, store, feed.ID, "a", nil)
+
+	first := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	if err := store.MarkReleased(ctx, []uuid.UUID{episode.ID}, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkReleased(ctx, []uuid.UUID{episode.ID}, first.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := store.GetEpisode(ctx, feed.ID, episode.ID)
+	if stored.ReleasedAt == nil || !stored.ReleasedAt.Equal(first) {
+		t.Errorf("released at = %v, want the first time %v", stored.ReleasedAt, first)
+	}
+
+	// A save from a copy loaded before the release must not clear it.
+	episode.State = models.EpisodeReady
+	if err := store.UpdateEpisode(ctx, &episode); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ = store.GetEpisode(ctx, feed.ID, episode.ID)
+	if stored.ReleasedAt == nil || stored.State != models.EpisodeReady {
+		t.Errorf("after a stale save: %+v", stored)
+	}
+
+	if err := store.MarkReleased(ctx, nil, first); err != nil {
+		t.Errorf("empty list: %v", err)
+	}
+}

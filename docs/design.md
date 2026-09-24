@@ -57,6 +57,7 @@ The rewritten feed keeps every element and namespace of the source (`itunes:`, `
 - `itunes:new-feed-url` and `atom:link rel="self"` → Solstein's feed URL. Otherwise a client may follow them straight back to the source.
 - Episode `guid` values are **never** changed, so a client whose feed URL is switched over to Solstein can recognise episodes it already has.
 - Episodes not yet ready (see **Publish policy**) are left out, but the feed always keeps at least the already-published items: an empty channel is treated as a failed fetch by ABS.
+- `pubDate` of a non-backlog episode → the time Solstein first served it (`released_at`), when that is later than the source's date, so clients that only take episodes dated after their last check don't skip it (see **Client compatibility**). Backlog episodes keep their dates.
 
 ### Delivery modes
 
@@ -283,7 +284,7 @@ Narrowing a provider — from "everything" to "one server":
     },
     "mullvad": {
       "type": "wireguard",
-      "config_dir": "/config/wireguard/mullvad",
+      "config_dir": "/app/config/wireguard/mullvad",
       "servers": {                    // location per .conf file (name without extension)
         "se-sto-wg-001": { "country": "SE", "city": "Stockholm" },
         "de-fra-wg-002": { "country": "DE", "city": "Frankfurt" }
@@ -291,7 +292,7 @@ Narrowing a provider — from "everything" to "one server":
     },
     "vps": {
       "type": "wireguard",
-      "config_file": "/config/wireguard/vps.conf",
+      "config_file": "/app/config/wireguard/vps.conf",
       "country": "DE"
     }
   }
@@ -322,6 +323,28 @@ Where exits are used:
 - **Plain proxy:** every feed has an `exit` (default `direct`) for its polls and downloads. That gets another region's ads, or reaches geo-blocked feeds, without the diff module.
 - **Region diff:** a pair of exits, e.g. `["direct", "sweden"]`, as global default with per-feed override. From Norway, `direct` plus one VPN exit is a valid pair that needs only a single tunnel. Start-up warns if the two sides can resolve to the same country (e.g. `direct` plus a loose exit that can fall back to `NO`), since that diff would find nothing.
 
+### Exits build order (proposed)
+
+Each step testable on its own; the core already routes every request through `outbound.Manager`, and feeds already have an `exit` setting, so exits become usable as soon as step 4 lands.
+
+1. **Config and secrets:** the `vpn.providers` / `exits` blocks in `config.json`, validation, and `env:` / `file:` secret references.
+2. **Generic WireGuard:** parse wg-quick `.conf` files; one netstack tunnel per server implementing `outbound.Dialer` (DNS through the tunnel); open on demand, close when idle, `max_tunnels`.
+3. **Exit resolution:** location matching (country, city, server, area, continent) with built-in ISO 3166 and UN M49 tables; strict/loose, `exclude`, `selection`; health and benching of failing servers.
+4. **Wiring:** providers registered with `outbound.Manager`; exits selectable per feed and through the feed API; a module that can't run logs a warning and stays off.
+5. **Proton provider:** gluetun-servers data (embedded snapshot, periodic refresh, last good copy in the config directory), `tier` and `filter`.
+6. **Live checks with a real key:** whether one Proton key holds two tunnels at once, and what country an exit IP geolocates to.
+
+### Exits decisions to confirm
+
+- **Tunnel lifecycle:** open on first use, close after 5 minutes idle (proposed).
+- **Server selection default:** `sticky` (proposed).
+- **Health checking:** a recent WireGuard handshake plus failures seen on real requests, with no extra test requests to a third-party site (proposed; avoids an external dependency and extra traffic).
+- **Unusable module:** log a warning and stay off rather than refuse to start (proposed).
+- **Server list source and refresh:** the gluetun-servers repository's `pkg/servers/protonvpn.json` on its default branch, fetched daily, falling back to the embedded snapshot (proposed).
+- **Deferred to after v1:** file-name location inference for `.conf` files, the optional geolocation check, providers beyond Proton.
+
+For the live checks the maintainer supplies Proton WireGuard key(s), passed as `env:` references so they never enter the repository.
+
 ## Module: Region diff
 
 - An episode processor (see **Extension points**). Downloads each episode through two exits (configurable default pair, per-feed override). With exits off, only `direct` exists, so this module cannot run.
@@ -338,7 +361,7 @@ Verified against the ABS source at v2.36.1 (commit `d22c468`, 2026-09-23). File 
 | Custom headers or cookies? | **No.** Feed fetches and episode downloads send fixed headers only (`Accept`, `Accept-Encoding`, an `audiobookshelf (+https://audiobookshelf.org…)` User-Agent). Nothing per-feed is configurable. URL tokens are the only practical auth. | `server/utils/podcastUtils.js` `getPodcastFeed`; `server/utils/ffmpegHelpers.js` `downloadPodcastEpisode` |
 | Episode matching when the feed URL changes? | The feed URL is editable per podcast in the UI. An episode counts as already present if its **GUID** or its **exact enclosure URL** matches one ABS has. More importantly, the new-episode check only considers episodes whose `pubDate` is **newer than the newest episode ABS already has**, so older episodes are never re-downloaded after a switch, whatever their URLs. Unchanged GUIDs make it safe regardless. | `server/models/PodcastEpisode.js` `checkMatchesGuidOrEnclosureUrl`; `server/managers/PodcastManager.js` `runEpisodeCheck`, `checkPodcastForNewEpisodes`; `client/components/widgets/PodcastDetailsEdit.vue` |
 | Follows `itunes:new-feed-url` / redirects? | It follows HTTP redirects (axios default) but always **stores the URL it was given**: `getPodcastFeed` overwrites the parsed feed URL with the requested one. `itunes:new-feed-url` and `atom:link` are read but then discarded. | `server/utils/podcastUtils.js` lines ~131–135 and ~400 |
-| Picks up an episode that appears late? | **Only if its `pubDate` is newer than the newest episode ABS already has.** An episode held back while a newer one is published is never auto-downloaded. Also capped at `maxNewEpisodesToDownload` (default 3) per check. | `server/managers/PodcastManager.js` `checkPodcastForNewEpisodes` |
+| Picks up an episode that appears late? | **Only if its `pubDate` is newer than a reference point**: the newest episode ABS already has — or, for a podcast with **no episodes downloaded yet**, the time of ABS's previous check, which moves forward every check. An episode held back while a newer one is published is never auto-downloaded; and for a podcast with nothing downloaded, any episode that reaches the feed after an ABS check but is dated before it is skipped too (found in live testing, see below). Also capped at `maxNewEpisodesToDownload` (default 3) per check. | `server/managers/PodcastManager.js` `runEpisodeCheck`, `checkPodcastForNewEpisodes` |
 | Sends `Range`? Relies on `length`? | No `Range` — a single full GET, piped through `ffmpeg -c:a copy` (remux and re-tag, no re-encode). Enclosure `length` is used only for the progress estimate. The saved file's extension comes from the enclosure URL path (query string stripped), falling back to `mp3`. | `server/utils/ffmpegHelpers.js`; `server/objects/PodcastEpisodeDownload.js` `urlFileExtension` |
 
 Other behaviour that matters:
@@ -346,6 +369,20 @@ Other behaviour that matters:
 - **Timeout:** `PODCAST_DOWNLOAD_TIMEOUT`, default 30 s, applies to feed fetches and episode downloads. Solstein must answer a feed request well within that, including the first request for a new prefix URL, and in `stream` mode must start sending bytes quickly.
 - **Failure counting:** a failed or unparseable feed fetch counts as a failed check; after `MAX_FAILED_EPISODE_CHECKS` (default 24) ABS turns off auto-download for that podcast. A feed with no `<item>` elements also counts as a failure.
 - **URL encoding:** ABS runs `encodeURI` on enclosure URLs that don't look encoded, so Solstein URLs should use only URL-safe characters (e.g. base64url signatures).
+
+### Verified live (2026-09-24)
+
+ABS 2.36.1 and Solstein in Docker on one compose network, with the real Acast feed `Out of Place`:
+- Without `SSRF_REQUEST_FILTER_WHITELIST`, ABS refused the feed (`Call to 172.22.0.3 is blocked`) and the request never reached Solstein. With `SSRF_REQUEST_FILTER_WHITELIST=solstein` it worked.
+- ABS parsed the feed through the prefix URL (27 episodes, every enclosure on Solstein, GUIDs unchanged) and stored the prefix URL, token included, as the podcast's feed URL.
+- ABS downloaded an episode through Solstein in 1.6 s; Solstein streamed it from Acast and cached it on the way. ABS kept the original GUID and remuxed the file (21,548,392 bytes against Solstein's 21,546,493, from its own tags).
+- ABS's "check for new episodes" fetched the feed from Solstein (served in 4 ms from the stored document) and correctly found none. The token showed as `***` in Solstein's log.
+
+**New episode held back until cached (live test, same day).** A controllable feed host on the compose network, ABS auto-download checking every minute, a podcast with nothing downloaded yet:
+- Solstein found the new episode; its download failed (source answered 503), so the served feed correctly hid it, and ABS's next check saw only the old episode.
+- Once the audio was available, Solstein's retry cached it and published it — but **ABS never downloaded it**: with nothing downloaded, ABS compared the episode's date (12:47) against its own previous check (12:49 and later), found it older, and skipped it for good.
+- The same happens without any holding back: an episode Solstein's poll picks up after an ABS check, but dated before that check, is skipped as well. ABS reading the source directly never lags like that.
+- **Fix:** the served `pubDate` of a non-backlog episode is never earlier than when Solstein first served it (`released_at`). After the fix, on the same stack, ABS's next check found the episode dated at its release and downloaded it from Solstein's cache in half a second.
 
 ### Consequences for the design
 
@@ -359,6 +396,7 @@ Other behaviour that matters:
 8. **Enclosure paths end in the real extension** (`/api/episodes/{feedID}/{episodeID}.mp3?sig=…`).
 9. **`stream` mode is less risky with ABS** than feared, since ABS sends no `Range`; the concern remains for clients that seek or resume.
 10. **Setup documentation** must cover the ABS SSRF whitelist for private-network deployments.
+11. **Served dates are never earlier than the release to clients** (see the live test above). An episode shows in the client dated when it became available through Solstein, usually minutes after the source's date; backlog episodes keep their dates.
 
 ## Open questions
 
