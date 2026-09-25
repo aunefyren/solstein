@@ -15,6 +15,10 @@ Everything about Solstein that isn't finished: known issues, gaps, open question
 
 Five of 115 "It Was A Sh*t Show" episodes failed as implausible in production within a minute (2026-09-25, [`region-diff.md`](region-diff.md)); downloaded again, they diff cleanly. Most likely one side got a partial or wrong file during the burst of downloads, but it is unconfirmed. Re-downloaded through ABS 25 minutes later (14:24–14:25, one at a time, both tunnels opened cold), all five were cleaned in 3–12 s each, 3 breaks and about 3 minutes removed per episode, and none of the downloads looked incomplete: consistent with a passing problem on the host's side. Solstein now re-fetches downloads that look cut off, asks for fresh copies after a failure, and applies the failure policy after three failed attempts on request. To settle it: run with `keep_failed_downloads` on, and look at the kept files and note the next time it happens. Then decide whether anything else is needed (e.g. pacing large backlogs).
 
+### Ads that are the same in every compared market (open, 2026-09-25)
+
+Darknet Diaries (PRX Dovetail) keeps 2–3 minutes of ads per episode after cleaning: the cleaned files are that much longer than `itunes:duration`, and the audio that differs between Norway, Sweden and Germany is a single ~1-minute mid-roll. The rest is probably a pre-roll or campaign that runs in all three markets (or host-read ads, which no diff can find). Worth trying: a fallback in a more distant market (e.g. the US, where PRX sells most ads) to see whether that part differs there. Also worth a log hint when a cleaned file is still well over the stated duration, as the identical-audio case already has.
+
 ### Break markers encoded into show segments (open)
 
 `trim_break_markers` removes only markers that are their own spliced segment ([`region-diff.md`](region-diff.md)). In "Corner Piece", the chime after each mid-roll is encoded together with the start of the next show segment, so one chime per break remains even with trimming on.
@@ -44,6 +48,7 @@ The same-country checks can't see `direct`'s country (it would need an outside g
 ### Open questions
 
 - **Proton NO transfers cut off mid-body (2026-09-25):** three of about eight long downloads through the `norway` Proton exit (NO#23 in production) broke off partway with `unexpected EOF` or `connection reset by peer`; Sweden didn't. The pipeline retries them, but a server that does this often isn't benched, since the WireGuard handshake stays fresh and a mid-body reset looks like the destination's fault. Watch whether it keeps happening; if so, count mid-body resets against the server, or prefer another server in the country.
+- **DNS through Proton times out now and then (2026-09-25):** four lookups through the `norway` tunnel's DNS (10.2.0.1) failed with `i/o timeout` in about 40 minutes of heavy downloading: a feed poll (the last good copy was served), a fallback download, the server-list refresh. Lookups already retry after 1 s and 2 s. If it keeps happening, retry longer, or cache answers for their TTL.
 - **Proton connection counting:** one key holds several tunnels at once (verified), but whether Proton counts them as one connection or several against the plan limit (Free 1, Plus 10) is unknown.
 - **Server-list resilience:** the refresh accepts only format version 4. If gluetun-servers moves to a new version, Solstein keeps the last good copy or the embedded snapshot indefinitely; it should at least warn when the list is getting old, and support the new format.
 

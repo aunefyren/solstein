@@ -411,3 +411,75 @@ func TestDiffKeepsLongRepeatedSegments(t *testing.T) {
 		t.Errorf("removed %+v, longer than a marker can be", result.Markers)
 	}
 }
+
+func TestDiffKeepsShowThatResumesOnABorrowingFrame(t *testing.T) {
+	// As PRX's Dovetail splices: the show's own stream is cut at the cue
+	// point, so the show resumes after the ad on a frame that borrows from
+	// the one before, with no clean frame for 34 s. Shared audio that long
+	// is show, clean start or not.
+	part2 := withoutCleanStart(audio(1300, 3))
+	home := join(tag("h"), show1, audio(200, 11), part2)
+	other := join(tag("o"), show1, audio(260, 21), part2)
+
+	result := mustDiff(t, home, other)
+	if want := join(tag("h"), show1, part2); !bytes.Equal(result.Output, want) {
+		t.Errorf("output is %d bytes, want both show parts (%d)", len(result.Output), len(want))
+	}
+
+	// A short shared stretch without a clean start is still not show: the
+	// 3-second silence at the end of both ad breaks stays out.
+	home = join(tag("h"), show1, audio(200, 11), silence(120), show2)
+	other = join(tag("o"), show1, audio(260, 21), silence(120), show2)
+	options := DefaultOptions()
+	options.MaxRemovedShare = 0.6
+	result, err := Diff(home, other, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := join(tag("h"), show1, show2); !bytes.Equal(result.Output, want) {
+		t.Error("the shared silence was kept")
+	}
+}
+
+// TestDiffKeptFailures re-runs the diff on the downloads kept by
+// keep_failed_downloads (config/regiondiff-failures), when there are any:
+// each set that failed before must now diff, within the sanity checks.
+func TestDiffKeptFailures(t *testing.T) {
+	sets, _ := filepath.Glob(filepath.Join("..", "..", "config", "regiondiff-failures", "*", "*"))
+	if len(sets) == 0 {
+		t.Skip("no kept failures in config/regiondiff-failures")
+	}
+	for _, set := range sets {
+		note, _ := os.ReadFile(filepath.Join(set, "failure.txt"))
+		title, expected := "", time.Duration(0)
+		for _, line := range strings.Split(string(note), "\n") {
+			if value, ok := strings.CutPrefix(line, "Episode: "); ok {
+				title = value
+			}
+			if value, ok := strings.CutPrefix(line, "Stated duration: "); ok {
+				expected, _ = time.ParseDuration(value)
+			}
+		}
+		files, _ := filepath.Glob(filepath.Join(set, "*.mp3"))
+		if len(files) != 2 {
+			t.Logf("%s: %d downloads kept, skipped", title, len(files))
+			continue
+		}
+		home, other := files[0], files[1]
+		if filepath.Base(other) == "norway.mp3" {
+			home, other = other, home
+		}
+		homeData, _ := os.ReadFile(home)
+		otherData, _ := os.ReadFile(other)
+		options := DefaultOptions()
+		options.ExpectedDuration = expected
+		result, err := Diff(homeData, otherData, options)
+		if err != nil {
+			t.Errorf("%s: %v", title, err)
+			continue
+		}
+		t.Logf("%-40s kept %s of %s in %d segments, removed %d breaks (%s), stated %s",
+			title, result.Duration.Round(time.Second), result.HomeDuration.Round(time.Second), len(result.Kept), len(result.Removed),
+			(result.HomeDuration - result.Duration).Round(time.Second), expected)
+	}
+}

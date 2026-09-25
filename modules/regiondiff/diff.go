@@ -35,6 +35,11 @@ const (
 	anchorFrames = 16
 	// maxMarker is the longest a break marker can be.
 	maxMarker = 5 * time.Second
+	// unanchoredMinimum is how long shared audio must be to count as show
+	// without a clean frame to start or end on (see toSegmentBoundaries).
+	// Identical stretches inside ad breaks — silence, jingles — are a few
+	// seconds at most.
+	unanchoredMinimum = 30 * time.Second
 )
 
 // Options tunes the diff and its sanity checks.
@@ -110,9 +115,10 @@ func Diff(home, other []byte, options Options) (Result, error) {
 
 	frameDuration := homeFormat.Duration()
 	minimum := int((options.MinShared + frameDuration - 1) / frameDuration)
+	unanchored := int(unanchoredMinimum / frameDuration)
 	var kept []run
 	for _, candidate := range runs {
-		if trimmed, ok := toSegmentBoundaries(candidate, homeFile.Frames); ok && trimmed.length >= max(minimum, 1) {
+		if trimmed, ok := toSegmentBoundaries(candidate, homeFile.Frames, unanchored); ok && trimmed.length >= max(minimum, 1) {
 			kept = append(kept, trimmed)
 		}
 	}
@@ -284,30 +290,51 @@ func verify(runs []run, home, other mp3.File) []run {
 }
 
 // toSegmentBoundaries trims a run to where segments can really start and
-// end. Hosts splice at frames that borrow nothing from earlier ones
+// end. Acast splices at frames that borrow nothing from earlier ones
 // (main_data_begin 0), so a segment of show audio starts on such a frame (or
 // at the start of the file), and ends where the next segment starts, on
 // another, or at the end of the file. A run that spills past a splice point —
 // because both ad breaks happen to end in the same silence, say — is trimmed
-// back to it; a run with no such boundary inside is dropped.
-func toSegmentBoundaries(candidate run, frames []mp3.Frame) (run, bool) {
+// back to it; a short run with no such boundary inside is dropped.
+//
+// Not every host splices that way: PRX's Dovetail cuts the show's own
+// stream at the ad's cue point, so the show resumes on a frame that borrows
+// from the one before. A run is therefore kept from where it really starts
+// (or up to where it really ends) when the stretch before its first clean
+// frame (or after its last) is at least unanchored frames long: shared
+// audio that long is show, not silence or a jingle. The frame after such a
+// cut decodes against the wrong reservoir bytes — a 26 ms glitch the
+// host's own file has at the same place, since it borrows from the ad.
+func toSegmentBoundaries(candidate run, frames []mp3.Frame, unanchored int) (run, bool) {
 	start, end := candidate.home, candidate.home+candidate.length
-	for start < end && start != 0 && frames[start].MainDataBegin != 0 {
-		start++
+	clean := func(i int) bool { return i == 0 || i == len(frames) || frames[i].MainDataBegin == 0 }
+
+	first := start
+	for first < end && !clean(first) {
+		first++
 	}
-	if start == end {
+	if first-start >= unanchored {
+		first = start // a long stretch before any clean frame: show audio
+	}
+	if first == end {
 		return run{}, false
 	}
-	if end != len(frames) && frames[end].MainDataBegin != 0 {
-		// Cut before the last segment start inside the run.
-		cut := end - 1
-		for cut > start && frames[cut].MainDataBegin != 0 {
-			cut--
+	start = first
+
+	if !clean(end) {
+		last := end - 1 // the last segment start inside the run
+		for last > start && !clean(last) {
+			last--
 		}
-		if cut == start {
+		switch {
+		case end-last >= unanchored:
+			// A long stretch after the last clean frame: show audio up to
+			// where the match ends.
+		case last == start:
 			return run{}, false
+		default:
+			end = last
 		}
-		end = cut
 	}
 	shift := start - candidate.home
 	return run{home: start, other: candidate.other + shift, length: end - start}, true

@@ -90,8 +90,9 @@ func (processor *Processor) HideOnFailure(feed models.Feed) bool {
 }
 
 // algorithmVersion is part of the recipe: bump it when a change to the diff
-// would cut differently, so episodes cut before are cut again.
-const algorithmVersion = 1
+// would cut differently, so episodes cut before are cut again. 2: long
+// shared runs are kept without a clean frame to start or end on (Dovetail).
+const algorithmVersion = 2
 
 // Recipe describes the settings that shape a feed's cleaned episodes, for
 // episodes.Processor. The failure policy is left out: it doesn't change a
