@@ -554,3 +554,29 @@ func TestSubscribeQueuesNewestBacklogForProcessing(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateRegionDiffSettings(t *testing.T) {
+	off, _ := newTestService(t, Options{})
+	on, _ := newTestService(t, Options{RegionDiffAvailable: true})
+	cases := []struct {
+		service  *Service
+		settings Settings
+		valid    bool
+	}{
+		{off, Settings{RegionDiff: "off"}, true},
+		{off, Settings{RegionDiff: "on"}, false}, // the module isn't running
+		{on, Settings{RegionDiff: "on"}, true},
+		{on, Settings{RegionDiff: "maybe"}, false},
+		{on, Settings{RegionDiffOnFailure: "hide"}, true},
+		{on, Settings{RegionDiffOnFailure: "ignore"}, false},
+		{on, Settings{RegionDiffExits: []string{"direct"}}, false},
+		{on, Settings{RegionDiffExits: []string{"direct", "direct"}}, false},
+		{on, Settings{RegionDiffExits: []string{"direct", "sweden"}}, false}, // no such exit
+	}
+	for _, c := range cases {
+		err := c.service.ValidateSettings(c.settings)
+		if (err == nil) != c.valid || (err != nil && !errors.Is(err, ErrInvalidSettings)) {
+			t.Errorf("%+v: err = %v, want valid %v", c.settings, err, c.valid)
+		}
+	}
+}

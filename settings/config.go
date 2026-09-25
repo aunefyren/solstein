@@ -83,6 +83,8 @@ type Config struct {
 
 	// VPN configures the exits module; validated by the module itself.
 	VPN VPN `json:"vpn"`
+	// RegionDiff configures the region-diff module.
+	RegionDiff RegionDiff `json:"region_diff"`
 }
 
 // Load reads config.json from configDir and fills in defaults for missing
@@ -170,6 +172,7 @@ func (cfg *Config) applyDefaults() {
 	if cfg.VPN.Exits == nil {
 		cfg.VPN.Exits = map[string]VPNExit{}
 	}
+	cfg.RegionDiff.applyDefaults()
 }
 
 // Validate normalises values and rejects ones Solstein can't run with. It runs
@@ -233,6 +236,10 @@ func (cfg *Config) Validate() error {
 	}
 	if cfg.CacheRetentionDays < 1 {
 		return fmt.Errorf("cache retention must be at least 1 day, got %d", cfg.CacheRetentionDays)
+	}
+
+	if err := cfg.RegionDiff.validate(); err != nil {
+		return err
 	}
 
 	cfg.ExternalURL = strings.TrimRight(strings.TrimSpace(cfg.ExternalURL), "/")

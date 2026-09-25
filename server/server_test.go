@@ -369,8 +369,19 @@ func TestFeedAPI(t *testing.T) {
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"delivery_mode_in_use":"cache"`) {
 		t.Errorf("clearing override: status = %d, body %s", recorder.Code, recorder.Body)
 	}
-	if recorder := do(router, http.MethodGet, feedPath, "", bearer); recorder.Code != http.StatusOK {
-		t.Errorf("get: status = %d", recorder.Code)
+	// Region diff isn't running here: a feed can't switch it on, but can
+	// switch it off.
+	for _, body := range []string{`{"region_diff": "on"}`, `{"region_diff": "yes"}`, `{"region_diff_exits": ["direct", "direct"]}`, `{"region_diff_on_failure": "shrug"}`} {
+		if recorder := do(router, http.MethodPatch, feedPath, body, bearer); recorder.Code != http.StatusBadRequest {
+			t.Errorf("patch %s: status = %d, want 400", body, recorder.Code)
+		}
+	}
+	recorder = do(router, http.MethodPatch, feedPath, `{"region_diff": "off", "region_diff_on_failure": "hide"}`, bearer)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"region_diff":"off"`) || !strings.Contains(recorder.Body.String(), `"region_diff_in_use":false`) {
+		t.Errorf("region diff off: status = %d, body %s", recorder.Code, recorder.Body)
+	}
+	if recorder := do(router, http.MethodGet, feedPath, "", bearer); recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"region_diff_on_failure":"hide"`) {
+		t.Errorf("get: status = %d, body %s", recorder.Code, recorder.Body)
 	}
 	if recorder := do(router, http.MethodDelete, feedPath, "", bearer); recorder.Code != http.StatusNoContent {
 		t.Errorf("delete: status = %d, want 204", recorder.Code)

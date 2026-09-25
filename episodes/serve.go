@@ -152,7 +152,7 @@ func (server *Server) Serve(writer http.ResponseWriter, request *http.Request, f
 func (server *Server) awaitProcessing(writer http.ResponseWriter, request *http.Request, feed models.Feed, episode models.Episode) (models.Episode, error) {
 	done, err := server.pipeline.Prepare(feed, episode)
 	if errors.Is(err, ErrBusy) {
-		return models.Episode{}, server.unavailable(writer, episode)
+		return models.Episode{}, server.unavailable(writer, episode, "is being prepared")
 	}
 	if err != nil {
 		return models.Episode{}, err
@@ -162,7 +162,7 @@ func (server *Server) awaitProcessing(writer http.ResponseWriter, request *http.
 	select {
 	case <-done:
 	case <-timer.C:
-		return models.Episode{}, server.unavailable(writer, episode)
+		return models.Episode{}, server.unavailable(writer, episode, "is still being processed")
 	case <-request.Context().Done():
 		return models.Episode{}, request.Context().Err()
 	}
@@ -177,20 +177,21 @@ func (server *Server) awaitProcessing(writer http.ResponseWriter, request *http.
 		if err != nil || served {
 			return models.Episode{}, err
 		}
-		return models.Episode{}, server.unavailable(writer, episode) // removed meanwhile
+		return models.Episode{}, server.unavailable(writer, episode, "was processed but its file is gone") // removed meanwhile
 	case episode.Withheld:
 		return models.Episode{}, database.ErrEpisodeNotFound
 	case episode.State == models.EpisodeFailed:
 		return episode, nil
 	default:
 		// A failure the next attempt may not have.
-		return models.Episode{}, server.unavailable(writer, episode)
+		return models.Episode{}, server.unavailable(writer, episode, "failed to process this time ("+episode.LastError+")")
 	}
 }
 
 // unavailable answers 503 with Retry-After: the episode isn't processed yet.
-func (server *Server) unavailable(writer http.ResponseWriter, episode models.Episode) error {
-	logger.Log.Info("Episode '" + episode.Title + "' is still being processed; asked the client to retry.")
+// state completes "Episode '…' …" in the log.
+func (server *Server) unavailable(writer http.ResponseWriter, episode models.Episode, state string) error {
+	logger.Log.Info("Episode '" + episode.Title + "' " + state + "; asked the client to retry.")
 	writer.Header().Set("Retry-After", strconv.Itoa(int(retryAfter/time.Second)))
 	http.Error(writer, "The episode is being processed; try again shortly.", http.StatusServiceUnavailable)
 	return nil

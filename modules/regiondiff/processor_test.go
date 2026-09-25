@@ -202,3 +202,19 @@ func TestProcessorLiveDownloads(t *testing.T) {
 		t.Errorf("note = %q", processed.Note)
 	}
 }
+
+func TestProcessorUsesFeedExits(t *testing.T) {
+	source := &fakeSource{downloads: map[string][]byte{
+		"norway":  join(show1, audio(200, 10), show2),
+		"denmark": join(show1, audio(200, 12), show2),
+	}}
+	job := source.job()
+	job.Feed = models.Feed{RegionDiffExits: []string{"norway", "denmark"}}
+	processed, err := newTestProcessor(t).Process(context.Background(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(processed.Note, "comparing norway with denmark") || len(source.fetched) != 2 {
+		t.Errorf("note %q, fetched %v", processed.Note, source.fetched)
+	}
+}

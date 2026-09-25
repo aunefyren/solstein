@@ -32,15 +32,36 @@ var (
 // Settings are the per-feed overrides. Zero values mean "use the global
 // setting".
 type Settings struct {
-	Exit                string `json:"exit"`
-	DeliveryMode        string `json:"delivery_mode"`
-	PollIntervalMinutes int    `json:"poll_interval_minutes"`
+	Exit                string   `json:"exit"`
+	DeliveryMode        string   `json:"delivery_mode"`
+	PollIntervalMinutes int      `json:"poll_interval_minutes"`
+	RegionDiff          string   `json:"region_diff"`
+	RegionDiffExits     []string `json:"region_diff_exits"`
+	RegionDiffOnFailure string   `json:"region_diff_on_failure"`
 }
+
+// SettingsOf returns a feed's per-feed settings.
+func SettingsOf(feed models.Feed) Settings {
+	return Settings{
+		Exit:                feed.Exit,
+		DeliveryMode:        feed.DeliveryMode,
+		PollIntervalMinutes: feed.PollIntervalMinutes,
+		RegionDiff:          feed.RegionDiff,
+		RegionDiffExits:     feed.RegionDiffExits,
+		RegionDiffOnFailure: feed.RegionDiffOnFailure,
+	}
+}
+
+// regionDiffSwitches are the valid values for a feed's region_diff.
+var regionDiffSwitches = []string{"", "on", "off"}
 
 // Options configures a Service.
 type Options struct {
 	DefaultDeliveryMode string
 	AllowedSourceHosts  []string
+	// RegionDiffAvailable says whether the region-diff module is running, so
+	// a feed can switch it on.
+	RegionDiffAvailable bool
 	// Processed reports whether an episode processor (such as region diff)
 	// handles a feed's episodes. Their episodes are then prepared in the
 	// background and published once processed, whatever the delivery mode.
@@ -71,7 +92,9 @@ func New(store *database.Store, exits *outbound.Manager, options Options) *Servi
 }
 
 // ValidateSettings checks per-feed settings: a known exit and delivery mode,
-// and a non-negative poll interval.
+// a non-negative poll interval, and region-diff settings that can work: on
+// only when the module runs, a pair of two different available exits, a
+// known failure policy.
 func (service *Service) ValidateSettings(feedSettings Settings) error {
 	if feedSettings.Exit != "" {
 		if _, err := service.exits.Client(feedSettings.Exit); err != nil {
@@ -83,6 +106,25 @@ func (service *Service) ValidateSettings(feedSettings Settings) error {
 	}
 	if feedSettings.PollIntervalMinutes < 0 {
 		return fmt.Errorf("%w: poll interval must not be negative", ErrInvalidSettings)
+	}
+	if !slices.Contains(regionDiffSwitches, feedSettings.RegionDiff) {
+		return fmt.Errorf("%w: region_diff must be \"on\", \"off\" or empty (follow the global setting)", ErrInvalidSettings)
+	}
+	if feedSettings.RegionDiff == "on" && !service.options.RegionDiffAvailable {
+		return fmt.Errorf("%w: region diff isn't running; set up region_diff in config.json first", ErrInvalidSettings)
+	}
+	if feedSettings.RegionDiffOnFailure != "" && !slices.Contains(settings.RegionDiffFailurePolicies, feedSettings.RegionDiffOnFailure) {
+		return fmt.Errorf("%w: region_diff_on_failure %q is not one of %v", ErrInvalidSettings, feedSettings.RegionDiffOnFailure, settings.RegionDiffFailurePolicies)
+	}
+	if exits := feedSettings.RegionDiffExits; len(exits) > 0 {
+		if len(exits) != 2 || exits[0] == exits[1] {
+			return fmt.Errorf("%w: region_diff_exits must be two different exits, the home region first", ErrInvalidSettings)
+		}
+		for _, exit := range exits {
+			if _, err := service.exits.Client(exit); err != nil {
+				return fmt.Errorf("%w: region_diff_exits: %w", ErrInvalidSettings, err)
+			}
+		}
 	}
 	return nil
 }
@@ -131,6 +173,9 @@ func (service *Service) Subscribe(ctx context.Context, rawSourceURL string, feed
 		Exit:                feedSettings.Exit,
 		DeliveryMode:        feedSettings.DeliveryMode,
 		PollIntervalMinutes: feedSettings.PollIntervalMinutes,
+		RegionDiff:          feedSettings.RegionDiff,
+		RegionDiffExits:     feedSettings.RegionDiffExits,
+		RegionDiffOnFailure: feedSettings.RegionDiffOnFailure,
 	}
 
 	result, err := service.fetch(ctx, feed)
@@ -302,7 +347,7 @@ func (service *Service) List(ctx context.Context) ([]models.Feed, error) {
 
 // Update saves a feed's settings after validating them.
 func (service *Service) Update(ctx context.Context, feed *models.Feed) error {
-	err := service.ValidateSettings(Settings{Exit: feed.Exit, DeliveryMode: feed.DeliveryMode, PollIntervalMinutes: feed.PollIntervalMinutes})
+	err := service.ValidateSettings(SettingsOf(*feed))
 	if err != nil {
 		return err
 	}

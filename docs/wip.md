@@ -22,3 +22,13 @@ Known issues, ideas and roadmap items that aren't scheduled in a build order yet
 The repetition rule means a short one-off stretch of real show audio next to a break is never removed. The setting would be `trim_break_markers`, default on. The trade-off: a show that uses its own branded sting at breaks loses that sting too.
 
 **Where:** `modules/regiondiff/diff.go`, after the kept runs are trimmed to segment boundaries and before the sanity checks. Test it with synthetic splices, and assert on the live pair that exactly four 87-frame pieces are dropped.
+
+### Switching region diff on for a feed with cached episodes
+
+**Gap:** when region diff is switched on for an existing feed (per feed, or through `enabled`), episodes already cached unprocessed stay cached and keep being served with their ads until their cache copy expires (`cache_retention_days`), after which they are processed on the next request. Only new episodes, and uncached ones, are cleaned at once.
+
+**Options:** when a feed's `region_diff_in_use` turns on, drop its unprocessed cache copies (cached, no `process_note`), so the next request processes them. A global switch would also need a check at start-up. Not needed while feeds are set up with region diff from the start.
+
+### Keeping the raw downloads (`keep_sources`)
+
+Proposed in the design, not built: keep both regions' downloads next to the cleaned file, to debug a bad cut. The live-test downloads in `config/live/` cover development for now.

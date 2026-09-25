@@ -26,6 +26,10 @@ const audio = "ID3fake-mp3-audio-bytes"
 // hits counts requests for /ok.mp3, to tell cache hits from source fetches.
 var hits atomic.Int32
 
+// flaky counts requests for /flaky.mp3: every other one is dropped without
+// a response, as a VPN tunnel was seen to do.
+var flaky atomic.Int32
+
 // startAudioHost serves the kinds of responses a podcast CDN can give.
 func startAudioHost(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -35,6 +39,14 @@ func startAudioHost(t *testing.T) *httptest.Server {
 			hits.Add(1)
 			writer.Header().Set("Content-Type", "audio/mpeg")
 			http.ServeContent(writer, request, "", time.Time{}, strings.NewReader(audio)) // supports Range
+		case "/flaky.mp3":
+			if flaky.Add(1)%2 == 1 {
+				connection, _, _ := writer.(http.Hijacker).Hijack()
+				connection.Close()
+				return
+			}
+			writer.Header().Set("Content-Type", "audio/mpeg")
+			writer.Write([]byte(audio))
 		case "/untyped":
 			writer.Write([]byte(audio)) // no Content-Type: sniffed as octet-stream
 		case "/html.mp3":
@@ -173,6 +185,16 @@ func TestDownloadSuccess(t *testing.T) {
 		t.Error("found work after everything was cached")
 	}
 	assertNoPartFiles(t, setup.cache)
+}
+
+func TestDroppedConnectionIsRetriedAtOnce(t *testing.T) {
+	setup := newTestSetup(t)
+	flaky.Store(0)
+	episode := setup.addEpisode(t, "/flaky.mp3")
+	setup.processOne(t)
+	if stored := setup.reload(t, episode); stored.State != models.EpisodeReady || stored.Attempts != 1 || flaky.Load() != 2 {
+		t.Errorf("episode = %+v after %d requests; want ready on the first attempt", stored, flaky.Load())
+	}
 }
 
 func TestPermanentFailures(t *testing.T) {

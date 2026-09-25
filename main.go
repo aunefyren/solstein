@@ -19,6 +19,7 @@ import (
 	"aunefyren/solstein/feeds"
 	"aunefyren/solstein/logger"
 	"aunefyren/solstein/modules/exits"
+	"aunefyren/solstein/modules/regiondiff"
 	"aunefyren/solstein/outbound"
 	"aunefyren/solstein/server"
 	"aunefyren/solstein/settings"
@@ -140,11 +141,27 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	feedService := feeds.New(store, exitManager, feeds.Options{
+	// Region diff is optional too: off unless region_diff names two exits
+	// that exist. It needs nothing started; it runs inside the pipeline.
+	regionDiff, regionDiffWarnings := regiondiff.Setup(cfg.RegionDiff, exitManager.Exits())
+	for _, warning := range regionDiffWarnings {
+		logger.Log.Warn("Region diff: " + warning)
+	}
+	feedOptions := feeds.Options{
 		DefaultDeliveryMode: cfg.DeliveryMode,
 		AllowedSourceHosts:  cfg.AllowedSourceHosts,
-	})
-	warnAboutMissingExits(ctx, feedService, exitManager.Exits())
+	}
+	var processor episodes.Processor
+	if regionDiff != nil {
+		processor = regionDiff
+		feedOptions.RegionDiffAvailable = true
+		feedOptions.Processed = regionDiff.Handles
+		feedOptions.ProcessBacklog = cfg.RegionDiff.Backlog
+		logger.Log.Info("Region diff on: " + regionDiff.Summary() + ".")
+	}
+
+	feedService := feeds.New(store, exitManager, feedOptions)
+	warnAboutFeedSettings(ctx, feedService, exitManager.Exits(), regionDiff != nil)
 	if cfg.DisableAuth {
 		logger.Log.Warn("Auth is disabled: anyone who can reach Solstein can subscribe to feeds through it. Only use this on a private network.")
 	} else {
@@ -159,6 +176,7 @@ func run() int {
 	pipeline := episodes.NewPipeline(store, exitManager, cache, episodes.Options{
 		DefaultDeliveryMode: cfg.DeliveryMode,
 		Workers:             downloadWorkers,
+		Processor:           processor,
 	})
 	if err := pipeline.Recover(ctx); err != nil {
 		logger.Log.Error("Failed to recover interrupted downloads. Error: " + err.Error())
@@ -199,18 +217,27 @@ func run() int {
 	return exitCode
 }
 
-// warnAboutMissingExits flags feeds whose exit no longer exists (removed from
-// config.json, or its provider disabled). Their polls and downloads fail
-// until the exit is back or the feed is changed.
-func warnAboutMissingExits(ctx context.Context, feedService *feeds.Service, available []string) {
+// warnAboutFeedSettings flags feeds whose settings can't take effect: an
+// exit that no longer exists (removed from config.json, or its provider
+// disabled), whose polls and downloads fail until it is back or the feed is
+// changed; or region diff switched on while the module is off.
+func warnAboutFeedSettings(ctx context.Context, feedService *feeds.Service, available []string, regionDiffRunning bool) {
 	list, err := feedService.List(ctx)
 	if err != nil {
-		logger.Log.Error("Failed to check feeds' exits. Error: " + err.Error())
+		logger.Log.Error("Failed to check feeds' settings. Error: " + err.Error())
 		return
 	}
 	for _, feed := range list {
 		if feed.Exit != "" && !slices.Contains(available, feed.Exit) {
 			logger.Log.Warn("Feed '" + feed.Title + "' uses exit '" + feed.Exit + "', which isn't available; it can't be polled or downloaded until the exit is back or the feed's exit is changed.")
+		}
+		if feed.RegionDiff == "on" && !regionDiffRunning {
+			logger.Log.Warn("Feed '" + feed.Title + "' has region diff switched on, but region diff is off; its episodes are served with their ads.")
+		}
+		for _, exit := range feed.RegionDiffExits {
+			if regionDiffRunning && !slices.Contains(available, exit) {
+				logger.Log.Warn("Feed '" + feed.Title + "' compares through exit '" + exit + "', which isn't available; its episodes can't be processed until the exit is back or the feed's region_diff_exits is changed.")
+			}
 		}
 	}
 }

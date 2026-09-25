@@ -167,6 +167,23 @@ func TestValidate(t *testing.T) {
 		{name: "bad retention", modify: func(cfg *Config) { cfg.CacheRetentionDays = -3 }, wantErr: true},
 		{name: "disable direct without default exit", modify: func(cfg *Config) { cfg.DisableDirect = true }, wantErr: true},
 		{name: "disable direct with default exit direct", modify: func(cfg *Config) { cfg.DisableDirect, cfg.DefaultExit = true, "direct" }, wantErr: true},
+		{name: "region diff defaults", modify: func(cfg *Config) {}, check: func(t *testing.T, cfg Config) {
+			want := RegionDiff{Exits: []string{}, FallbackExits: []string{}, MinSharedSeconds: 2, MaxRemovedShare: 0.3, OnFailure: "publish"}
+			if !reflect.DeepEqual(cfg.RegionDiff, want) {
+				t.Errorf("region diff = %+v", cfg.RegionDiff)
+			}
+		}},
+		{name: "region diff normalised", modify: func(cfg *Config) {
+			cfg.RegionDiff.Exits, cfg.RegionDiff.OnFailure = []string{" norway ", "sweden"}, " Hide "
+		}, check: func(t *testing.T, cfg Config) {
+			if !reflect.DeepEqual(cfg.RegionDiff.Exits, []string{"norway", "sweden"}) || cfg.RegionDiff.OnFailure != "hide" {
+				t.Errorf("region diff = %+v", cfg.RegionDiff)
+			}
+		}},
+		{name: "region diff bad failure policy", modify: func(cfg *Config) { cfg.RegionDiff.OnFailure = "ignore" }, wantErr: true},
+		{name: "region diff bad minimum", modify: func(cfg *Config) { cfg.RegionDiff.MinSharedSeconds = 0.1 }, wantErr: true},
+		{name: "region diff bad share", modify: func(cfg *Config) { cfg.RegionDiff.MaxRemovedShare = 1.5 }, wantErr: true},
+		{name: "region diff negative backlog", modify: func(cfg *Config) { cfg.RegionDiff.Backlog = -1 }, wantErr: true},
 		{name: "disable direct with a VPN default", modify: func(cfg *Config) { cfg.DisableDirect, cfg.DefaultExit = true, " norway " }, check: func(t *testing.T, cfg Config) {
 			if cfg.DefaultExit != "norway" {
 				t.Errorf("default exit = %q", cfg.DefaultExit)

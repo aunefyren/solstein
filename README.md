@@ -9,7 +9,7 @@ A self-hosted podcast RSS proxy that sits between podcast hosts and Audiobookshe
 
 The name comes from the Viking sunstone (Iceland spar), which shows everything twice through double refraction.
 
-> **Status:** early development. The core proxy works: subscribing, rewritten feeds, background polling, caching new episodes, serving audio (from the cache with range support, or streamed from the source) and cache clean-up. VPN exits work with any WireGuard VPN through `.conf` files, and with Proton VPN from its server list; ad removal is not implemented yet. See `docs/design.md`.
+> **Status:** early development. The core proxy works: subscribing, rewritten feeds, background polling, caching new episodes, serving audio (from the cache with range support, or streamed from the source) and cache clean-up. VPN exits work with any WireGuard VPN through `.conf` files, and with Proton VPN from its server list. Ad removal (region diff) works on Acast shows, checked end to end with Audiobookshelf. See `docs/design.md`.
 
 ## Running
 
@@ -60,9 +60,9 @@ curl -H "Authorization: Bearer <auth_token>" -H "Content-Type: application/json"
 | Method and path | Purpose |
 |---|---|
 | `GET /api/v1/feeds` | List feeds |
-| `POST /api/v1/feeds` | Subscribe: `{"source_url", "exit", "delivery_mode", "poll_interval_minutes"}`; `201` when new, `200` when already subscribed |
+| `POST /api/v1/feeds` | Subscribe: `{"source_url", "exit", "delivery_mode", "poll_interval_minutes", "region_diff", "region_diff_exits", "region_diff_on_failure"}`; `201` when new, `200` when already subscribed |
 | `GET /api/v1/feeds/{id}` | One feed |
-| `PATCH /api/v1/feeds/{id}` | Change `exit`, `delivery_mode` or `poll_interval_minutes`; an empty value clears the override |
+| `PATCH /api/v1/feeds/{id}` | Change any of the settings above; an empty value clears the override |
 | `DELETE /api/v1/feeds/{id}` | Unsubscribe and delete everything stored for the feed |
 
 The API takes the token as `Authorization: Bearer <token>` or `?token=<token>`.
@@ -123,6 +123,30 @@ In `config.json` (paths are relative to the config directory, `/app/config` in D
 
 **Keeping your own address out of it.** Set `default_exit` to a VPN exit (for example one in your own country) so every feed goes through it unless it names another, and `disable_direct: true` so nothing ever goes out on your own connection: the server-list refresh takes the default exit too, and a feed or setting naming `direct` is refused. Solstein never falls back to `direct` when the VPN is down; requests fail instead, and a `default_exit` that doesn't exist or failed to load stops start-up. Only the WireGuard connections to the VPN servers themselves leave from your address, as they must.
 
+## Removing ads (region diff)
+
+Hosts such as Acast insert ads per listener region. Region diff downloads each episode through two exits in different ad markets at the same moment, keeps the audio both share and drops the rest: the show stays byte for byte as published, without re-encoding. It needs two exits, typically one in your own country and one abroad (see **VPN exits**), and works on MP3 episodes.
+
+```json
+"region_diff": {
+  "enabled": true,
+  "exits": ["norway", "sweden"],
+  "fallback_exits": ["germany"],
+  "on_failure": "publish",
+  "backlog": 0
+}
+```
+
+- `exits`: the pair, your home region first (its download is the one kept, with its tags). `direct` works as the home side, but shows the host your own address; with `disable_direct` use a VPN exit in your own country.
+- `fallback_exits`: tried in turn when the pair's downloads are identical (no dynamic ads, or the same campaign in both markets). If every one agrees, the episode is kept as it is.
+- `enabled`: region diff for every feed that doesn't set its own `region_diff`. With it `false`, feeds can still switch it on one by one.
+- `on_failure`: `publish` serves an episode that can't be cleaned (not MP3, implausible result) with its ads; `hide` keeps it out of the feed.
+- `backlog`: how many of a new feed's newest existing episodes are cleaned straight away. The rest are cleaned the first time they are played: the client waits a few seconds (about 5 for a 40-minute episode). If it takes over 20 seconds, it gets `503` and `Retry-After`, and the next attempt gets the clean file.
+- `min_shared_seconds` (default `2`) and `max_removed_share` (default `0.3`) tune the diff and its sanity check.
+- New episodes appear in the feed once cleaned, whatever the feed's `delivery_mode`, and the feed carries the cleaned file's size and duration.
+- Per feed (API): `region_diff` (`on`, `off`, or empty for the global setting), `region_diff_exits` (its own pair) and `region_diff_on_failure`. The feed's `region_diff_in_use` shows the result.
+- If the exits don't exist, region diff stays off and Solstein logs why at start-up.
+
 ## Configuration
 
 On first run Solstein creates `config.json` in its config directory (`/app/config` in Docker); that file is the configuration. Every setting can also be changed with a flag or an environment variable. These are applied at start-up and saved back to `config.json`, so they stay in effect after the flag or variable is removed. If both are given, the flag wins.
@@ -145,6 +169,7 @@ On first run Solstein creates `config.json` in its config directory (`/app/confi
 | `delivery_mode` | `-deliverymode` | `SOLSTEIN_DELIVERY_MODE` | `cache` | Default for feeds: `cache` (download and serve from disk), `stream` (pass through live) or `original` (only proxy the feed). |
 | `poll_interval_minutes` | `-pollinterval` | `SOLSTEIN_POLL_INTERVAL` | `15` | Minutes between feed polls. |
 | `cache_retention_days` | `-cacheretention` | `SOLSTEIN_CACHE_RETENTION` | `14` | Days cached episodes are kept on disk. Expired episodes stay in the feed and are fetched from the source again if played. |
+| `region_diff` | — | — | off | Ad removal; see **Removing ads**. Set in `config.json` only. |
 | — | `-configdir` | `SOLSTEIN_CONFIG_DIR` | `config` (`/app/config` in Docker) | Directory for `config.json`, the database, logs and cache. |
 | — | `-version` | — | — | Print the version and exit. |
 

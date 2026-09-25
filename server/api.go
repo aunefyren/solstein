@@ -19,13 +19,17 @@ import (
 type feedResponse struct {
 	models.Feed
 	DeliveryModeInUse string `json:"delivery_mode_in_use"`
-	FeedURL           string `json:"feed_url"`
+	// RegionDiffInUse says whether the feed's episodes are region-diffed,
+	// after the global setting and the feed's own are combined.
+	RegionDiffInUse bool   `json:"region_diff_in_use"`
+	FeedURL         string `json:"feed_url"`
 }
 
 func (handlers *handlers) feedResponse(context *gin.Context, feed models.Feed) feedResponse {
 	return feedResponse{
 		Feed:              feed,
 		DeliveryModeInUse: handlers.feeds.DeliveryMode(feed),
+		RegionDiffInUse:   handlers.feeds.Processed(feed),
 		FeedURL:           handlers.urls(context).Feed(feed.ID),
 	}
 }
@@ -86,9 +90,12 @@ func (handlers *handlers) apiGetFeed(context *gin.Context) {
 // updateFeedRequest has pointer fields so an omitted field is left alone and
 // an empty one clears the override.
 type updateFeedRequest struct {
-	Exit                *string `json:"exit"`
-	DeliveryMode        *string `json:"delivery_mode"`
-	PollIntervalMinutes *int    `json:"poll_interval_minutes"`
+	Exit                *string   `json:"exit"`
+	DeliveryMode        *string   `json:"delivery_mode"`
+	PollIntervalMinutes *int      `json:"poll_interval_minutes"`
+	RegionDiff          *string   `json:"region_diff"`
+	RegionDiffExits     *[]string `json:"region_diff_exits"`
+	RegionDiffOnFailure *string   `json:"region_diff_on_failure"`
 }
 
 func (handlers *handlers) apiUpdateFeed(context *gin.Context) {
@@ -110,6 +117,15 @@ func (handlers *handlers) apiUpdateFeed(context *gin.Context) {
 	}
 	if request.PollIntervalMinutes != nil {
 		feed.PollIntervalMinutes = *request.PollIntervalMinutes
+	}
+	if request.RegionDiff != nil {
+		feed.RegionDiff = *request.RegionDiff
+	}
+	if request.RegionDiffExits != nil {
+		feed.RegionDiffExits = *request.RegionDiffExits
+	}
+	if request.RegionDiffOnFailure != nil {
+		feed.RegionDiffOnFailure = *request.RegionDiffOnFailure
 	}
 
 	err := handlers.feeds.Update(context.Request.Context(), &feed)

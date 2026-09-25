@@ -32,6 +32,9 @@ const (
 	defaultIdleTimeout = 2 * time.Minute
 	// downloadTimeout bounds a whole download, however slowly it trickles.
 	downloadTimeout = time.Hour
+	// fetchRetryDelay is the pause before retrying a request that got no
+	// response at all.
+	fetchRetryDelay = 500 * time.Millisecond
 	// checkInterval is how often idle workers look for work they weren't
 	// woken for, such as retries coming due.
 	checkInterval = 30 * time.Second
@@ -449,6 +452,17 @@ func (pipeline *Pipeline) fetch(ctx context.Context, exit, sourceURL string, lim
 	request.Header.Set("Accept", "*/*")
 
 	response, err := client.Do(request)
+	if err != nil && !errors.Is(err, outbound.ErrDestinationBlocked) && ctx.Err() == nil {
+		// A connection dropped before any response (seen live through a VPN
+		// tunnel as a bare EOF) is tried once more at once, rather than
+		// failing the attempt and, for a request waiting on processing,
+		// answering 503. Nothing has been written yet, so this is safe.
+		select {
+		case <-time.After(fetchRetryDelay):
+			response, err = client.Do(request)
+		case <-ctx.Done():
+		}
+	}
 	if err != nil {
 		if errors.Is(err, outbound.ErrDestinationBlocked) {
 			return fmt.Errorf("%w: %w", ErrPermanent, err)

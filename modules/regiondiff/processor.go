@@ -13,8 +13,12 @@ import (
 	"aunefyren/solstein/mp3"
 )
 
-// ProcessorOptions configures the region-diff processor.
+// ProcessorOptions configures the region-diff processor. A feed's own
+// settings (models.Feed's RegionDiff fields) override Enabled, Exits and
+// HideOnFailure.
 type ProcessorOptions struct {
+	// Enabled is whether feeds that don't say otherwise are processed.
+	Enabled bool
 	// Exits are the pair every episode is downloaded through: the home
 	// region's exit first (its download is the one kept), then one in
 	// another ad market.
@@ -51,12 +55,40 @@ func NewProcessor(options ProcessorOptions) (*Processor, error) {
 
 func (processor *Processor) Name() string { return "region diff" }
 
-// Handles reports whether region diff applies to a feed: every feed, for
-// now. Per-feed switches come with the settings (see docs/design.md, Region
-// diff build order).
-func (processor *Processor) Handles(models.Feed) bool { return true }
+// Handles reports whether region diff applies to a feed: its own switch, or
+// the global one.
+func (processor *Processor) Handles(feed models.Feed) bool {
+	switch feed.RegionDiff {
+	case "on":
+		return true
+	case "off":
+		return false
+	}
+	return processor.options.Enabled
+}
 
-func (processor *Processor) HideOnFailure(models.Feed) bool { return processor.options.HideOnFailure }
+// HideOnFailure is the feed's failure policy, or the global one.
+func (processor *Processor) HideOnFailure(feed models.Feed) bool {
+	if feed.RegionDiffOnFailure != "" {
+		return feed.RegionDiffOnFailure == "hide"
+	}
+	return processor.options.HideOnFailure
+}
+
+// exitsFor is the feed's exit pair and the fallbacks to try with it. A
+// fallback that is part of the feed's own pair is skipped.
+func (processor *Processor) exitsFor(feed models.Feed) (pair [2]string, fallbacks []string) {
+	pair = processor.options.Exits
+	if len(feed.RegionDiffExits) == 2 {
+		pair = [2]string{feed.RegionDiffExits[0], feed.RegionDiffExits[1]}
+	}
+	for _, exit := range processor.options.FallbackExits {
+		if exit != pair[0] && exit != pair[1] {
+			fallbacks = append(fallbacks, exit)
+		}
+	}
+	return pair, fallbacks
+}
 
 // Process downloads the episode through both exits at once and removes the
 // audio they don't share. When both carry the same audio, the fallback
@@ -65,16 +97,17 @@ func (processor *Processor) HideOnFailure(models.Feed) bool { return processor.o
 // frame by frame fail for good; an implausible result is retried, as the
 // next downloads may carry other ads.
 func (processor *Processor) Process(ctx context.Context, job episodes.Job) (episodes.Processed, error) {
-	home, other, err := fetchPair(ctx, job, processor.options.Exits)
+	pair, fallbacks := processor.exitsFor(job.Feed)
+	home, other, err := fetchPair(ctx, job, pair)
 	if err != nil {
 		return episodes.Processed{}, err
 	}
 
 	options := processor.options.Diff
 	options.ExpectedDuration = job.ExpectedDuration
-	compared := processor.options.Exits[1]
+	compared := pair[1]
 	result, err := Diff(home.Data, other.Data, options)
-	for _, exit := range processor.options.FallbackExits {
+	for _, exit := range fallbacks {
 		if !errors.Is(err, ErrIdentical) {
 			break
 		}
@@ -108,7 +141,7 @@ func (processor *Processor) Process(ctx context.Context, job episodes.Job) (epis
 		ContentType: home.ContentType,
 		Duration:    result.Duration,
 		Note: fmt.Sprintf("removed %s of ads in %s, comparing %s with %s",
-			removed.Round(time.Second), breaks, processor.options.Exits[0], compared),
+			removed.Round(time.Second), breaks, pair[0], compared),
 	}, nil
 }
 

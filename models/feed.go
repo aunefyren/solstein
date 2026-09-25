@@ -14,6 +14,14 @@ type Feed struct {
 	Exit                string `json:"exit"`
 	DeliveryMode        string `json:"delivery_mode"`
 	PollIntervalMinutes int    `json:"poll_interval_minutes"`
+	// RegionDiff is "on" or "off", or empty to follow region_diff.enabled.
+	RegionDiff string `json:"region_diff"`
+	// RegionDiffExits overrides region_diff.exits for this feed: two exits,
+	// the home region first. Empty uses the global pair.
+	RegionDiffExits []string `json:"region_diff_exits" gorm:"serializer:json"`
+	// RegionDiffOnFailure overrides region_diff.on_failure ("publish" or
+	// "hide"); empty uses the global policy.
+	RegionDiffOnFailure string `json:"region_diff_on_failure"`
 
 	LastPolledAt  *time.Time `json:"last_polled_at"`
 	LastSuccessAt *time.Time `json:"last_success_at"`
