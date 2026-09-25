@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -317,5 +318,32 @@ func TestPoolHandsOutKeys(t *testing.T) {
 	pool.closeAll()
 	if pool.keyUse[0] != 0 || pool.keyUse[1] != 0 {
 		t.Errorf("keys in use after closeAll: %v", pool.keyUse)
+	}
+}
+
+func TestProtonListAgeWarning(t *testing.T) {
+	list := protonList{Timestamp: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC).Unix()}
+	fresh := list.UpdatedAt().Add(protonListMaxAge)
+	stale := fresh.Add(24 * time.Hour)
+	_, formatErr := parseProtonList([]byte(`{"version": 5}`))
+	cases := []struct {
+		name string
+		now  time.Time
+		err  error
+		want string // "" for no warning
+	}{
+		{"recent", fresh, nil, ""},
+		{"recent, refresh failing", fresh, errors.New("timeout"), ""},
+		{"old, source not updated", stale, nil, "hasn't been updated"},
+		{"old, refresh failing", stale, errors.New("timeout"), "Refreshing it fails"},
+		{"old, new format", stale, formatErr, "a newer Solstein is needed"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			warning := protonListAgeWarning(list, c.now, c.err)
+			if c.want == "" && warning != "" || c.want != "" && (!strings.Contains(warning, c.want) || !strings.Contains(warning, "2026-07-01, 61 days old")) {
+				t.Errorf("warning %q", warning)
+			}
+		})
 	}
 }

@@ -183,6 +183,12 @@ func TestValidate(t *testing.T) {
 		{name: "region diff bad failure policy", modify: func(cfg *Config) { cfg.RegionDiff.OnFailure = "ignore" }, wantErr: true},
 		{name: "region diff bad minimum", modify: func(cfg *Config) { cfg.RegionDiff.MinSharedSeconds = 0.1 }, wantErr: true},
 		{name: "region diff bad share", modify: func(cfg *Config) { cfg.RegionDiff.MaxRemovedShare = 1.5 }, wantErr: true},
+		{name: "home country normalised", modify: func(cfg *Config) { cfg.HomeCountry = " no " }, check: func(t *testing.T, cfg Config) {
+			if cfg.HomeCountry != "NO" {
+				t.Errorf("home country = %q", cfg.HomeCountry)
+			}
+		}},
+		{name: "home country not a code", modify: func(cfg *Config) { cfg.HomeCountry = "Norway" }, wantErr: true},
 		{name: "region diff negative backlog", modify: func(cfg *Config) { cfg.RegionDiff.Backlog = -1 }, wantErr: true},
 		{name: "disable direct with a VPN default", modify: func(cfg *Config) { cfg.DisableDirect, cfg.DefaultExit = true, " norway " }, check: func(t *testing.T, cfg Config) {
 			if cfg.DefaultExit != "norway" {

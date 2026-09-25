@@ -170,4 +170,12 @@ func TestSetupKeepsFailedDownloadsWhenAsked(t *testing.T) {
 	if want := filepath.Join("/config", "regiondiff-failures"); processor.options.FailureDir != want || !strings.Contains(processor.Summary(), want) {
 		t.Errorf("failure dir %q, summary %q", processor.options.FailureDir, processor.Summary())
 	}
+	if processor.options.SuccessDir != "" {
+		t.Errorf("successes kept without being asked: %q", processor.options.SuccessDir)
+	}
+	config.KeepSuccessfulDownloads = true
+	processor, _ = Setup(config, []string{"norway", "sweden"}, nil, "/config")
+	if want := filepath.Join("/config", "regiondiff-successes"); processor.options.SuccessDir != want || !strings.Contains(processor.Summary(), want) {
+		t.Errorf("success dir %q, summary %q", processor.options.SuccessDir, processor.Summary())
+	}
 }

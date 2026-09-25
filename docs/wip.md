@@ -17,9 +17,7 @@ Five of 115 "It Was A Sh*t Show" episodes failed as implausible in production wi
 
 ### Background queue: not checked live yet (2026-09-25)
 
-Slow retries of withheld episodes, `POST /api/v1/feeds/{id}/retry` and `POST /api/v1/feeds/{id}/prepare` ([`episodes.md`](episodes.md), Background queue) are built and tested, but haven't run against Acast and ABS yet. Worth checking: a `prepare` of a large region-diff backlog (does two at a time stay clear of the burst failures above?), and that a withheld new episode published by a late retry is picked up by ABS (it should be, being dated when first served).
-
-Open: whether a retry for every feed at once (`POST /api/v1/retry`) is worth adding; per feed is all there is.
+Slow retries of withheld episodes, `POST /api/v1/feeds/{id}/retry` (and `/api/v1/retry`) and `POST /api/v1/feeds/{id}/prepare` ([`episodes.md`](episodes.md), Background queue) are built and tested, but haven't run against Acast and ABS yet. Worth checking: a `prepare` of a large region-diff backlog (does two at a time stay clear of the burst failures above?), and that a withheld new episode published by a late retry is picked up by ABS (it should be, being dated when first served).
 
 ### Ads that are the same in every compared market (open, 2026-09-25)
 
@@ -35,14 +33,6 @@ Cutting it would leave the first show frame without the bit-reservoir bytes it b
 
 Off by default because a show's own sting spliced in at breaks would go too. Revisit once it has run on real feeds for a while: if it never removes anything that isn't a host's marker, it could default to on.
 
-### The home country of `direct` (idea)
-
-The same-country checks can't see `direct`'s country (it would need an outside geolocation service, which is ruled out), so a pair like `["direct", "norway"]` from Norway is never flagged. An optional `home_country` setting, declared by the operator, would let the checks treat `direct` as that country. Not asked for yet.
-
-### Keeping the raw downloads of successful diffs (idea)
-
-`keep_failed_downloads` keeps them for failed diffs. Keeping them for successful ones too (the original `keep_sources` idea) would help debug a bad cut that passed the sanity checks; not built, and costs twice an episode's size per episode.
-
 ### Open questions
 
 - **Other hosts than Acast:** whether they splice at frame level too. Region diff refuses anything that isn't MP3 rather than guessing; a host that re-encodes per listener can't be diffed this way at all.
@@ -56,7 +46,7 @@ The same-country checks can't see `direct`'s country (it would need an outside g
 - **Proton NO transfers cut off mid-body (2026-09-25):** three of about eight long downloads through the `norway` Proton exit (NO#23 in production) broke off partway with `unexpected EOF` or `connection reset by peer`; Sweden didn't. The pipeline retries them, but a server that does this often isn't benched, since the WireGuard handshake stays fresh and a mid-body reset looks like the destination's fault. Watch whether it keeps happening; if so, count mid-body resets against the server, or prefer another server in the country.
 - **DNS through Proton times out now and then (2026-09-25):** four lookups through the `norway` tunnel's DNS (10.2.0.1) failed with `i/o timeout` in about 40 minutes of heavy downloading: a feed poll (the last good copy was served), a fallback download, the server-list refresh. Lookups already retry after 1 s and 2 s. If it keeps happening, retry longer, or cache answers for their TTL.
 - **Proton connection counting:** one key holds several tunnels at once (verified), but whether Proton counts them as one connection or several against the plan limit (Free 1, Plus 10) is unknown.
-- **Server-list resilience:** the refresh accepts only format version 4. If gluetun-servers moves to a new version, Solstein keeps the last good copy or the embedded snapshot indefinitely; it should at least warn when the list is getting old, and support the new format.
+- **Server-list format:** the refresh accepts only format version 4. If gluetun-servers moves to a new version, Solstein keeps the last good copy and warns once it is 60 days old ([`exits.md`](exits.md)); reading the new format waits until there is one.
 
 ### Deferred ideas
 

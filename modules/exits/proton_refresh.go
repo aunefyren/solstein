@@ -22,6 +22,10 @@ const (
 	// never slows starting Solstein.
 	protonFirstRefresh = time.Minute
 	maxProtonListBytes = 20 << 20
+	// protonListMaxAge is how old the list in use may get before Solstein
+	// warns: gluetun's maintainers update it about monthly, so this is two
+	// updates missed.
+	protonListMaxAge = 60 * 24 * time.Hour
 )
 
 // loadProtonList picks the list to start with: the cached copy from an
@@ -72,11 +76,42 @@ func (module *Module) runProtonRefresh(ctx context.Context, cachedAt time.Time) 
 			return
 		case <-timer.C:
 		}
-		if err := module.refreshProton(ctx); err != nil && ctx.Err() == nil {
+		err := module.refreshProton(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
 			logger.Log.Warn("Failed to refresh the Proton server list; keeping the current one. Error: " + err.Error())
+		}
+		module.mutex.Lock()
+		list := module.protonList
+		module.mutex.Unlock()
+		if warning := protonListAgeWarning(list, module.now(), err); warning != "" {
+			logger.Log.Warn(warning)
 		}
 		timer.Reset(protonRefreshInterval)
 	}
+}
+
+// protonListAgeWarning says, when the list in use is older than
+// protonListMaxAge, what that means and the likely cause. refreshErr is
+// the last refresh's error, nil if it succeeded (and found nothing newer).
+func protonListAgeWarning(list protonList, now time.Time, refreshErr error) string {
+	age := now.Sub(list.UpdatedAt())
+	if age <= protonListMaxAge {
+		return ""
+	}
+	warning := fmt.Sprintf("The Proton server list in use is from %s, %d days old: servers Proton added since can't be used, and ones it removed fail to connect.",
+		list.UpdatedAt().UTC().Format(time.DateOnly), int(age/(24*time.Hour)))
+	switch {
+	case errors.Is(refreshErr, errUnknownFormat):
+		warning += " The list's format has changed; a newer Solstein is needed to read it."
+	case refreshErr != nil:
+		warning += " Refreshing it fails (above)."
+	default:
+		warning += " Refreshing it works, but brings nothing newer: gluetun-servers (" + protonListURL + ") hasn't been updated."
+	}
+	return warning
 }
 
 var errNotNewer = errors.New("not newer than the current list")

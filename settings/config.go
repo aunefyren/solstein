@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -75,6 +76,12 @@ type Config struct {
 	// altogether, so nothing leaves from the host's own address.
 	DefaultExit   string `json:"default_exit"`
 	DisableDirect bool   `json:"disable_direct"`
+	// HomeCountry is the country (ISO 3166-1 alpha-2) this host's own
+	// connection comes out in, as the operator declares it; empty means
+	// unknown. Solstein can't find it out itself without an outside
+	// geolocation service. With it set, region diff's same-country checks
+	// treat the direct exit as coming out there.
+	HomeCountry string `json:"home_country"`
 
 	// DeliveryMode is the default for feeds that don't set their own.
 	DeliveryMode        string `json:"delivery_mode"`
@@ -86,6 +93,9 @@ type Config struct {
 	// RegionDiff configures the region-diff module.
 	RegionDiff RegionDiff `json:"region_diff"`
 }
+
+// countryCode is an ISO 3166-1 alpha-2 code, upper-cased.
+var countryCode = regexp.MustCompile(`^[A-Z]{2}$`)
 
 // Load reads config.json from configDir and fills in defaults for missing
 // fields. A missing file yields the defaults. Nothing is written; see Save.
@@ -225,6 +235,11 @@ func (cfg *Config) Validate() error {
 	cfg.DefaultExit = strings.TrimSpace(cfg.DefaultExit)
 	if cfg.DisableDirect && (cfg.DefaultExit == "" || cfg.DefaultExit == "direct") {
 		return errors.New("disable_direct needs a default_exit naming a VPN exit")
+	}
+
+	cfg.HomeCountry = strings.ToUpper(strings.TrimSpace(cfg.HomeCountry))
+	if cfg.HomeCountry != "" && !countryCode.MatchString(cfg.HomeCountry) {
+		return fmt.Errorf("home_country %q must be a two-letter country code, such as NO", cfg.HomeCountry)
 	}
 
 	cfg.DeliveryMode = strings.ToLower(strings.TrimSpace(cfg.DeliveryMode))

@@ -73,7 +73,8 @@ func Setup(config settings.RegionDiff, available []string, locator Locator, conf
 		Diff:          diff,
 		HideOnFailure: config.OnFailure == "hide",
 		Locator:       locator,
-		FailureDir:    failureDir(config, configDir),
+		FailureDir:    keptDir(config.KeepFailedDownloads, configDir, "regiondiff-failures"),
+		SuccessDir:    keptDir(config.KeepSuccessfulDownloads, configDir, "regiondiff-successes"),
 	})
 	if err != nil {
 		return off(err.Error())
@@ -81,13 +82,13 @@ func Setup(config settings.RegionDiff, available []string, locator Locator, conf
 	return processor, warnings
 }
 
-// failureDir is where failed attempts' downloads are kept, or "" for not at
+// keptDir is where downloads are kept when keep is set, or "" for not at
 // all.
-func failureDir(config settings.RegionDiff, configDir string) string {
-	if !config.KeepFailedDownloads || configDir == "" {
+func keptDir(keep bool, configDir, name string) string {
+	if !keep || configDir == "" {
 		return ""
 	}
-	return filepath.Join(configDir, "regiondiff-failures")
+	return filepath.Join(configDir, name)
 }
 
 // sameCountry reports whether two exits can come out in the same country.
@@ -149,6 +150,9 @@ func (processor *Processor) Summary() string {
 	}
 	if options.FailureDir != "" {
 		summary += "; downloads of failed attempts are kept in " + options.FailureDir
+	}
+	if options.SuccessDir != "" {
+		summary += "; downloads of successful diffs are kept in " + options.SuccessDir
 	}
 	if options.HideOnFailure {
 		return summary + "; episodes that can't be processed are kept out of the feed"

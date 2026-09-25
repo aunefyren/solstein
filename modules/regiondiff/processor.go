@@ -37,6 +37,9 @@ type ProcessorOptions struct {
 	// FailureDir, when set, keeps the downloads of attempts whose diff
 	// failed, for a look at what the host sent (see keepFailed).
 	FailureDir string
+	// SuccessDir, when set, keeps the downloads of diffs that worked too,
+	// with where they cut (see keepSuccessful).
+	SuccessDir string
 }
 
 // Locator says where exits come out; outbound.Manager is one. The direct
@@ -167,7 +170,9 @@ func (processor *Processor) Process(ctx context.Context, job episodes.Job) (epis
 
 	switch {
 	case errors.Is(err, ErrIdentical):
-		return episodes.Processed{Audio: home.Data, ContentType: home.ContentType, Note: identicalNote(home.Data, options)}, nil
+		note := identicalNote(home.Data, options)
+		processor.keepSuccessful(job, note, nil, map[string]checkedDownload{pair[0]: home, compared: against})
+		return episodes.Processed{Audio: home.Data, ContentType: home.ContentType, Note: note}, nil
 	case err != nil:
 		// Say what the downloads were, so a bad download can be told from
 		// a bad diff, and keep them if asked to.
@@ -195,6 +200,7 @@ func (processor *Processor) Process(ctx context.Context, job episodes.Job) (epis
 	if excess := result.Duration - options.ExpectedDuration; options.ExpectedDuration > 0 && float64(excess) > float64(options.ExpectedDuration)*options.DurationTolerance {
 		note += fmt.Sprintf("; still %s longer than stated: ads the same in every compared region may be left", excess.Round(time.Second))
 	}
+	processor.keepSuccessful(job, note, &result, map[string]checkedDownload{pair[0]: home, compared: against})
 	return episodes.Processed{
 		Audio:       result.Output,
 		ContentType: home.ContentType,

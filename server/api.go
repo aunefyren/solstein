@@ -190,6 +190,36 @@ func (handlers *handlers) apiRetryFailed(context *gin.Context) {
 	handlers.queued(context, feed, queued, err)
 }
 
+// apiRetryAllFailed queues the failed episodes of every feed whose episodes
+// are prepared, as apiRetryFailed does for one.
+func (handlers *handlers) apiRetryAllFailed(context *gin.Context) {
+	list, err := handlers.feeds.List(context.Request.Context())
+	if err != nil {
+		logger.Log.Error("Failed to list feeds. Error: " + err.Error())
+		context.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list feeds."})
+		context.Abort()
+		return
+	}
+	total := 0
+	for _, feed := range list {
+		if handlers.episodes == nil {
+			break
+		}
+		queued, err := handlers.episodes.RetryFailed(context.Request.Context(), feed.ID)
+		if errors.Is(err, episodes.ErrNotPrepared) || errors.Is(err, database.ErrFeedNotFound) {
+			continue // nothing to retry, or deleted meanwhile
+		}
+		if err != nil {
+			logger.Log.Error("Failed to queue episodes of feed '" + feed.Title + "'. Error: " + err.Error())
+			context.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to queue episodes."})
+			context.Abort()
+			return
+		}
+		total += queued
+	}
+	context.JSON(http.StatusOK, gin.H{"queued": total})
+}
+
 type prepareRequest struct {
 	// Newest limits it to the feed's newest episodes; zero means all.
 	Newest int `json:"newest"`

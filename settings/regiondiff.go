@@ -47,6 +47,11 @@ type RegionDiff struct {
 	// failed, in regiondiff-failures/ in the config directory, for 14 days:
 	// to see what the host sent. Off by default; episodes are large.
 	KeepFailedDownloads bool `json:"keep_failed_downloads"`
+	// KeepSuccessfulDownloads keeps both downloads of every diff that
+	// worked too, with where it cut, in regiondiff-successes/ for 14 days:
+	// to look into a bad cut that passed the sanity checks. Off by default;
+	// it costs twice each episode's size.
+	KeepSuccessfulDownloads bool `json:"keep_successful_downloads"`
 }
 
 func (regionDiff *RegionDiff) applyDefaults() {

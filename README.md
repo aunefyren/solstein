@@ -65,6 +65,7 @@ curl -H "Authorization: Bearer <auth_token>" -H "Content-Type: application/json"
 | `PATCH /api/v1/feeds/{id}` | Change any of the settings above; an empty value clears the override |
 | `DELETE /api/v1/feeds/{id}` | Unsubscribe and delete everything stored for the feed |
 | `POST /api/v1/feeds/{id}/retry` | Try the feed's failed episodes again in the background (withheld, or published with ads), e.g. after a fix; `{"queued": n}` |
+| `POST /api/v1/retry` | The same for every feed; `{"queued": n}` in total |
 | `POST /api/v1/feeds/{id}/prepare` | Download (or clean) the feed's episodes that have no file yet — backlog, or expired from the cache — in the background, before anyone plays them; `{"newest": n}` limits it to the newest `n`. `{"queued": n}` |
 
 The API takes the token as `Authorization: Bearer <token>` or `?token=<token>`.
@@ -139,11 +140,12 @@ Hosts such as Acast insert ads per listener region. Region diff downloads each e
   "on_failure": "publish",
   "backlog": 0,
   "trim_break_markers": false,
-  "keep_failed_downloads": false
+  "keep_failed_downloads": false,
+  "keep_successful_downloads": false
 }
 ```
 
-- `exits`: the pair, your home region first (its download is the one kept, with its tags). `direct` works as the home side, but shows the host your own address; with `disable_direct` use a VPN exit in your own country.
+- `exits`: the pair, your home region first (its download is the one kept, with its tags). `direct` works as the home side (set `home_country` so Solstein can check it isn't paired with an exit in the same country), but shows the host your own address; with `disable_direct` use a VPN exit in your own country.
 - `fallback_exits`: tried in turn when the pair's downloads are identical (no dynamic ads, or the same campaign in both markets). If every one agrees, the episode is kept as it is.
 - `enabled`: region diff for every feed that doesn't set its own `region_diff`. With it `false`, feeds can still switch it on one by one.
 - `on_failure`: `publish` serves an episode that can't be cleaned (not MP3, implausible result) with its ads; `hide` keeps it out of the feed, and tries it again after 1 hour, after 6 hours, then daily for about a week (Solstein says so at start-up). After that it stays out until `POST /api/v1/feeds/{id}/retry` or a change of settings.
@@ -152,6 +154,7 @@ Hosts such as Acast insert ads per listener region. Region diff downloads each e
 - `min_shared_seconds` (default `2`) and `max_removed_share` (default `0.3`) tune the diff and its sanity check.
 - An episode that can't be cleaned on request (ABS gets `503`) is tried again on each request, and after three failed attempts `on_failure` applies. A download that looks cut off is fetched again before the diff.
 - `keep_failed_downloads`: keep both downloads of an episode whose diff failed, with a note, in `regiondiff-failures/` in the config directory for 14 days, to see what the host sent. Off by default; episodes are large.
+- `keep_successful_downloads`: the same for every diff that worked, in `regiondiff-successes/`, with a note of where each ad was cut: to look into a bad cut. Off by default; it costs twice each episode's size for 14 days.
 - The two exits must come out in different countries: two in the same one get the same ads. Solstein checks this for VPN exits (not for `direct`, whose country it can't know): at start-up it stays off if both can only be in one and the same country, and before each download it skips an exit that has fallen back to the home exit's country.
 - Changing a setting that affects the result (exits, diff settings, `trim_break_markers`, switching region diff on or off, a feed's exit or delivery mode) clears the cached episodes made with the old settings; they are prepared again the next time they are played.
 - New episodes appear in the feed once cleaned, whatever the feed's `delivery_mode`, and the feed carries the cleaned file's size and duration.
@@ -177,6 +180,7 @@ On first run Solstein creates `config.json` in its config directory (`/app/confi
 | `allowed_source_hosts` | `-allowedsourcehosts` | `SOLSTEIN_ALLOWED_SOURCE_HOSTS` | `[]` (any) | Hosts feeds may be subscribed from; subdomains included, e.g. `acast.com`. |
 | `default_exit` | `-defaultexit` | `SOLSTEIN_DEFAULT_EXIT` | `""` (direct) | Exit for feeds that don't name one, e.g. a VPN exit. Must exist, or Solstein doesn't start. |
 | `disable_direct` | `-disabledirect` | `SOLSTEIN_DISABLE_DIRECT` | `false` | Never use this host's own connection; needs `default_exit`. |
+| `home_country` | `-homecountry` | `SOLSTEIN_HOME_COUNTRY` | `""` (unknown) | Country code this host's own connection comes out in, e.g. `NO`. Lets region diff notice when `direct` is paired with an exit in the same country. |
 | `delivery_mode` | `-deliverymode` | `SOLSTEIN_DELIVERY_MODE` | `cache` | Default for feeds: `cache` (download and serve from disk), `stream` (pass through live) or `original` (only proxy the feed). |
 | `poll_interval_minutes` | `-pollinterval` | `SOLSTEIN_POLL_INTERVAL` | `15` | Minutes between feed polls. |
 | `cache_retention_days` | `-cacheretention` | `SOLSTEIN_CACHE_RETENTION` | `14` | Days cached episodes are kept on disk. Expired episodes stay in the feed and are fetched from the source again if played. |

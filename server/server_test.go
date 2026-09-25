@@ -418,6 +418,7 @@ func TestQueueAPI(t *testing.T) {
 		{"prepare negative", http.MethodPost, feedPath + "/prepare", `{"newest": -1}`, http.StatusBadRequest, ""},
 		{"prepare bad body", http.MethodPost, feedPath + "/prepare", `[`, http.StatusBadRequest, ""},
 		{"retry, nothing failed", http.MethodPost, feedPath + "/retry", "", http.StatusOK, `{"queued":0}`},
+		{"retry every feed", http.MethodPost, "/api/v1/retry", "", http.StatusOK, `{"queued":0}`},
 		{"unknown feed", http.MethodPost, "/api/v1/feeds/00000000-0000-0000-0000-000000000001/retry", "", http.StatusNotFound, ""},
 	}
 	for _, c := range cases {
@@ -664,6 +665,7 @@ func TestOpenAPICoversEveryRoute(t *testing.T) {
 		"/api/v1/feeds/:feedID":         "/api/v1/feeds/{feedID}",
 		"/api/v1/feeds/:feedID/retry":   "/api/v1/feeds/{feedID}/retry",
 		"/api/v1/feeds/:feedID/prepare": "/api/v1/feeds/{feedID}/prepare",
+		"/api/v1/retry":                 "/api/v1/retry",
 	}
 	spec, err := os.ReadFile(filepath.Join("..", "docs", "openapi.yaml"))
 	if err != nil {

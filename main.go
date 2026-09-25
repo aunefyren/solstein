@@ -115,6 +115,7 @@ func run() int {
 		Providers:                exitProviders,
 		DefaultExit:              cfg.DefaultExit,
 		DisableDirect:            cfg.DisableDirect,
+		HomeCountry:              cfg.HomeCountry,
 	})
 	if err != nil {
 		// default_exit and disable_direct problems end up here: refusing to

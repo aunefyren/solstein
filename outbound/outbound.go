@@ -73,6 +73,9 @@ type Options struct {
 	// DisableDirect removes the direct exit, so nothing goes out on the
 	// host's own connection. It requires a DefaultExit.
 	DisableDirect bool
+	// HomeCountry is the country the direct exit comes out in, as the
+	// operator declares it; empty means unknown.
+	HomeCountry string
 }
 
 // Manager hands out HTTP clients per exit. It is safe for concurrent use.
@@ -169,9 +172,15 @@ func (manager *Manager) DefaultExit() string {
 }
 
 // ExitCountries lists every country an exit may come out in, when its
-// provider can tell (see Locator). The direct exit's country is unknown:
-// finding it would take an outside geolocation service.
+// provider can tell (see Locator). The direct exit's is HomeCountry, and
+// unknown without it: finding it would take an outside geolocation service.
 func (manager *Manager) ExitCountries(exit string) ([]string, bool) {
+	if exit == DirectExit {
+		if country, known := manager.ExitCountry(exit); known {
+			return []string{country}, true
+		}
+		return nil, false
+	}
 	if locator, ok := manager.providers[exit].(Locator); ok {
 		return locator.ExitCountries(exit)
 	}
@@ -179,8 +188,12 @@ func (manager *Manager) ExitCountries(exit string) ([]string, bool) {
 }
 
 // ExitCountry is the country an exit's next connection goes out in, when
-// its provider can tell.
+// its provider can tell; for the direct exit, HomeCountry when set.
 func (manager *Manager) ExitCountry(exit string) (string, bool) {
+	if exit == DirectExit {
+		_, enabled := manager.providers[DirectExit]
+		return manager.options.HomeCountry, enabled && manager.options.HomeCountry != ""
+	}
 	if locator, ok := manager.providers[exit].(Locator); ok {
 		return locator.ExitCountry(exit)
 	}

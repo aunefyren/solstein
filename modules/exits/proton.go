@@ -87,6 +87,9 @@ func countryByName(name string) (string, bool) {
 	return code, ok
 }
 
+// errUnknownFormat means a server list is in a format this code can't read.
+var errUnknownFormat = errors.New("unknown server list format")
+
 // protonList is gluetun-servers' protonvpn.json.
 type protonList struct {
 	Version   int            `json:"version"`
@@ -129,7 +132,7 @@ func parseProtonList(data []byte) (protonList, error) {
 		return protonList{}, fmt.Errorf("parse Proton server list: %w", err)
 	}
 	if list.Version != protonSchemaVersion {
-		return protonList{}, fmt.Errorf("Proton server list has format version %d; this Solstein understands version %d", list.Version, protonSchemaVersion)
+		return protonList{}, fmt.Errorf("%w: Proton server list has format version %d; this Solstein understands version %d", errUnknownFormat, list.Version, protonSchemaVersion)
 	}
 	wireguard := 0
 	for _, server := range list.Servers {

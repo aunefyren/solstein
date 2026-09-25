@@ -374,7 +374,7 @@ func TestProcessorKeepsFailedDownloads(t *testing.T) {
 	}
 
 	// Old sets go when the next failure is kept.
-	old := time.Now().Add(-failureRetention - time.Hour)
+	old := time.Now().Add(-keptRetention - time.Hour)
 	os.Chtimes(kept, old, old)
 	job.Episode.ID = uuid.New()
 	processor.Process(context.Background(), job)
@@ -385,6 +385,53 @@ func TestProcessorKeepsFailedDownloads(t *testing.T) {
 	// Off without a directory.
 	processor.options.FailureDir = ""
 	processor.keepFailed(job, err, nil) // must not panic or write
+}
+
+func TestProcessorKeepsSuccessfulDownloads(t *testing.T) {
+	directory := t.TempDir()
+	processor, err := NewProcessor(ProcessorOptions{Exits: [2]string{"norway", "sweden"}, Diff: DefaultOptions(), SuccessDir: directory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &fakeSource{downloads: map[string][]byte{"norway": join(show1, audio(200, 10), show2), "sweden": join(show1, audio(200, 11), show2)}}
+	job := source.job()
+	job.Feed.ID, job.Episode.ID, job.Episode.Title = uuid.New(), uuid.New(), "Good day"
+	processed, err := processor.Process(context.Background(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	kept := filepath.Join(directory, job.Feed.ID.String(), job.Episode.ID.String())
+	for _, name := range []string{"norway.mp3", "sweden.mp3", "result.txt"} {
+		if _, err := os.Stat(filepath.Join(kept, name)); err != nil {
+			t.Errorf("%s not kept: %v", name, err)
+		}
+	}
+	// The ad sits after the first show segment: its offset is that
+	// segment's length.
+	note, _ := os.ReadFile(filepath.Join(kept, "result.txt"))
+	offset := formatOffset(audioDuration(join(show1)))
+	if !strings.Contains(string(note), "Good day") || !strings.Contains(string(note), processed.Note) || !strings.Contains(string(note), "- at "+offset+", ") {
+		t.Errorf("note = %s; want the ad at %s", note, offset)
+	}
+
+	// Identical downloads are kept too, without cuts.
+	same := &fakeSource{downloads: map[string][]byte{"norway": join(show1, show2), "sweden": join(show1, show2)}}
+	job = same.job()
+	job.Feed.ID, job.Episode.ID = uuid.New(), uuid.New()
+	if _, err := processor.Process(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	note, err = os.ReadFile(filepath.Join(directory, job.Feed.ID.String(), job.Episode.ID.String(), "result.txt"))
+	if err != nil || !strings.Contains(string(note), "no dynamic ads found") || strings.Contains(string(note), "Removed from") {
+		t.Errorf("identical: %s, %v", note, err)
+	}
+}
+
+func TestFormatOffset(t *testing.T) {
+	if got := formatOffset(time.Hour + 2*time.Minute + 3*time.Second + 45*time.Millisecond); got != "1:02:03.045" {
+		t.Errorf("got %s", got)
+	}
 }
 
 func TestProcessorFallsBackWhenThePartnerFails(t *testing.T) {

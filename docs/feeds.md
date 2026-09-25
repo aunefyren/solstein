@@ -52,6 +52,7 @@ A small JSON API behind the subscribe token (`Authorization: Bearer` or `?token=
 | `PATCH /api/v1/feeds/{id}` | Change settings; an omitted field is left alone, an empty one clears the override. Cached episodes made with the old settings are cleared at once ([`episodes.md`](episodes.md)) |
 | `DELETE /api/v1/feeds/{id}` | Remove the feed, its episodes and its cached audio |
 | `POST /api/v1/feeds/{id}/retry` | Queue the feed's failed episodes for another attempt ([`episodes.md`](episodes.md), Background queue); `{"queued": n}` |
+| `POST /api/v1/retry` | The same for every feed whose episodes are prepared; `{"queued": n}` in total |
 | `POST /api/v1/feeds/{id}/prepare` | Queue the feed's newest episodes without their file to be prepared ahead; optional body `{"newest": n}`, all when omitted; `{"queued": n}`. `400` for a feed nothing is prepared for (stream or original mode, not processed) |
 
 Responses carry the feed's settings plus `delivery_mode_in_use`, `region_diff_in_use` (the global and per-feed settings combined) and `feed_url` (signed). Invalid settings are `400`; internal error text goes to the log, never to the client.

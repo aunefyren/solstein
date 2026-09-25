@@ -411,6 +411,19 @@ func TestExitCountries(t *testing.T) {
 			t.Errorf("%s: country reported as known", exit)
 		}
 	}
+
+	// Declared by the operator: direct comes out there, unless disabled.
+	manager, _ = New(Options{Providers: []Provider{located}, HomeCountry: "NO"})
+	if countries, known := manager.ExitCountries(DirectExit); !known || len(countries) != 1 || countries[0] != "NO" {
+		t.Errorf("direct with a home country: %v, %v", countries, known)
+	}
+	if country, known := manager.ExitCountry(DirectExit); !known || country != "NO" {
+		t.Errorf("direct now: %q, %v", country, known)
+	}
+	manager, _ = New(Options{Providers: []Provider{located}, HomeCountry: "NO", DisableDirect: true, DefaultExit: "sweden"})
+	if _, known := manager.ExitCountry(DirectExit); known {
+		t.Error("disabled direct reported a country")
+	}
 }
 
 func TestClientsCanDropIdleConnections(t *testing.T) {

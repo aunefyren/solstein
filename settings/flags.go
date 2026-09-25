@@ -155,6 +155,15 @@ var settings = []setting{
 		apply:   boolSetting(func(cfg *Config) *bool { return &cfg.DisableDirect }),
 	},
 	{
+		flag:  "homecountry",
+		env:   "SOLSTEIN_HOME_COUNTRY",
+		usage: "Country this host's own connection comes out in (e.g. NO), for region diff's same-country checks; empty means unknown.",
+		apply: func(cfg *Config, value string) error {
+			cfg.HomeCountry = value
+			return nil
+		},
+	},
+	{
 		flag:  "deliverymode",
 		env:   "SOLSTEIN_DELIVERY_MODE",
 		usage: "Default episode delivery: cache, stream or original.",
