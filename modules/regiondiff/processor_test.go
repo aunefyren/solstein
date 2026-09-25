@@ -411,3 +411,19 @@ func TestProcessorFallsBackWhenThePartnerFails(t *testing.T) {
 		t.Errorf("fetched %v", source.fetched)
 	}
 }
+
+func TestProcessorNotesSharedAdsLeftIn(t *testing.T) {
+	source := &fakeSource{downloads: map[string][]byte{
+		"norway": join(show1, audio(200, 10), show2),
+		"sweden": join(show1, audio(200, 11), show2),
+	}}
+	job := source.job()
+	job.ExpectedDuration = 12 * time.Second // the result is 18 s
+	processed, err := newTestProcessor(t).Process(context.Background(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(processed.Note, "; still 6s longer than stated: ads the same in every compared region may be left") {
+		t.Errorf("note = %q", processed.Note)
+	}
+}

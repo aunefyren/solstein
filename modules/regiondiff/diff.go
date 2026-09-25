@@ -469,9 +469,13 @@ func check(result Result, options Options) error {
 	if options.MaxRemovedShare > 0 && removedShare > options.MaxRemovedShare {
 		return fmt.Errorf("%w: it would remove %.0f%% of the episode (at most %.0f%% allowed)", ErrImplausible, removedShare*100, options.MaxRemovedShare*100)
 	}
+	// Only too short is implausible: that is a bad cut. The result can't be
+	// longer than the home download, so being longer than stated just means
+	// ads the same in both regions are left in — still better than all of
+	// them (the processor notes it).
 	if options.ExpectedDuration > 0 && options.DurationTolerance > 0 {
 		off := float64(result.Duration-options.ExpectedDuration) / float64(options.ExpectedDuration)
-		if off > options.DurationTolerance || off < -options.DurationTolerance {
+		if off < -options.DurationTolerance {
 			return fmt.Errorf("%w: the result is %s long, but the feed says %s", ErrImplausible, result.Duration.Round(time.Second), options.ExpectedDuration.Round(time.Second))
 		}
 	}

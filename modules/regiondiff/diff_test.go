@@ -195,6 +195,11 @@ func TestDiffSanityChecks(t *testing.T) {
 	if _, err := Diff(home, other, options); err != nil {
 		t.Errorf("close to the stated duration: %v", err)
 	}
+	// Longer than stated is fine: ads shared by both regions are left in.
+	options.ExpectedDuration = 12 * time.Second
+	if _, err := Diff(home, other, options); err != nil {
+		t.Errorf("longer than the stated duration: %v", err)
+	}
 
 	if _, err := Diff(join(tag("h"), audio(200, 1)), join(tag("o"), audio(200, 2)), DefaultOptions()); !errors.Is(err, ErrImplausible) {
 		t.Errorf("nothing shared: err = %v", err)
