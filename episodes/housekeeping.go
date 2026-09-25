@@ -93,7 +93,7 @@ func (housekeeper *Housekeeper) expire(ctx context.Context) (int, error) {
 			logger.Log.Warn("Failed to delete expired cache file for episode '" + episode.Title + "'; will retry. Error: " + err.Error())
 			continue
 		}
-		episode.CacheFile, episode.CacheSize, episode.CachedAt = "", 0, nil
+		episode.ForgetCache()
 		if err := housekeeper.store.UpdateEpisode(ctx, &episode); err != nil && !errors.Is(err, database.ErrEpisodeNotFound) {
 			return removed, err
 		}

@@ -28,6 +28,9 @@ type Episode struct {
 	SourceURL   string     `json:"source_url" gorm:"not null"`
 	Title       string     `json:"title"`
 	PublishedAt *time.Time `json:"published_at" gorm:"index"`
+	// SourceSeconds is the source's stated duration (itunes:duration), zero
+	// if it states none.
+	SourceSeconds int `json:"source_seconds"`
 	// Backlog marks episodes that already existed when the feed was added.
 	// They are fetched on demand instead of at poll time.
 	Backlog bool `json:"backlog"`
@@ -40,9 +43,23 @@ type Episode struct {
 	Attempts      int          `json:"attempts"`
 	NextAttemptAt *time.Time   `json:"next_attempt_at"`
 	LastError     string       `json:"last_error"`
+	// Withheld marks a failed episode the processor's failure policy keeps
+	// out of the feed, rather than publishing it unprocessed.
+	Withheld bool `json:"withheld"`
+	// ProcessNote says what a processor did, e.g. how much it removed.
+	ProcessNote string `json:"process_note"`
 
 	// CacheFile is relative to the cache directory; empty when not cached.
-	CacheFile string     `json:"-"`
-	CacheSize int64      `json:"cache_size"`
-	CachedAt  *time.Time `json:"cached_at"`
+	CacheFile string `json:"-"`
+	CacheSize int64  `json:"cache_size"`
+	// CacheSeconds is the cached file's duration when a processor changed
+	// it, served as itunes:duration; zero keeps the source's.
+	CacheSeconds int        `json:"cache_seconds"`
+	CachedAt     *time.Time `json:"cached_at"`
+}
+
+// ForgetCache clears the cache fields, after the cached file is deleted or
+// found missing.
+func (episode *Episode) ForgetCache() {
+	episode.CacheFile, episode.CacheSize, episode.CacheSeconds, episode.CachedAt = "", 0, 0, nil
 }

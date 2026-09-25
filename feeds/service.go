@@ -41,6 +41,11 @@ type Settings struct {
 type Options struct {
 	DefaultDeliveryMode string
 	AllowedSourceHosts  []string
+	// Processed reports whether an episode processor (such as region diff)
+	// handles a feed's episodes. Their episodes are then prepared in the
+	// background and published once processed, whatever the delivery mode.
+	// Nil means no feed is processed.
+	Processed func(models.Feed) bool
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 }
@@ -83,6 +88,11 @@ func (service *Service) DeliveryMode(feed models.Feed) string {
 		return feed.DeliveryMode
 	}
 	return service.options.DefaultDeliveryMode
+}
+
+// Processed reports whether an episode processor handles the feed.
+func (service *Service) Processed(feed models.Feed) bool {
+	return service.options.Processed != nil && service.options.Processed(feed)
 }
 
 // Subscribe returns the feed for a source URL, subscribing to it first if
@@ -146,8 +156,8 @@ func (service *Service) Subscribe(ctx context.Context, rawSourceURL string, feed
 }
 
 // Refresh polls a feed's source. New episodes are stored for the episode
-// pipeline (in cache mode) or as ready (in stream and original mode, which
-// need no preparation). A failed poll keeps the last good document, so
+// pipeline (in cache mode, or when a processor handles the feed) or as ready
+// (in stream and original mode, which need no preparation). A failed poll keeps the last good document, so
 // clients keep being served, and is recorded on the feed.
 func (service *Service) Refresh(ctx context.Context, feed *models.Feed) (added []models.Episode, err error) {
 	now := service.options.Now().UTC()
@@ -182,7 +192,7 @@ func (service *Service) Refresh(ctx context.Context, feed *models.Feed) (added [
 	feed.ETag, feed.LastModified = result.etag, result.lastModified
 
 	state := models.EpisodeReady
-	if service.DeliveryMode(*feed) == "cache" {
+	if service.DeliveryMode(*feed) == "cache" || service.Processed(*feed) {
 		state = models.EpisodeDiscovered
 	}
 	return service.store.AddNewEpisodes(ctx, feed.ID, episodesFromItems(parsed.Items, state, false))
@@ -201,7 +211,7 @@ func (service *Service) Render(ctx context.Context, feed models.Feed, urls URLs)
 	}
 
 	mode := service.DeliveryMode(feed)
-	published := publishedEpisodes(episodes, mode)
+	published := publishedEpisodes(episodes, mode == "cache" || service.Processed(feed))
 
 	// An episode's served pubDate is never earlier than the first time
 	// Solstein served it. ABS only auto-downloads episodes dated after a
@@ -254,6 +264,9 @@ func (service *Service) Render(ctx context.Context, feed models.Feed, urls URLs)
 			if episode.CacheSize > 0 {
 				change.Length = episode.CacheSize
 			}
+			if episode.CacheSeconds > 0 {
+				change.Duration = rss.FormatDuration(time.Duration(episode.CacheSeconds) * time.Second)
+			}
 			return change
 		},
 	}
@@ -299,14 +312,18 @@ func episodesFromItems(items []rss.Item, state models.EpisodeState, backlog bool
 		if item.Enclosure == nil || item.Key == "" {
 			continue
 		}
-		episodes = append(episodes, models.Episode{
+		episode := models.Episode{
 			GUID:        item.Key,
 			SourceURL:   item.Enclosure.URL,
 			Title:       item.Title,
 			PublishedAt: item.PublishedAt,
 			Backlog:     backlog,
 			State:       state,
-		})
+		}
+		if duration, ok := rss.ParseDuration(item.Duration); ok {
+			episode.SourceSeconds = int(duration.Round(time.Second) / time.Second)
+		}
+		episodes = append(episodes, episode)
 	}
 	return episodes
 }

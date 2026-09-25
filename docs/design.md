@@ -184,17 +184,20 @@ How modules slot into the core without the core knowing about them (proposed; Go
   }
   ```
   The dialer is looked up per connection, so a module can switch servers or restore a tunnel without the core rebuilding clients.
-- **Episode processor.** The core hands a processor a job and gets a file back. The processor can download the source through any exit via the job, so region diff needs nothing else from the core.
+- **Episode processor (decided, built in `episodes`).** The core hands a processor a job and caches what it returns. The processor downloads the source through any exit via the job, so region diff needs nothing else from the core.
   ```go
   type Processor interface {
       Name() string
-      Process(ctx context.Context, job Job) (Result, error)
+      Handles(feed models.Feed) bool       // which feeds it applies to
+      HideOnFailure(feed models.Feed) bool // failure policy: withhold, or publish unprocessed
+      Process(ctx context.Context, job Job) (Processed, error)
   }
-  // Job carries the feed, the episode, the source URL, a working directory
-  // and a Fetch(ctx, exit) helper that downloads the source through an exit.
-  // Result is the output file plus its length, duration and whether it
-  // differs from the source.
+  // Job carries the feed, the episode, its stated duration and
+  // Fetch(ctx, exit), which downloads the source through an exit into memory
+  // with the pipeline's own download checks. Processed is the audio, its
+  // content type, its new duration (zero if unchanged) and a note.
   ```
+  Errors are retried with the pipeline's back-off unless they wrap `episodes.ErrPermanent`. `feeds.Options.Processed` (the processor's `Handles`) tells the feed side which feeds are processed, since `feeds` can't import `episodes`.
 - **Registration.** `main.go` builds the enabled modules from config and passes them to the core. v1 allows at most one processor per feed; the interface leaves room for chaining later.
 - **Dependencies.** A module that can't run (region diff with fewer than two usable exits) logs a warning and stays off; it doesn't stop start-up (decided).
 
@@ -382,7 +385,7 @@ Each step testable on its own; the core already routes every request through `ou
 
 ## Module: Region diff
 
-**Status: designed from live data (2026-09-25).** All decisions below are agreed (2026-09-25). Not built yet; built in the order under **Region diff build order**.
+**Status: designed from live data (2026-09-25).** All decisions below are agreed (2026-09-25). Built in the order under **Region diff build order**: the diff and the processor are done, not yet wired into `main.go`.
 
 ### What the live data showed
 
@@ -452,10 +455,24 @@ Decided 2026-09-25:
 
 ### Region diff build order
 
-1. **MP3 frame reader** (`mp3` package, no Solstein dependencies): tags, info frames, frame headers, `main_data_begin`; tested on generated frames and the live downloads.
-2. **Diff:** hash, anchor-align, keep shared runs by length and clean start, write the result, sanity checks; tested on synthetic splices and the real Norway/Sweden pair.
-3. **Processor:** the double download, identical-download fallback, `on_failure`, as an episode processor in the pipeline, hiding episodes until processed.
-4. **Backlog on first request** with the bounded wait and `503` / `Retry-After`, plus `backlog: N` up front.
+1. ✅ **MP3 frame reader** (`mp3` package, no Solstein dependencies): tags, info frames, frame headers, `main_data_begin`; tested on generated frames and the live downloads.
+   - Reads ID3v2 (several, footer), ID3v1, Xing/Info/VBRI info frames (kept apart from the audio: they'd describe the uncut file), and MPEG-1/2/2.5 Layer I–III headers including CRC and Layer III's `main_data_begin`. A header is only believed when another valid one follows it, at the start and after any skipped bytes; the stream's version, layer and sample rate must stay the same. Junk and a cut-off last frame are counted, never fatal.
+   - **Acast's files end with a cut-off frame** (200 of 417 bytes in the Norwegian download, 399 of 418 in the Swedish one); the reader reports it as `Truncated` and leaves it out. Apart from that, both files are one 188-byte ID3v2 tag and nothing but frames; only 34 and 29 frames in the whole files start clean — the segment starts.
+   - Fuzzed (21 million inputs, no panic, every byte accounted for as tag, frame, skipped or truncated).
+2. ✅ **Diff:** hash, anchor-align, keep shared runs by length and clean start, write the result, sanity checks; tested on synthetic splices and the real Norway/Sweden pair.
+   - `modules/regiondiff.Diff(home, other, options)`: frames are hashed; anchors are groups of 16 frames (~0.4 s) that occur once in each file; the largest in-order set of anchors is kept (longest increasing subsequence) and each is extended into the longest run of equal frames. Runs are verified byte for byte, so a hash collision can't let other audio in.
+   - Each run is trimmed to real segment boundaries: it must start on a clean frame (or the file's first frame), and end where the next frame starts clean (or the file ends); otherwise it is cut back to just before the last clean frame inside it. Then the 2-second minimum applies. This handles ad breaks that end in identical silence (the run would start early) and that open with an identical jingle (the run would end late); both are tested.
+   - Output: the home download's ID3v2 tag, the kept frames copied one by one, its ID3v1 tag; no info frame (it would describe the uncut file) and no cut-off last frame.
+   - Returns `ErrIdentical` when the audio is the same (same bytes, or nothing removed from either side), `ErrImplausible` when a sanity check fails (nothing shared, more than `max_removed_share` removed, duration more than 5% from `itunes:duration`), `ErrUnsupported` for non-MP3 or mismatched formats.
+   - **Real episode:** the Norway/Sweden pair diffs in under a second into the three show segments (13:22, 15:10, 11:34) and removes the four ad breaks (1:31, 1:00, 0:40, 1:21): 40:06 against the feed's 39:52. Diffing in either direction gives byte-identical show audio. ffmpeg decodes the cleaned file with no errors (as it does the original), 2,405.7 s long.
+3. ✅ **Processor:** the double download, identical-download fallback, `on_failure`, as an episode processor in the pipeline, hiding episodes until processed.
+   - **Core side** (`episodes.Processor`, see **Extension points**): for a feed the processor handles, the pipeline claims new episodes whatever the feed's delivery mode, runs the processor instead of the plain download, and caches its output (`.part` then rename, as downloads). The cached file's duration is stored (`cache_seconds`) and served as `itunes:duration` alongside the real `length`. The source's stated `itunes:duration` is stored per episode (`source_seconds`) for the sanity check.
+   - **Publishing:** a processed feed publishes like cache mode (in order, once ready), also in `stream` and `original` mode. A failure the processor retries holds the feed like a pending download. After the last retry, or at once for a permanent error, the episode is **failed**: published unprocessed (`on_failure: publish`), or **withheld** (`hide`). A withheld episode is left out without holding newer ones back, is never served (`404`), and is used only as the very last resort for the never-empty rule.
+   - **No unprocessed file in the cache:** for a processed feed the tee only caches a failed (published-unprocessed) episode, never a backlog or ready one, so the ads version can't take the processed file's place.
+   - **Region diff side** (`regiondiff.Processor`): both downloads start together; if one fails the other is cancelled. Identical audio moves on to each of `fallback_exits` in turn; identical everywhere keeps the home download as it is, noted "no dynamic ads found" (with a hint when the file is more than 5% longer than stated). Not MP3 / mismatched formats are permanent failures; an implausible result is retried, since the next downloads may carry other ads. Every exit must be named once only. The episode's `process_note` records the result, e.g. "removed 4m32s of ads in 4 breaks, comparing norway with sweden" for the live pair.
+   - Downloads for a processor are held in memory, at most 512 MB each.
+   - **Left for later steps:** `Handles` is every feed and nothing constructs the processor yet (step 5). Backlog episodes of a processed feed are still streamed with their ads and not cached (step 4). After `cache_retention_days` a processed file is deleted like any cached one, and the next play streams the source with its ads; step 4's on-demand processing has to cover that case too, not just backlog.
+4. **Backlog on first request** with the bounded wait and `503` / `Retry-After`, plus `backlog: N` up front. The same on-demand path covers a processed episode whose cached file has expired.
 5. **Wiring and settings:** the `region_diff` block, per-feed switches, start-up checks (two distinct exits, home side not `direct` when `disable_direct`).
 6. **Live check** against the Acast show with Norwegian ads, and with ABS.
 

@@ -63,6 +63,8 @@ func NewServer(store *database.Store, exits *outbound.Manager, cache Cache, feed
 //     cache mode, a full request for an episode the pipeline won't download
 //     (backlog, or given up on) is also written into the cache on the way.
 //
+// An episode withheld by its processor's failure policy is not served.
+//
 // It returns database.ErrEpisodeNotFound / ErrFeedNotFound for unknown IDs
 // and ErrSourceFailed when the source can't be reached; in both cases the
 // response is still unwritten.
@@ -71,6 +73,10 @@ func (server *Server) Serve(writer http.ResponseWriter, request *http.Request, f
 	episode, err := server.store.GetEpisode(ctx, feedID, episodeID)
 	if err != nil {
 		return err
+	}
+	if episode.Withheld {
+		// Its failure policy keeps the unprocessed version from clients.
+		return database.ErrEpisodeNotFound
 	}
 	feed, err := server.store.GetFeed(ctx, feedID)
 	if err != nil {
@@ -85,7 +91,7 @@ func (server *Server) Serve(writer http.ResponseWriter, request *http.Request, f
 		// The file is gone (deleted by hand, or the disk was swapped): forget
 		// it and fall back to the source.
 		logger.Log.Warn("Cached file for episode '" + episode.Title + "' is missing; streaming from the source instead.")
-		episode.CacheFile, episode.CacheSize, episode.CachedAt = "", 0, nil
+		episode.ForgetCache()
 		if err := server.store.UpdateEpisode(ctx, &episode); err != nil {
 			return err
 		}
@@ -97,9 +103,13 @@ func (server *Server) Serve(writer http.ResponseWriter, request *http.Request, f
 		return nil
 	}
 
+	// For a processed feed, only a failed episode (published unprocessed) is
+	// cached this way: anything else would put the unprocessed version where
+	// the processed one belongs.
+	teeable := episode.State == models.EpisodeFailed ||
+		(!server.feeds.Processed(feed) && (episode.Backlog || episode.State == models.EpisodeReady))
 	tee := mode == "cache" && request.Method == http.MethodGet && request.Header.Get("Range") == "" &&
-		(episode.Backlog || episode.State == models.EpisodeReady || episode.State == models.EpisodeFailed) &&
-		server.startTee(episode.ID)
+		teeable && server.startTee(episode.ID)
 	if tee {
 		defer server.endTee(episode.ID)
 	}
@@ -261,7 +271,7 @@ func (server *Server) stream(writer http.ResponseWriter, request *http.Request, 
 	}
 
 	now := server.options.Now().UTC()
-	episode.CacheFile, episode.CacheSize, episode.CachedAt = cacheFile, size, &now
+	episode.CacheFile, episode.CacheSize, episode.CacheSeconds, episode.CachedAt = cacheFile, size, 0, &now
 	if episode.State == models.EpisodeFailed {
 		episode.State, episode.LastError = models.EpisodeReady, ""
 	}

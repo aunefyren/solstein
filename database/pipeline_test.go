@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"aunefyren/solstein/models"
+
+	"github.com/google/uuid"
 )
 
 func TestClaimNextEpisode(t *testing.T) {
@@ -30,19 +32,19 @@ func TestClaimNextEpisode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	first, err := store.ClaimNextEpisode(ctx, now, "cache")
+	first, err := store.ClaimNextEpisode(ctx, now, "cache", nil)
 	if err != nil || first.GUID != "monday" || first.State != models.EpisodeAcquiring {
 		t.Fatalf("first claim = %+v, %v; want monday", first, err)
 	}
-	second, err := store.ClaimNextEpisode(ctx, now, "cache")
+	second, err := store.ClaimNextEpisode(ctx, now, "cache", nil)
 	if err != nil || second.GUID != "tuesday" {
 		t.Fatalf("second claim = %+v, %v; want tuesday", second, err)
 	}
 	// Backlog is fetched on demand, and the retry isn't due yet.
-	if _, err := store.ClaimNextEpisode(ctx, now, "cache"); !errors.Is(err, ErrNoWork) {
+	if _, err := store.ClaimNextEpisode(ctx, now, "cache", nil); !errors.Is(err, ErrNoWork) {
 		t.Errorf("third claim: err = %v, want ErrNoWork", err)
 	}
-	if claimed, err := store.ClaimNextEpisode(ctx, later, "cache"); err != nil || claimed.GUID != "retrying" {
+	if claimed, err := store.ClaimNextEpisode(ctx, later, "cache", nil); err != nil || claimed.GUID != "retrying" {
 		t.Errorf("claim after retry time = %+v, %v", claimed, err)
 	}
 
@@ -71,19 +73,23 @@ func TestClaimNextEpisodeRespectsDeliveryMode(t *testing.T) {
 	createTestEpisode(t, store, caches.ID, "c", nil)
 
 	// Global default stream: only the feed that sets cache itself.
-	claimed, err := store.ClaimNextEpisode(ctx, now, "stream")
+	claimed, err := store.ClaimNextEpisode(ctx, now, "stream", nil)
 	if err != nil || claimed.GUID != "c" {
 		t.Fatalf("claim = %+v, %v; want c", claimed, err)
 	}
-	if _, err := store.ClaimNextEpisode(ctx, now, "stream"); !errors.Is(err, ErrNoWork) {
+	if _, err := store.ClaimNextEpisode(ctx, now, "stream", nil); !errors.Is(err, ErrNoWork) {
 		t.Errorf("err = %v, want ErrNoWork", err)
 	}
 	// Global default cache: the inheriting feed too, never the stream one.
-	if claimed, err := store.ClaimNextEpisode(ctx, now, "cache"); err != nil || claimed.GUID != "a" {
+	if claimed, err := store.ClaimNextEpisode(ctx, now, "cache", nil); err != nil || claimed.GUID != "a" {
 		t.Errorf("claim = %+v, %v; want a", claimed, err)
 	}
-	if _, err := store.ClaimNextEpisode(ctx, now, "cache"); !errors.Is(err, ErrNoWork) {
+	if _, err := store.ClaimNextEpisode(ctx, now, "cache", nil); !errors.Is(err, ErrNoWork) {
 		t.Errorf("err = %v, want ErrNoWork", err)
+	}
+	// A processed feed's episodes are claimed whatever its mode.
+	if claimed, err := store.ClaimNextEpisode(ctx, now, "cache", []uuid.UUID{streams.ID}); err != nil || claimed.GUID != "b" {
+		t.Errorf("claim = %+v, %v; want b from the processed stream feed", claimed, err)
 	}
 }
 
@@ -105,7 +111,7 @@ func TestClaimNextEpisodeConcurrent(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			for {
-				episode, err := store.ClaimNextEpisode(ctx, time.Now().UTC(), "cache")
+				episode, err := store.ClaimNextEpisode(ctx, time.Now().UTC(), "cache", nil)
 				if errors.Is(err, ErrNoWork) {
 					return
 				}

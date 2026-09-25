@@ -477,3 +477,37 @@ func TestRenderKeepsDatesAfterRelease(t *testing.T) {
 		t.Errorf("future-dated episode's date changed:\n%s", output)
 	}
 }
+
+// A feed a processor handles holds new episodes back until processed, even
+// in stream mode, and serves the processed file's length and duration.
+func TestRenderProcessedFeed(t *testing.T) {
+	host := newFakeHost(t)
+	service, store := newTestService(t, Options{DefaultDeliveryMode: "stream", Processed: func(models.Feed) bool { return true }})
+	ctx := context.Background()
+	feed, _, _ := service.Subscribe(ctx, host.server.URL, Settings{})
+	host.set(func(host *fakeHost) {
+		host.items = append([]string{`<item><title>ep-2</title><guid>ep-2</guid><pubDate>Tue, 22 Sep 2026 06:00:00 +0000</pubDate>` +
+			`<itunes:duration xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">39:52</itunes:duration>` +
+			`<enclosure url="https://media.example.com/ep-2.mp3" type="audio/mpeg" length="100"/></item>`}, host.items...)
+	})
+	added, err := service.Refresh(ctx, &feed)
+	if err != nil || len(added) != 1 || added[0].State != models.EpisodeDiscovered || added[0].SourceSeconds != 2392 {
+		t.Fatalf("added = %+v, %v; want ep-2 waiting for processing, stated 39:52", added, err)
+	}
+
+	output, _ := service.Render(ctx, feed, testURLs)
+	if parsed, _ := rss.Parse(output); len(parsed.Items) != 1 {
+		t.Fatalf("items = %+v, want ep-2 held back", parsed.Items)
+	}
+
+	episode := added[0]
+	episode.State, episode.CacheSize, episode.CacheSeconds = models.EpisodeReady, 4242, 2406
+	if err := store.UpdateEpisode(ctx, &episode); err != nil {
+		t.Fatal(err)
+	}
+	output, _ = service.Render(ctx, feed, testURLs)
+	parsed, _ := rss.Parse(output)
+	if len(parsed.Items) != 2 || parsed.Items[0].Enclosure.Length != 4242 || parsed.Items[0].Duration != "40:06" {
+		t.Errorf("after processing: items = %+v", parsed.Items)
+	}
+}

@@ -8,6 +8,7 @@ import (
 
 	"aunefyren/solstein/models"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -22,18 +23,23 @@ var ErrNoWork = errors.New("no episode waiting")
 //
 // An episode is waiting when it is discovered (not backlog), its retry time
 // has come, and its feed uses cache delivery — set on the feed, or inherited
-// from defaultMode when the feed has none.
-func (store *Store) ClaimNextEpisode(ctx context.Context, now time.Time, defaultMode string) (models.Episode, error) {
+// from defaultMode when the feed has none — or is one of processedFeeds,
+// whose episodes a processor prepares whatever the delivery mode.
+func (store *Store) ClaimNextEpisode(ctx context.Context, now time.Time, defaultMode string, processedFeeds []uuid.UUID) (models.Episode, error) {
 	var episode models.Episode
 	err := store.withContext(ctx).Transaction(func(tx *gorm.DB) error {
 		query := tx.Model(&models.Episode{}).
 			Joins("JOIN feeds ON feeds.id = episodes.feed_id").
 			Where("episodes.state = ? AND episodes.backlog = ?", models.EpisodeDiscovered, false).
 			Where("episodes.next_attempt_at IS NULL OR episodes.next_attempt_at <= ?", now)
+		cacheModes := []string{"cache"}
 		if defaultMode == "cache" {
-			query = query.Where("feeds.delivery_mode IN ?", []string{"cache", ""})
+			cacheModes = append(cacheModes, "")
+		}
+		if len(processedFeeds) > 0 {
+			query = query.Where("(feeds.delivery_mode IN ? OR feeds.id IN ?)", cacheModes, processedFeeds)
 		} else {
-			query = query.Where("feeds.delivery_mode = ?", "cache")
+			query = query.Where("feeds.delivery_mode IN ?", cacheModes)
 		}
 		err := query.Order("episodes.published_at IS NULL, episodes.published_at, episodes.created_at").
 			Select("episodes.*").

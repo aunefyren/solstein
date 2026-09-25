@@ -28,10 +28,10 @@ outbound/          core: exit Manager, direct exit, guarded dialling (private-ad
 modules/exits/     module: config, .conf parsing, netstack tunnels, pool, geography, selection, health, Setup, Proton provider (exists)
 modules/exits/wireguard/  generic provider: servers from wg-quick .conf files
 modules/exits/proton/     server-list provider for Proton VPN (gluetun-servers data)
-modules/regiondiff/     module: dual download, diff engine, cutting
-mp3/               MP3 frame parsing and splicing, no Solstein dependencies
+modules/regiondiff/     module: frame diff and cutting, and the episode processor (dual download, fallbacks) (exists)
+mp3/               MP3 frame reader (tags, info frames, headers, main_data_begin), fuzzed; no Solstein dependencies (exists)
 utilities/         small shared helpers
-docs/              design.md, development.md, wip.md
+docs/              design.md (decisions, build orders), development.md (this file), wip.md (known issues and unscheduled ideas)
 config/            default local config directory (config.json, database, log, cache); gitignored. /app/config in Docker
 Dockerfile, entrypoint.sh, .github/workflows/   packaging and CI                  (exists)
 ```
@@ -209,6 +209,7 @@ go tool cover -func=coverage.out | tail -1      # total coverage
 
 Conventions:
 - Tests are colocated: `foo.go` → `foo_test.go`, same package (white-box), so internal helpers are tested directly.
+- Parsers of downloaded, untrusted data (`mp3`) have a fuzz test; run it with `go test -run '^$' -fuzz FuzzParse -fuzztime 60s ./mp3` after changing the parser.
 - Table-driven tests (`cases := []struct{...}{...}`) for pure functions: frame header parsing, duration calculation, feed rewriting, country filtering.
 - **No real network in tests.** Use `httptest.Server` for podcast hosts and the gluetun server list; inject HTTP clients rather than reaching for globals. Tests must pass offline and in CI.
 - Tunnels are tested behind the exit interface with a fake exit that returns an `httptest` client. Anything that genuinely needs a live WireGuard endpoint is an integration test behind a build tag (`//go:build integration`) and never runs in CI.
@@ -247,5 +248,5 @@ Secrets and variables:
 
 ## Working notes
 
-- `docs/wip.md` (create when needed) tracks known bugs and deliberate gaps not yet fixed. Check it before assuming behaviour is intended, and remove entries once fixed.
+- `docs/wip.md` tracks known bugs, deliberate gaps and unscheduled roadmap ideas. Check it before assuming behaviour is intended, and remove entries once fixed.
 - Git is managed by the maintainer; don't commit, push or branch.

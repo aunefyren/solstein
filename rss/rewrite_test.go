@@ -233,6 +233,38 @@ func TestFormatDuration(t *testing.T) {
 	}
 }
 
+func TestParseDuration(t *testing.T) {
+	cases := []struct {
+		text string
+		want time.Duration
+		ok   bool
+	}{
+		{"2392", 2392 * time.Second, true},
+		{" 2392.5 ", 2392*time.Second + 500*time.Millisecond, true},
+		{"39:52", 39*time.Minute + 52*time.Second, true},
+		{"95:00", 95 * time.Minute, true}, // minutes over an hour, as some feeds write
+		{"1:02:03", time.Hour + 2*time.Minute + 3*time.Second, true},
+		{"0:00", 0, true},
+		{"", 0, false},
+		{"1:60", 0, false},
+		{"1:60:00", 0, false},
+		{"1:2:3:4", 0, false},
+		{"-5", 0, false},
+		{"1:-5", 0, false},
+		{"abc", 0, false},
+		{":30", 0, false},
+		{"NaN", 0, false},
+		{"Inf", 0, false},
+		{"1e300", 0, false},
+	}
+	for _, c := range cases {
+		got, ok := ParseDuration(c.text)
+		if got != c.want || ok != c.ok {
+			t.Errorf("ParseDuration(%q) = %v, %v; want %v, %v", c.text, got, ok, c.want, c.ok)
+		}
+	}
+}
+
 func TestRewritePubDate(t *testing.T) {
 	data := readFixture(t, "show.xml")
 	released := time.Date(2026, 9, 24, 10, 50, 0, 0, time.FixedZone("CEST", 2*3600))

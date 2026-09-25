@@ -5,7 +5,9 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -261,4 +263,31 @@ func FormatDuration(duration time.Duration) string {
 		return fmt.Sprintf("%d:%02d:%02d", hours, minutes, secs)
 	}
 	return fmt.Sprintf("%d:%02d", minutes, secs)
+}
+
+// ParseDuration reads <itunes:duration>: seconds ("2392", "2392.5"), M:SS
+// or H:MM:SS. It reports false for anything else, including negative values.
+func ParseDuration(text string) (time.Duration, bool) {
+	parts := strings.Split(strings.TrimSpace(text), ":")
+	if len(parts) > 3 || parts[0] == "" {
+		return 0, false
+	}
+	seconds, err := strconv.ParseFloat(parts[len(parts)-1], 64)
+	if err != nil || seconds < 0 || math.IsInf(seconds, 0) || math.IsNaN(seconds) || (len(parts) > 1 && seconds >= 60) {
+		return 0, false
+	}
+	total := seconds
+	multiplier := 60.0
+	for i := len(parts) - 2; i >= 0; i-- {
+		value, err := strconv.Atoi(parts[i])
+		if err != nil || value < 0 || (i > 0 && value >= 60) {
+			return 0, false
+		}
+		total += float64(value) * multiplier
+		multiplier *= 60
+	}
+	if total > float64(math.MaxInt64/int64(time.Second)) {
+		return 0, false
+	}
+	return time.Duration(total * float64(time.Second)), true
 }
