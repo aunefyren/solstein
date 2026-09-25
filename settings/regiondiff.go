@@ -39,6 +39,10 @@ type RegionDiff struct {
 	// Backlog is how many of a new feed's newest existing episodes are
 	// processed right away; the rest are processed when first requested.
 	Backlog int `json:"backlog"`
+	// TrimBreakMarkers also removes the short chimes or stings a host
+	// splices in around ad breaks, where they can be cut cleanly. Off by
+	// default: a show's own sting at breaks would go too.
+	TrimBreakMarkers bool `json:"trim_break_markers"`
 }
 
 func (regionDiff *RegionDiff) applyDefaults() {

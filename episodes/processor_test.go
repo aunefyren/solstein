@@ -26,6 +26,8 @@ type fakeProcessor struct {
 	hide  bool
 	gate  chan struct{}
 	jobs  []Job
+	// recipe stands for the processor's settings.
+	recipe string
 }
 
 func (processor *fakeProcessor) setErr(err error) {
@@ -43,6 +45,11 @@ func (processor *fakeProcessor) jobCount() int {
 func (processor *fakeProcessor) Name() string                        { return "fake" }
 func (processor *fakeProcessor) Handles(feed models.Feed) bool       { return feed.Title == "Processed" }
 func (processor *fakeProcessor) HideOnFailure(feed models.Feed) bool { return processor.hide }
+func (processor *fakeProcessor) Recipe(feed models.Feed) string {
+	processor.mutex.Lock()
+	defer processor.mutex.Unlock()
+	return "shout " + processor.recipe
+}
 
 func (processor *fakeProcessor) Process(ctx context.Context, job Job) (Processed, error) {
 	processor.mutex.Lock()
@@ -298,8 +305,9 @@ func TestServeOnRequestFailures(t *testing.T) {
 		// Retryable: the client is asked to come back; the episode stays
 		// published and the next request tries again.
 		{"temporary", errors.New("tunnel down"), false, http.StatusServiceUnavailable, "", nil, models.EpisodeReady},
-		// Published unprocessed: streamed from the source (and cached).
-		{"permanent, publish", permanent, false, http.StatusOK, audio, nil, models.EpisodeReady},
+		// Published unprocessed: streamed from the source and cached, and
+		// still failed, so a change of settings retries it.
+		{"permanent, publish", permanent, false, http.StatusOK, audio, nil, models.EpisodeFailed},
 		{"permanent, hide", permanent, true, 0, "", database.ErrEpisodeNotFound, models.EpisodeFailed},
 	}
 	for _, c := range cases {
@@ -317,9 +325,9 @@ func TestServeOnRequestFailures(t *testing.T) {
 				t.Fatalf("got %d %q, %v", recorder.Code, recorder.Body.String(), err)
 			}
 			stored := setup.reload(t, backlog)
-			// Published unprocessed, the stream was cached and the episode is
-			// ready again; otherwise the failure is on record.
-			if cachedUnprocessed := c.name == "permanent, publish"; stored.State != c.state || (stored.CacheFile != "") != cachedUnprocessed || (stored.LastError == "") != cachedUnprocessed {
+			// The failure is on record; published unprocessed, the stream was
+			// cached too.
+			if cachedUnprocessed := c.name == "permanent, publish"; stored.State != c.state || (stored.CacheFile != "") != cachedUnprocessed || stored.LastError == "" {
 				t.Errorf("episode = %+v", stored)
 			}
 			if c.name == "temporary" {

@@ -38,17 +38,20 @@ type Settings struct {
 	RegionDiff          string   `json:"region_diff"`
 	RegionDiffExits     []string `json:"region_diff_exits"`
 	RegionDiffOnFailure string   `json:"region_diff_on_failure"`
+	// RegionDiffTrimBreakMarkers is "on", "off" or empty.
+	RegionDiffTrimBreakMarkers string `json:"region_diff_trim_break_markers"`
 }
 
 // SettingsOf returns a feed's per-feed settings.
 func SettingsOf(feed models.Feed) Settings {
 	return Settings{
-		Exit:                feed.Exit,
-		DeliveryMode:        feed.DeliveryMode,
-		PollIntervalMinutes: feed.PollIntervalMinutes,
-		RegionDiff:          feed.RegionDiff,
-		RegionDiffExits:     feed.RegionDiffExits,
-		RegionDiffOnFailure: feed.RegionDiffOnFailure,
+		Exit:                       feed.Exit,
+		DeliveryMode:               feed.DeliveryMode,
+		PollIntervalMinutes:        feed.PollIntervalMinutes,
+		RegionDiff:                 feed.RegionDiff,
+		RegionDiffExits:            feed.RegionDiffExits,
+		RegionDiffOnFailure:        feed.RegionDiffOnFailure,
+		RegionDiffTrimBreakMarkers: feed.RegionDiffTrimBreakMarkers,
 	}
 }
 
@@ -110,6 +113,9 @@ func (service *Service) ValidateSettings(feedSettings Settings) error {
 	if !slices.Contains(regionDiffSwitches, feedSettings.RegionDiff) {
 		return fmt.Errorf("%w: region_diff must be \"on\", \"off\" or empty (follow the global setting)", ErrInvalidSettings)
 	}
+	if !slices.Contains(regionDiffSwitches, feedSettings.RegionDiffTrimBreakMarkers) {
+		return fmt.Errorf("%w: region_diff_trim_break_markers must be \"on\", \"off\" or empty (follow the global setting)", ErrInvalidSettings)
+	}
 	if feedSettings.RegionDiff == "on" && !service.options.RegionDiffAvailable {
 		return fmt.Errorf("%w: region diff isn't running; set up region_diff in config.json first", ErrInvalidSettings)
 	}
@@ -169,13 +175,14 @@ func (service *Service) Subscribe(ctx context.Context, rawSourceURL string, feed
 		return models.Feed{}, false, err
 	}
 	feed = models.Feed{
-		SourceURL:           sourceURL,
-		Exit:                feedSettings.Exit,
-		DeliveryMode:        feedSettings.DeliveryMode,
-		PollIntervalMinutes: feedSettings.PollIntervalMinutes,
-		RegionDiff:          feedSettings.RegionDiff,
-		RegionDiffExits:     feedSettings.RegionDiffExits,
-		RegionDiffOnFailure: feedSettings.RegionDiffOnFailure,
+		SourceURL:                  sourceURL,
+		Exit:                       feedSettings.Exit,
+		DeliveryMode:               feedSettings.DeliveryMode,
+		PollIntervalMinutes:        feedSettings.PollIntervalMinutes,
+		RegionDiff:                 feedSettings.RegionDiff,
+		RegionDiffExits:            feedSettings.RegionDiffExits,
+		RegionDiffOnFailure:        feedSettings.RegionDiffOnFailure,
+		RegionDiffTrimBreakMarkers: feedSettings.RegionDiffTrimBreakMarkers,
 	}
 
 	result, err := service.fetch(ctx, feed)

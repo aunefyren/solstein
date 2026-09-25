@@ -370,3 +370,44 @@ func TestTransportIgnoresProxyEnvironment(t *testing.T) {
 		t.Error("transport uses a proxy function; HTTP_PROXY would bypass the exit")
 	}
 }
+
+// locatingProvider is a fakeProvider that knows its exits' countries.
+type locatingProvider struct {
+	fakeProvider
+	countries map[string][]string
+}
+
+func (provider locatingProvider) ExitCountries(exit string) ([]string, bool) {
+	countries, ok := provider.countries[exit]
+	return countries, ok
+}
+
+func (provider locatingProvider) ExitCountry(exit string) (string, bool) {
+	if countries := provider.countries[exit]; len(countries) > 0 {
+		return countries[0], true
+	}
+	return "", false
+}
+
+func TestExitCountries(t *testing.T) {
+	located := locatingProvider{fakeProvider: fakeProvider{dialers: map[string]Dialer{"sweden": nil}}, countries: map[string][]string{"sweden": {"SE"}}}
+	plain := fakeProvider{dialers: map[string]Dialer{"vps": nil}}
+	manager, err := New(Options{Providers: []Provider{located, plain}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if countries, known := manager.ExitCountries("sweden"); !known || len(countries) != 1 || countries[0] != "SE" {
+		t.Errorf("sweden: %v, %v", countries, known)
+	}
+	if country, known := manager.ExitCountry("sweden"); !known || country != "SE" {
+		t.Errorf("sweden now: %q, %v", country, known)
+	}
+	for _, exit := range []string{DirectExit, "vps", "nowhere"} {
+		if _, known := manager.ExitCountries(exit); known {
+			t.Errorf("%s: countries reported as known", exit)
+		}
+		if _, known := manager.ExitCountry(exit); known {
+			t.Errorf("%s: country reported as known", exit)
+		}
+	}
+}

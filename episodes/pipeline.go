@@ -288,6 +288,7 @@ func (pipeline *Pipeline) endFlight(episodeID uuid.UUID, done chan struct{}) {
 // is the next request that tries again. The error is for database problems.
 func (pipeline *Pipeline) prepare(ctx context.Context, feed models.Feed, episode models.Episode) error {
 	claimed := episode.State == models.EpisodeAcquiring
+	recipe, failedRecipe := pipeline.recipe(feed), pipeline.failedRecipe(feed)
 	processor := pipeline.options.Processor
 	processing := processor != nil && processor.Handles(feed)
 	var prepared preparedEpisode
@@ -307,6 +308,7 @@ func (pipeline *Pipeline) prepare(ctx context.Context, feed models.Feed, episode
 		episode.State = models.EpisodeReady
 		episode.CacheFile, episode.CacheSize, episode.CacheSeconds, episode.CachedAt = prepared.cacheFile, prepared.size, prepared.seconds, &now
 		episode.LastError, episode.NextAttemptAt, episode.Withheld, episode.ProcessNote = "", nil, false, prepared.note
+		episode.PreparedWith = recipe
 		message := fmt.Sprintf("Cached episode '%s' of '%s' (%.1f MB)", episode.Title, feed.Title, float64(prepared.size)/(1<<20))
 		if prepared.note != "" {
 			message += "; " + processor.Name() + ": " + prepared.note
@@ -322,7 +324,7 @@ func (pipeline *Pipeline) prepare(ctx context.Context, feed models.Feed, episode
 	}
 	switch {
 	case errors.Is(err, ErrPermanent) || (claimed && episode.Attempts > len(retryDelays)):
-		episode.State, episode.NextAttemptAt = models.EpisodeFailed, nil
+		episode.State, episode.NextAttemptAt, episode.PreparedWith = models.EpisodeFailed, nil, failedRecipe
 		fallback := "it will be streamed from the source instead"
 		if processing {
 			episode.Withheld = processor.HideOnFailure(feed)

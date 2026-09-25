@@ -1,0 +1,605 @@
+openapi: 3.1.0
+info:
+  title: Solstein API
+  version: "1"
+  summary: Podcast RSS proxy with optional regional exits and ad removal.
+  description: |
+    Solstein's HTTP interface: the feed and episode URLs podcast clients use,
+    the prefix subscribe route, the feed management API and the health check.
+    How the features behind it work is described in `docs/` (start at
+    `docs/README.md`).
+
+    **Access.** Every route except `/api/health` is refused with `403` for
+    clients outside `allowed_client_networks` (when set). On top of that:
+    - The prefix route and the feed API need the subscribe token
+      (`auth_token` in `config.json`).
+    - Feed and episode URLs need the `sig` query parameter that Solstein
+      wrote into them: an HMAC over the exact path. Clients get these URLs
+      from the rendered feed or from the API's `feed_url`; they are never
+      built by hand.
+    - With `disable_auth: true`, neither the token nor signatures are
+      checked.
+
+    **Errors** are JSON objects with a single `error` message. Internal
+    details go to Solstein's log, never into responses.
+  license:
+    name: GPL-3.0
+    url: https://www.gnu.org/licenses/gpl-3.0.html
+
+servers:
+  - url: "{externalURL}"
+    variables:
+      externalURL:
+        default: http://localhost:8080
+        description: Solstein's `external_url`.
+
+tags:
+  - name: Clients
+    description: Routes podcast clients use.
+  - name: Feed API
+    description: Managing feeds; needs the subscribe token.
+  - name: Operations
+    description: Health checks.
+
+paths:
+  /api/health:
+    get:
+      tags: [Operations]
+      summary: Health check
+      description: |
+        Reports that the process is up. It says nothing about module state
+        (a VPN tunnel being down doesn't make it fail), so a container isn't
+        restarted over it. Exempt from `allowed_client_networks`.
+      operationId: getHealth
+      security: []
+      responses:
+        "200":
+          description: Solstein is running.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, version]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+                  version:
+                    type: string
+                    examples: ["v1.0.0"]
+
+  /api/rss/{token}/{sourceURL}:
+    get:
+      tags: [Clients]
+      summary: Subscribe by prefix URL
+      description: |
+        Puts Solstein in front of an existing feed: subscribe to this URL in
+        the podcast client. The first request subscribes to the source feed
+        (fetching it with a 20-second limit); later requests serve Solstein's
+        rewritten copy, which it polls on its own schedule.
+
+        `{sourceURL}` is the rest of the path, slashes included, followed by
+        the source's own query string, e.g.
+        `/api/rss/{token}/https://feeds.acast.com/public/shows/abc`.
+        `https:/host/…` (a slash collapsed by a reverse proxy) and a URL
+        without a scheme (`https://` is assumed) are accepted too.
+
+        With `disable_auth`, the `{token}` segment may be left out:
+        `/api/rss/https://feeds.acast.com/…`.
+      operationId: subscribeByPrefix
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          description: The subscribe token (`auth_token`).
+          schema:
+            type: string
+        - name: sourceURL
+          in: path
+          required: true
+          description: The source feed's URL, slashes included, not encoded.
+          schema:
+            type: string
+          examples:
+            acast:
+              value: https://feeds.acast.com/public/shows/abc
+      responses:
+        "200":
+          $ref: "#/components/responses/Feed"
+        "400":
+          description: The source URL isn't a valid http(s) URL.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Wrong token, source host not in `allowed_source_hosts`, or client outside `allowed_client_networks`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          description: The source couldn't be fetched, or isn't a valid RSS feed. Nothing is stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/feeds/{feedID}.xml:
+    get:
+      tags: [Clients]
+      summary: Get a feed by its signed URL
+      description: |
+        The rewritten feed, as the feed API's `feed_url` and the feed's own
+        self-links point to. Rendered on each request from the last good
+        source document and the episodes' current state.
+      operationId: getFeed
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/FeedID"
+        - $ref: "#/components/parameters/Signature"
+      responses:
+        "200":
+          $ref: "#/components/responses/Feed"
+        "403":
+          $ref: "#/components/responses/BadSignature"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/episodes/{feedID}/{episodeID}.{extension}:
+    parameters:
+      - $ref: "#/components/parameters/FeedID"
+      - name: episodeID
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: extension
+        in: path
+        required: true
+        description: The audio's file extension, as in the feed's enclosure URL.
+        schema:
+          type: string
+          pattern: "^[a-z0-9]{1,5}$"
+          examples: ["mp3"]
+      - $ref: "#/components/parameters/Signature"
+    get:
+      tags: [Clients]
+      summary: Get an episode's audio
+      description: |
+        The enclosure URL. How the audio is delivered depends on the feed:
+        - **Cached:** served from disk, with `Range`, `If-Range` and
+          conditional requests.
+        - **Processed feed (region diff) without its processed file yet:**
+          processed while the client waits, up to 20 seconds, then served
+          from the cache. If it takes longer, `503` with `Retry-After`; the
+          processing carries on and the next request gets the file.
+        - **`original` mode:** `302` to the source.
+        - **Otherwise:** streamed from the source through the feed's exit,
+          with `Range` forwarded.
+      operationId: getEpisode
+      security: []
+      parameters:
+        - name: Range
+          in: header
+          required: false
+          schema:
+            type: string
+          examples:
+            firstBytes:
+              value: bytes=0-1023
+      responses:
+        "200":
+          $ref: "#/components/responses/Audio"
+        "206":
+          $ref: "#/components/responses/PartialAudio"
+        "302":
+          description: "`original` delivery mode: the audio is at the source."
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+        "403":
+          $ref: "#/components/responses/BadSignature"
+        "404":
+          description: No such episode, or it is withheld (its processing failed and the feed's failure policy is `hide`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          description: The source couldn't be fetched, or didn't send audio. Nothing has been sent yet.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/StillProcessing"
+    head:
+      tags: [Clients]
+      summary: Get an episode's headers
+      description: As `GET`, without the body.
+      operationId: headEpisode
+      security: []
+      responses:
+        "200":
+          description: The headers a `GET` would get.
+        "302":
+          description: "`original` delivery mode."
+        "403":
+          description: Missing or wrong signature.
+        "404":
+          description: No such episode, or it is withheld.
+        "503":
+          description: The episode is still being processed.
+
+  /api/v1/feeds:
+    get:
+      tags: [Feed API]
+      summary: List feeds
+      operationId: listFeeds
+      responses:
+        "200":
+          description: Every subscribed feed.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Feed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [Feed API]
+      summary: Subscribe to a feed
+      description: |
+        Subscribes to a source feed and returns it, with the signed
+        `feed_url` to give a podcast client. The source is fetched at once
+        (20-second limit) and nothing is stored unless it is a valid RSS
+        feed. Posting a source that is already subscribed returns the
+        existing feed, unchanged, with `200`.
+      operationId: createFeed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - type: object
+                  required: [source_url]
+                  properties:
+                    source_url:
+                      type: string
+                      format: uri
+                      examples: ["https://feeds.acast.com/public/shows/abc"]
+                - $ref: "#/components/schemas/FeedSettings"
+            examples:
+              plain:
+                value:
+                  source_url: https://feeds.acast.com/public/shows/abc
+              withRegionDiff:
+                value:
+                  source_url: https://feeds.acast.com/public/shows/abc
+                  exit: norway
+                  region_diff: "on"
+                  region_diff_exits: [norway, sweden]
+      responses:
+        "200":
+          description: Already subscribed; the existing feed, settings unchanged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Feed"
+        "201":
+          description: Subscribed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Feed"
+        "400":
+          description: Invalid body, source URL or settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The source host isn't in `allowed_source_hosts`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          description: The source couldn't be fetched, or isn't a valid RSS feed. Nothing is stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/feeds/{feedID}:
+    parameters:
+      - $ref: "#/components/parameters/FeedID"
+    get:
+      tags: [Feed API]
+      summary: Get a feed
+      operationId: getFeedSettings
+      responses:
+        "200":
+          description: The feed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Feed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      tags: [Feed API]
+      summary: Change a feed's settings
+      description: |
+        Changes the settings given; omitted fields are left alone, and an
+        empty value (`""`, `[]`, `0`) clears the override so the global
+        setting applies. Cached episodes made with settings that no longer
+        apply (another exit, delivery mode, region-diff settings) are cleared
+        at once and prepared again on their next play; failed episodes whose
+        settings changed are retried.
+      operationId: updateFeed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FeedSettings"
+            examples:
+              regionDiffOn:
+                value:
+                  region_diff: "on"
+              backToGlobal:
+                value:
+                  exit: ""
+                  region_diff: ""
+      responses:
+        "200":
+          description: The feed with its new settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Feed"
+        "400":
+          description: Invalid body or settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [Feed API]
+      summary: Remove a feed
+      description: Removes the feed, its episodes and its cached audio.
+      operationId: deleteFeed
+      responses:
+        "204":
+          description: Removed.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+security:
+  - bearerToken: []
+  - queryToken: []
+
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      description: "The subscribe token (`auth_token`) as `Authorization: Bearer <token>`."
+    queryToken:
+      type: apiKey
+      in: query
+      name: token
+      description: The subscribe token as `?token=`, for a quick look in a browser. The bearer header wins when both are given.
+
+  parameters:
+    FeedID:
+      name: feedID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Signature:
+      name: sig
+      in: query
+      required: true
+      description: The URL's signature, as Solstein wrote it (not needed with `disable_auth`).
+      schema:
+        type: string
+
+  responses:
+    Feed:
+      description: The rewritten RSS feed. Clients should revalidate on every request.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            const: no-cache
+      content:
+        application/rss+xml:
+          schema:
+            type: string
+    Audio:
+      description: The episode's audio.
+      headers:
+        Content-Length:
+          schema:
+            type: integer
+        Accept-Ranges:
+          schema:
+            type: string
+      content:
+        audio/mpeg:
+          schema:
+            type: string
+            format: binary
+    PartialAudio:
+      description: Part of the episode's audio, for a `Range` request.
+      headers:
+        Content-Range:
+          schema:
+            type: string
+      content:
+        audio/mpeg:
+          schema:
+            type: string
+            format: binary
+    StillProcessing:
+      description: The episode is still being processed (region diff took over 20 seconds, or failed this time and will be tried again). Try again after `Retry-After` seconds.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+            examples: [30]
+      content:
+        text/plain:
+          schema:
+            type: string
+    BadSignature:
+      description: Missing or wrong signature, or client outside `allowed_client_networks`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing or wrong subscribe token.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: No such feed or episode.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: Something failed inside Solstein; the details are in its log.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          examples: ["Feed not found."]
+
+    FeedSettings:
+      type: object
+      description: |
+        Per-feed settings. Each is optional; an empty value means the global
+        setting from `config.json` applies.
+      properties:
+        exit:
+          type: string
+          description: The exit the feed's polls, downloads and streams go through; empty means `default_exit`.
+          examples: [norway, direct]
+        delivery_mode:
+          type: string
+          enum: ["", cache, stream, original]
+          description: How audio is delivered when no processor handles the feed.
+        poll_interval_minutes:
+          type: integer
+          minimum: 0
+          description: Minutes between polls; 0 means `poll_interval_minutes`.
+        region_diff:
+          type: string
+          enum: ["", "on", "off"]
+          description: Region diff for this feed; empty follows `region_diff.enabled`. `on` needs region diff to be running.
+        region_diff_exits:
+          type: array
+          description: The feed's own pair of exits, home region first; empty uses `region_diff.exits`.
+          items:
+            type: string
+          maxItems: 2
+          examples: [[norway, sweden]]
+        region_diff_on_failure:
+          type: string
+          enum: ["", publish, hide]
+          description: What happens to an episode that can't be processed; empty follows `region_diff.on_failure`.
+        region_diff_trim_break_markers:
+          type: string
+          enum: ["", "on", "off"]
+          description: Also remove break markers that can be cut cleanly; empty follows `region_diff.trim_break_markers`.
+
+    Feed:
+      description: A subscribed feed, its settings and its state.
+      allOf:
+        - $ref: "#/components/schemas/FeedSettings"
+        - type: object
+          required: [id, source_url, feed_url, delivery_mode_in_use, region_diff_in_use]
+          properties:
+            id:
+              type: string
+              format: uuid
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+            source_url:
+              type: string
+              format: uri
+              description: The source feed, normalised.
+            title:
+              type: string
+            last_polled_at:
+              type: [string, "null"]
+              format: date-time
+            last_success_at:
+              type: [string, "null"]
+              format: date-time
+            last_error:
+              type: string
+              description: Why the last poll failed; empty after a successful one.
+            delivery_mode_in_use:
+              type: string
+              enum: [cache, stream, original]
+              description: The delivery mode after the global setting is applied.
+            region_diff_in_use:
+              type: boolean
+              description: Whether region diff processes the feed's episodes, after the global and per-feed settings are combined.
+            feed_url:
+              type: string
+              format: uri
+              description: The signed feed URL to subscribe to in a podcast client.

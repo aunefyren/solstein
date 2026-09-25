@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +31,16 @@ type ProcessorOptions struct {
 	// HideOnFailure keeps an episode out of the feed when processing fails
 	// for good, instead of publishing it with its ads.
 	HideOnFailure bool
+	// Locator says which country each exit comes out in, so two exits in
+	// the same country are never compared; nil skips the check.
+	Locator Locator
+}
+
+// Locator says where exits come out; outbound.Manager is one. The direct
+// exit's country is always unknown.
+type Locator interface {
+	ExitCountries(exit string) (countries []string, known bool)
+	ExitCountry(exit string) (country string, known bool)
 }
 
 // Processor is region diff as an episode processor for the pipeline.
@@ -75,6 +86,27 @@ func (processor *Processor) HideOnFailure(feed models.Feed) bool {
 	return processor.options.HideOnFailure
 }
 
+// algorithmVersion is part of the recipe: bump it when a change to the diff
+// would cut differently, so episodes cut before are cut again.
+const algorithmVersion = 1
+
+// Recipe describes the settings that shape a feed's cleaned episodes, for
+// episodes.Processor. The failure policy is left out: it doesn't change a
+// cleaned file.
+func (processor *Processor) Recipe(feed models.Feed) string {
+	pair, fallbacks := processor.exitsFor(feed)
+	recipe := fmt.Sprintf("v%d %s→%s", algorithmVersion, pair[0], pair[1])
+	if len(fallbacks) > 0 {
+		recipe += ", fallback " + strings.Join(fallbacks, ", ")
+	}
+	options := processor.options.Diff
+	recipe += fmt.Sprintf(", shared ≥%s, removed ≤%g%%", options.MinShared, options.MaxRemovedShare*100)
+	if processor.trimsMarkers(feed) {
+		return recipe + ", markers trimmed"
+	}
+	return recipe
+}
+
 // exitsFor is the feed's exit pair and the fallbacks to try with it. A
 // fallback that is part of the feed's own pair is skipped.
 func (processor *Processor) exitsFor(feed models.Feed) (pair [2]string, fallbacks []string) {
@@ -98,6 +130,10 @@ func (processor *Processor) exitsFor(feed models.Feed) (pair [2]string, fallback
 // next downloads may carry other ads.
 func (processor *Processor) Process(ctx context.Context, job episodes.Job) (episodes.Processed, error) {
 	pair, fallbacks := processor.exitsFor(job.Feed)
+	pair, fallbacks, err := processor.inDifferentCountries(pair, fallbacks)
+	if err != nil {
+		return episodes.Processed{}, err
+	}
 	home, other, err := fetchPair(ctx, job, pair)
 	if err != nil {
 		return episodes.Processed{}, err
@@ -105,6 +141,7 @@ func (processor *Processor) Process(ctx context.Context, job episodes.Job) (epis
 
 	options := processor.options.Diff
 	options.ExpectedDuration = job.ExpectedDuration
+	options.TrimBreakMarkers = processor.trimsMarkers(job.Feed)
 	compared := pair[1]
 	result, err := Diff(home.Data, other.Data, options)
 	for _, exit := range fallbacks {
@@ -132,17 +169,73 @@ func (processor *Processor) Process(ctx context.Context, job episodes.Job) (epis
 	for _, segment := range result.Removed {
 		removed += segment.Duration
 	}
-	breaks := fmt.Sprintf("%d breaks", len(result.Removed))
-	if len(result.Removed) == 1 {
-		breaks = "1 break"
+	note := fmt.Sprintf("removed %s of ads in %s, comparing %s with %s",
+		removed.Round(time.Second), plural(len(result.Removed), "break"), pair[0], compared)
+	if len(result.Markers) > 0 {
+		var markers time.Duration
+		for _, marker := range result.Markers {
+			markers += marker.Duration
+		}
+		note += fmt.Sprintf(", including %s (%s)", plural(len(result.Markers), "break marker"), markers.Round(time.Second))
 	}
 	return episodes.Processed{
 		Audio:       result.Output,
 		ContentType: home.ContentType,
 		Duration:    result.Duration,
-		Note: fmt.Sprintf("removed %s of ads in %s, comparing %s with %s",
-			removed.Round(time.Second), breaks, pair[0], compared),
+		Note:        note,
 	}, nil
+}
+
+// plural is "1 break" or "4 breaks".
+func plural(count int, noun string) string {
+	if count == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", count, noun)
+}
+
+// trimsMarkers is the feed's trim_break_markers switch, or the global one.
+func (processor *Processor) trimsMarkers(feed models.Feed) bool {
+	switch feed.RegionDiffTrimBreakMarkers {
+	case "on":
+		return true
+	case "off":
+		return false
+	}
+	return processor.options.Diff.TrimBreakMarkers
+}
+
+// inDifferentCountries makes sure the exits compared with the home exit
+// come out in another country than it does right now: two downloads from
+// one country carry the same ads, so the diff would find nothing and the
+// episode would be published with them. An exit that has fallen back to the
+// home country is skipped; when the pair's other exit has, the first
+// fallback that hasn't takes its place. With none left, it fails with a
+// retryable error, since exits can move back. Unknown countries (direct,
+// servers without a location) are trusted.
+func (processor *Processor) inDifferentCountries(pair [2]string, fallbacks []string) ([2]string, []string, error) {
+	locator := processor.options.Locator
+	if locator == nil {
+		return pair, fallbacks, nil
+	}
+	homeCountry, known := locator.ExitCountry(pair[0])
+	if !known {
+		return pair, fallbacks, nil
+	}
+	sameCountry := func(exit string) bool {
+		country, known := locator.ExitCountry(exit)
+		return known && country == homeCountry
+	}
+	var others []string
+	for _, exit := range append([]string{pair[1]}, fallbacks...) {
+		if !sameCountry(exit) {
+			others = append(others, exit)
+		}
+	}
+	if len(others) == 0 {
+		return pair, nil, fmt.Errorf("the exits to compare all come out in %s right now, like %s; waiting for one to move", homeCountry, pair[0])
+	}
+	return [2]string{pair[0], others[0]}, others[1:], nil
 }
 
 // fetchPair downloads through both exits at the same moment, so the only

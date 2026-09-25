@@ -30,18 +30,35 @@ Measured on one episode of a show with Norwegian dynamic ads ("Corner Piece"), d
 
 `ErrIdentical` means the audio is the same (same bytes, or nothing removed from either side).
 
+With `TrimBreakMarkers`, break markers are removed between steps 4 and 5, so the sanity checks see the final result (below).
+
 On the live pair the diff takes under a second and keeps the three show segments (13:22, 15:10, 11:34), removing the four breaks (1:31, 1:00, 0:40, 1:21): 40:06 against the feed's 39:52. Diffing in either direction gives byte-identical show audio, and ffmpeg decodes the result with no errors.
 
-Shared ads stay in: audio that is the same in both regions is kept as show audio, including an ad running in both markets, and a short bumper spliced in at each break (see [`wip.md`](wip.md)). Host-read ads baked into the recording can't be found by any diff.
+Shared ads stay in: audio that is the same in both regions is kept as show audio, including an ad running in both markets. Host-read ads baked into the recording can't be found by any diff.
+
+## Break markers
+
+Hosts splice a short chime or sting in around ad breaks. It is the same in every region, so the diff keeps it as show audio. "Corner Piece" has a 2.27-second chime (87 frames) six times per episode — at the start, twice back to back at each mid-roll position (before and after the break), and at the end — byte-identical in every episode of the feed (2026-09-25).
+
+`trim_break_markers` (off by default) removes the ones that can be cut cleanly. A piece is taken for a marker only when all of these hold, so show audio is never cut:
+- it is a whole spliced segment: it starts on a clean frame (or the file's first) and the frame after it starts clean (or the file ends), so cutting it leaves no decode error on either side;
+- it is at the edge of a kept run, next to removed audio or the file's start or end;
+- it is at most 5 s long;
+- its frames are byte-identical to another such piece in the same episode.
+
+A marker encoded together with the start of a show segment (no clean frame after it) can't be cut without breaking the first show frame — it borrows bit-reservoir bytes from the marker, and would decode as an error — so it stays. In "Corner Piece" that is the chime after each mid-roll: with trimming on, the four clean ones go (at the start, before each mid-roll, at the end), leaving one chime per break instead of two. On the live pair that removes exactly those four 87-frame pieces (frames 3471–3558, 34070–34157, 71199–71286, 99325–99412), 40:06 becomes 39:57, and ffmpeg decodes the result with no errors.
+
+Off by default because a show's own sting, if it is spliced in as its own segment at breaks, goes too. The episode's note counts the markers, e.g. "…, including 4 break markers (9s)".
 
 ## The processor
 
 `regiondiff.Processor`, for each episode of a feed it handles:
-1. **Download through both exits at the same moment**, with the same User-Agent, so the only difference is the region. If one download fails, the other is cancelled.
-2. **Diff.** The home exit's download is the one kept.
-3. **Identical audio** means no dynamic ads, or the same campaign in both markets; two files can't tell which. Each of `fallback_exits` is then tried in turn against the home download (skipping any that is part of the feed's own pair). If every region agrees, the episode is kept as it is and noted "no dynamic ads found" — with a hint when the file is more than 5% longer than stated, which suggests ads that are the same everywhere.
-4. **Errors:** not MP3 or mismatched formats fail for good (`ErrPermanent`); an implausible result, a failed download or a failed fallback is retried with the pipeline's back-off, since the next downloads may carry other ads.
-5. The result goes to the pipeline with its duration and a note, e.g. "removed 4m15s of ads in 4 breaks, comparing norway with sweden" ([`episodes.md`](episodes.md)).
+1. **Check the countries.** Two exits in the same country get the same ads, so a diff between them would find nothing and the episode would be published with its ads. Before downloading, the processor asks which country each exit's next connection goes out in (`outbound.Manager.ExitCountry`). An exit that is in the home exit's country right now — say a loose exit that fell back — is skipped, and the first fallback in another country takes its place; with none left, the attempt fails and is retried later, when the exits may have moved. Exits whose country is unknown (`direct`, servers without a location) are trusted.
+2. **Download through both exits at the same moment**, with the same User-Agent, so the only difference is the region. If one download fails, the other is cancelled.
+3. **Diff.** The home exit's download is the one kept.
+4. **Identical audio** means no dynamic ads, or the same campaign in both markets; two files can't tell which. Each of `fallback_exits` is then tried in turn against the home download (skipping any that is part of the feed's own pair). If every region agrees, the episode is kept as it is and noted "no dynamic ads found" — with a hint when the file is more than 5% longer than stated, which suggests ads that are the same everywhere.
+5. **Errors:** not MP3 or mismatched formats fail for good (`ErrPermanent`); an implausible result, a failed download or a failed fallback is retried with the pipeline's back-off, since the next downloads may carry other ads.
+6. The result goes to the pipeline with its duration and a note, e.g. "removed 4m15s of ads in 4 breaks, comparing norway with sweden" ([`episodes.md`](episodes.md)).
 
 Every episode of a processed feed is served cleaned: new episodes are processed before they are published, backlog episodes (and processed files past their retention) are processed on first request with a bounded wait, and the newest `backlog` episodes are processed as soon as a feed is added ([`episodes.md`](episodes.md), [`feeds.md`](feeds.md)). The unprocessed version is served only when processing fails for good and the policy is `publish`.
 
@@ -55,14 +72,18 @@ Every episode of a processed feed is served cleaned: new episodes are processed 
   "min_shared_seconds": 2,
   "max_removed_share": 0.3,
   "on_failure": "publish",           // publish (with ads) | hide
-  "backlog": 0                       // newest existing episodes processed when a feed is added
+  "backlog": 0,                      // newest existing episodes processed when a feed is added
+  "trim_break_markers": false        // also remove break markers that can be cut cleanly
 }
 ```
 
 - In `config.json` only, like the VPN block. `settings.RegionDiff` checks the numbers (`min_shared_seconds` 0.5–60, `max_removed_share` above 0 and at most 1, `backlog` not negative) and `on_failure`; a bad value stops start-up like any bad setting.
 - **The pair:** `direct` works as the home side but shows the host the home address and needs only one tunnel; a VPN exit in the home country (e.g. Proton `NO`) gives the same home-region ads without that, over two tunnels, which one Proton key handles. Under `disable_direct`, it has to be a VPN exit.
-- **Per feed:** `region_diff` (`on`, `off`, or empty for `enabled`), `region_diff_exits` and `region_diff_on_failure` ([`feeds.md`](feeds.md)). With `enabled: false` and `exits` set, region diff runs only for feeds that switch it on.
-- **Start-up** (`regiondiff.Setup`, given the exits that exist): without `exits`, region diff is off and silent. It stays off with a warning when `enabled` has no `exits`, when there aren't exactly two, when one is named twice, or when one doesn't exist (with a specific message for `direct` under `disable_direct`). Unusable fallback exits are dropped with a warning. Region diff never stops start-up. The log states the pair, fallbacks, default and failure policy.
+- **Per feed:** `region_diff` (`on`, `off`, or empty for `enabled`), `region_diff_exits`, `region_diff_on_failure` and `region_diff_trim_break_markers` (`on`, `off`, or empty for the global setting) ([`feeds.md`](feeds.md)). With `enabled: false` and `exits` set, region diff runs only for feeds that switch it on.
+- **Start-up** (`regiondiff.Setup`, given the exits that exist): without `exits`, region diff is off and silent. It stays off with a warning when `enabled` has no `exits`, when there aren't exactly two, when one is named twice, or when one doesn't exist (with a specific message for `direct` under `disable_direct`). Unusable fallback exits are dropped with a warning.
+- **Same country at start-up:** from each exit's locations and servers, the exits module lists every country it may come out in (`ExitCountries`). If both exits of the pair can only come out in one country and it is the same, region diff stays off with a warning. If they can overlap through fallback locations, it runs with a warning, and the check before each download (above) handles it. A fallback that can only come out in the home exit's country is dropped. `direct`'s country is unknown to Solstein (finding it would take an outside geolocation service), so it is never flagged.
+- Region diff never stops start-up. The log states the pair, fallbacks, default, failure policy and whether markers are trimmed.
+- **Changing settings:** each cleaned episode records the settings it was cut with (`Processor.Recipe`: the pair, fallbacks, `min_shared_seconds`, `max_removed_share`, `trim_break_markers` and an algorithm version). When they change, the old file is cleared and the episode cut again on its next request ([`episodes.md`](episodes.md)). The failure policy isn't part of it: it doesn't change a cleaned file.
 
 ## Verified live with Audiobookshelf (2026-09-25)
 

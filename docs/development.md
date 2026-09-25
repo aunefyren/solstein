@@ -242,4 +242,5 @@ Secrets and variables:
 - Read `docs/wip.md` at the start of a session: it holds every known issue, gap, open question and planned item. Check it before assuming behaviour is intended.
 - Add issues, ideas and questions to `wip.md` as soon as they come up. When one is resolved, remove it there and record the outcome in the document for that area; see the rules at the top of `wip.md`.
 - Keep the documents in `docs/` in step with the code: a change in behaviour updates the document that describes it in the same piece of work.
+- `docs/openapi.yaml` describes every HTTP route. A new or changed route, parameter, response or setting in the API updates it in the same change. `TestOpenAPICoversEveryRoute` (in `server`) fails when a route or method is missing from it; add new routes to the test's mapping too. Check the spec with `npx @redocly/cli lint docs/openapi.yaml`.
 - Git is managed by the maintainer; don't commit, push or branch.

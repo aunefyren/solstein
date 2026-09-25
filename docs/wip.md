@@ -11,34 +11,19 @@ Everything about Solstein that isn't finished: known issues, gaps, open question
 
 ## Region diff
 
-### Break markers are kept (issue, proposed fix)
+### Break markers encoded into show segments (open)
 
-The cleaned "Corner Piece" episode has no ads left, but the short chime around each ad break is still in it.
+`trim_break_markers` removes only markers that are their own spliced segment ([`region-diff.md`](region-diff.md)). In "Corner Piece", the chime after each mid-roll is encoded together with the start of the next show segment, so one chime per break remains even with trimming on.
 
-**Cause:** the chime is its own spliced segment, and identical in both regions, so the diff keeps it as shared audio attached to the show segment next to it. Measured on the live Norway/Sweden pair (`config/live/`):
-- It lasts 2.27 s (87 frames) and starts and ends on clean frames (`main_data_begin = 0`), as ads do.
-- It appears four times: after the pre-roll (frames 3471–3558), and before the first mid-roll, the second mid-roll and the post-roll (frames 34070–34157, 71199–71286 and 99325–99412). Its audio data is byte-identical at all four.
-- There is no chime after the two mid-rolls: the show resumes directly.
-- Most likely a break bumper configured in Acast rather than part of the recording, but that can't be proven from the files alone.
+Cutting it would leave the first show frame without the bit-reservoir bytes it borrows from the chime's last frame: a 26 ms decode error, possibly a click. Ways round it, none tried: re-encode just that one frame (would need an MP3 encoder, which Solstein has none of and the no-re-encoding rule avoids), or replace the chime's frames with silent frames of the same size that still carry the borrowed bytes (keeps the timing; complex, and depends on the encoder's reservoir use). Only worth it if the remaining chime bothers in practice.
 
-**Proposal:** at the edge of a kept run, next to a removed break, drop a segment when all of these hold:
-- it starts and ends on clean frames;
-- it is shorter than about 5 s;
-- the same audio (compared without headers and side information) appears at two or more break edges in the episode.
+### `trim_break_markers` default (to decide after the trial)
 
-The repetition rule means a short one-off stretch of real show audio next to a break is never removed. Setting `trim_break_markers`, default on. Trade-off: a show that uses its own branded sting at breaks loses that sting too.
+Off by default because a show's own sting spliced in at breaks would go too. Revisit once it has run on real feeds for a while: if it never removes anything that isn't a host's marker, it could default to on.
 
-**Where:** `modules/regiondiff/diff.go`, after the kept runs are trimmed to segment boundaries and before the sanity checks. Test with synthetic splices, and assert on the live pair that exactly four 87-frame pieces are dropped.
+### The home country of `direct` (idea)
 
-### Switching region diff on for a feed with cached episodes (gap)
-
-When region diff is switched on for an existing feed (per feed, or through `enabled`), episodes already cached unprocessed stay cached and keep being served with their ads until their cache copy expires (`cache_retention_days`); after that they are processed on the next request. Only new and uncached episodes are cleaned at once.
-
-**Option:** when a feed's `region_diff_in_use` turns on, drop its unprocessed cache copies (cached, no `process_note`), so the next request processes them. A change of the global `enabled` would need the same check at start-up. Not needed while feeds are set up with region diff from the start.
-
-### Warn when both sides of a pair can be the same country (planned)
-
-A pair whose two exits can resolve to the same country — e.g. `direct` from Norway plus a loose exit that can fall back to `NO` — would diff two copies of the same ads and find nothing. Start-up should warn about it. Not built: `regiondiff.Setup` only checks that the two exits exist and differ.
+The same-country checks can't see `direct`'s country (it would need an outside geolocation service, which is ruled out), so a pair like `["direct", "norway"]` from Norway is never flagged. An optional `home_country` setting, declared by the operator, would let the checks treat `direct` as that country. Not asked for yet.
 
 ### Keeping the raw downloads (idea)
 

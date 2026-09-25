@@ -93,13 +93,19 @@ func (server *Server) Serve(writer http.ResponseWriter, request *http.Request, f
 	if err != nil {
 		return err
 	}
-	if episode.Withheld {
-		// Its failure policy keeps the unprocessed version from clients.
-		return database.ErrEpisodeNotFound
-	}
 	feed, err := server.store.GetFeed(ctx, feedID)
 	if err != nil {
 		return err
+	}
+	if server.pipeline != nil {
+		// A file made with settings that have since changed isn't served.
+		if episode, err = server.pipeline.CheckEpisode(ctx, feed, episode); err != nil {
+			return err
+		}
+	}
+	if episode.Withheld {
+		// Its failure policy keeps the unprocessed version from clients.
+		return database.ErrEpisodeNotFound
 	}
 
 	if episode.CacheFile != "" {
@@ -238,6 +244,15 @@ func contentTypeFor(filePath string) string {
 	}
 }
 
+// FeedChanged brings a feed's episodes in line with its new settings (see
+// Pipeline.Reconcile). Without a pipeline there is nothing to reconcile.
+func (server *Server) FeedChanged(ctx context.Context, feedID uuid.UUID) error {
+	if server.pipeline == nil {
+		return nil
+	}
+	return server.pipeline.Reconcile(ctx, feedID)
+}
+
 // RemoveFeed deletes a deleted feed's cached audio at once, instead of
 // leaving it for the hourly clean-up.
 func (server *Server) RemoveFeed(feedID uuid.UUID) error {
@@ -353,8 +368,14 @@ func (server *Server) stream(writer http.ResponseWriter, request *http.Request, 
 
 	now := server.options.Now().UTC()
 	episode.CacheFile, episode.CacheSize, episode.CacheSeconds, episode.CachedAt = cacheFile, size, 0, &now
-	if episode.State == models.EpisodeFailed {
+	// A failed download recovers this way. A processed feed's failed episode
+	// stays failed: the file is the unprocessed version, published by the
+	// failure policy, and a change of settings retries it (Reconcile).
+	if episode.State == models.EpisodeFailed && !server.feeds.Processed(feed) {
 		episode.State, episode.LastError = models.EpisodeReady, ""
+	}
+	if server.pipeline != nil && episode.State == models.EpisodeReady {
+		episode.PreparedWith = server.pipeline.recipe(feed)
 	}
 	// The listener may be gone, so don't use its context.
 	if err := server.store.UpdateEpisode(context.WithoutCancel(request.Context()), &episode); err != nil {

@@ -604,3 +604,51 @@ func TestEpisodeRouteSourceFailure(t *testing.T) {
 		t.Errorf("status = %d, want 502", recorder.Code)
 	}
 }
+
+// TestOpenAPICoversEveryRoute keeps docs/openapi.yaml in step with the
+// router: every route and method must be documented there. Gin's path
+// syntax differs from OpenAPI's, so the mapping is spelled out; a new route
+// fails here until it is added to both.
+func TestOpenAPICoversEveryRoute(t *testing.T) {
+	documented := map[string]string{
+		"/api/health":                 "/api/health",
+		"/api/rss/:token/*source":     "/api/rss/{token}/{sourceURL}",
+		"/api/feeds/:file":            "/api/feeds/{feedID}.xml",
+		"/api/episodes/:feedID/:file": "/api/episodes/{feedID}/{episodeID}.{extension}",
+		"/api/v1/feeds":               "/api/v1/feeds",
+		"/api/v1/feeds/:feedID":       "/api/v1/feeds/{feedID}",
+	}
+	spec, err := os.ReadFile(filepath.Join("..", "docs", "openapi.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Each path's block runs to the next path (two-space indent) or the
+	// next top-level key.
+	block := func(path string) string {
+		text := string(spec)
+		start := strings.Index(text, "\n  "+path+":\n")
+		if start < 0 {
+			return ""
+		}
+		rest := text[start+1:]
+		end := len(rest)
+		for _, marker := range []string{"\n  /", "\n\n" + "security:", "\ncomponents:"} {
+			if index := strings.Index(rest[1:], marker); index >= 0 && index+1 < end {
+				end = index + 1
+			}
+		}
+		return rest[:end]
+	}
+
+	router, _ := newTestRouterWithDir(t, nil)
+	for _, route := range router.Routes() {
+		specPath, ok := documented[route.Path]
+		if !ok {
+			t.Errorf("%s %s isn't in docs/openapi.yaml (add it there and to this test's mapping)", route.Method, route.Path)
+			continue
+		}
+		if !strings.Contains(block(specPath), "\n    "+strings.ToLower(route.Method)+":\n") {
+			t.Errorf("docs/openapi.yaml has no %s under %s", route.Method, specPath)
+		}
+	}
+}

@@ -31,7 +31,7 @@ func TestSetupOff(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			processor, warnings := Setup(c.config, c.available)
+			processor, warnings := Setup(c.config, c.available, nil)
 			if processor != nil {
 				t.Fatal("region diff is on")
 			}
@@ -43,7 +43,7 @@ func TestSetupOff(t *testing.T) {
 }
 
 func TestSetupOn(t *testing.T) {
-	processor, warnings := Setup(regionDiffConfig([]string{"norway", "sweden"}, []string{"germany", "sweden", "atlantis", "denmark"}), []string{"direct", "norway", "sweden", "germany", "denmark"})
+	processor, warnings := Setup(regionDiffConfig([]string{"norway", "sweden"}, []string{"germany", "sweden", "atlantis", "denmark"}), []string{"direct", "norway", "sweden", "germany", "denmark"}, nil)
 	if processor == nil {
 		t.Fatalf("off: %q", warnings)
 	}
@@ -62,7 +62,7 @@ func TestSetupOn(t *testing.T) {
 
 func TestProcessorFeedSettings(t *testing.T) {
 	processor, _ := Setup(settings.RegionDiff{Exits: []string{"norway", "sweden"}, FallbackExits: []string{"germany", "denmark"}, MinSharedSeconds: 2, MaxRemovedShare: 0.3, OnFailure: "publish"},
-		[]string{"norway", "sweden", "germany", "denmark"})
+		[]string{"norway", "sweden", "germany", "denmark"}, nil)
 	if processor == nil {
 		t.Fatal("off")
 	}
@@ -86,5 +86,74 @@ func TestProcessorFeedSettings(t *testing.T) {
 	pair, fallbacks = processor.exitsFor(models.Feed{RegionDiffExits: []string{"norway", "germany"}})
 	if pair != [2]string{"norway", "germany"} || !reflect.DeepEqual(fallbacks, []string{"denmark"}) {
 		t.Errorf("feed exits = %v, %v", pair, fallbacks)
+	}
+}
+
+// fakeLocator knows each exit's possible countries; the first is the one in
+// use now.
+type fakeLocator map[string][]string
+
+func (locator fakeLocator) ExitCountries(exit string) ([]string, bool) {
+	countries, ok := locator[exit]
+	return countries, ok
+}
+
+func (locator fakeLocator) ExitCountry(exit string) (string, bool) {
+	if countries := locator[exit]; len(countries) > 0 {
+		return countries[0], true
+	}
+	return "", false
+}
+
+func TestSetupSameCountry(t *testing.T) {
+	available := []string{"direct", "norway", "oslo", "sweden", "nordic", "germany"}
+	locator := fakeLocator{
+		"norway":  {"NO"},
+		"oslo":    {"NO"},
+		"sweden":  {"SE"},
+		"nordic":  {"SE", "NO", "DK"}, // loose: can fall back to NO
+		"germany": {"DE"},
+	}
+	// Both only in Norway: off.
+	processor, warnings := Setup(regionDiffConfig([]string{"norway", "oslo"}, nil), available, locator)
+	if processor != nil || len(warnings) != 1 || !strings.Contains(warnings[0], `"norway" and "oslo" both come out in NO only`) {
+		t.Errorf("same country: processor %v, warnings %q", processor != nil, warnings)
+	}
+	// Can overlap through fallback locations: on, with a warning.
+	processor, warnings = Setup(regionDiffConfig([]string{"norway", "nordic"}, nil), available, locator)
+	if processor == nil || len(warnings) != 1 || !strings.Contains(warnings[0], `can both come out in NO`) {
+		t.Errorf("possible overlap: processor %v, warnings %q", processor != nil, warnings)
+	}
+	// A fallback only in the home country is dropped.
+	processor, warnings = Setup(regionDiffConfig([]string{"norway", "sweden"}, []string{"oslo", "germany"}), available, locator)
+	if processor == nil || len(warnings) != 1 || !strings.Contains(warnings[0], `"oslo" both come out in NO only; skipped`) ||
+		!reflect.DeepEqual(processor.options.FallbackExits, []string{"germany"}) {
+		t.Errorf("fallback in the home country: warnings %q", warnings)
+	}
+	// direct's country is unknown: never flagged.
+	if processor, warnings = Setup(regionDiffConfig([]string{"direct", "norway"}, nil), available, locator); processor == nil || len(warnings) != 0 {
+		t.Errorf("direct: processor %v, warnings %q", processor != nil, warnings)
+	}
+}
+
+func TestRecipe(t *testing.T) {
+	config := regionDiffConfig([]string{"norway", "sweden"}, []string{"germany"})
+	processor, _ := Setup(config, []string{"norway", "sweden", "germany", "denmark"}, nil)
+	recipes := map[string]string{
+		"global":         processor.Recipe(models.Feed{}),
+		"feed pair":      processor.Recipe(models.Feed{RegionDiffExits: []string{"norway", "denmark"}}),
+		"markers":        processor.Recipe(models.Feed{RegionDiffTrimBreakMarkers: "on"}),
+		"failure policy": processor.Recipe(models.Feed{RegionDiffOnFailure: "publish"}),
+	}
+	if want := "v1 norway→sweden, fallback germany, shared ≥3s, removed ≤40%"; recipes["global"] != want {
+		t.Errorf("recipe = %q, want %q", recipes["global"], want)
+	}
+	// Anything that changes the cleaned file changes the recipe; the failure
+	// policy doesn't change a cleaned file.
+	if recipes["feed pair"] == recipes["global"] || recipes["markers"] == recipes["global"] {
+		t.Errorf("recipes don't tell settings apart: %q", recipes)
+	}
+	if recipes["failure policy"] != recipes["global"] {
+		t.Errorf("failure policy changed the recipe: %q", recipes["failure policy"])
 	}
 }

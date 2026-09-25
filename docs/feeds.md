@@ -35,20 +35,21 @@ What a new subscription does:
 | `region_diff` | `on`, `off` | `region_diff.enabled` |
 | `region_diff_exits` | two different exits, home region first | `region_diff.exits` |
 | `region_diff_on_failure` | `publish`, `hide` | `region_diff.on_failure` |
+| `region_diff_trim_break_markers` | `on`, `off` | `region_diff.trim_break_markers` |
 
 - `feeds.ValidateSettings` refuses an exit that doesn't exist (including `direct` under `disable_direct`), an unknown delivery mode, a negative poll interval, `region_diff: on` while region diff isn't running, unknown region-diff values, and a `region_diff_exits` that isn't two different existing exits.
 - At start-up, `main.go` warns about feeds whose exit (or region-diff exit) no longer exists, and feeds with region diff switched on while it is off.
 
 ## Feed API
 
-A small JSON API behind the subscribe token (`Authorization: Bearer` or `?token=`), for the explicit flow. No web UI.
+A small JSON API behind the subscribe token (`Authorization: Bearer` or `?token=`), for the explicit flow. No web UI. The full specification, with every field and status code, is [`openapi.yaml`](openapi.yaml).
 
 | Route | Does |
 |---|---|
 | `GET /api/v1/feeds` | List feeds |
 | `POST /api/v1/feeds` | Subscribe: `source_url` plus any per-feed settings. `201` when new, `200` (unchanged) when already subscribed |
 | `GET /api/v1/feeds/{id}` | One feed |
-| `PATCH /api/v1/feeds/{id}` | Change settings; an omitted field is left alone, an empty one clears the override |
+| `PATCH /api/v1/feeds/{id}` | Change settings; an omitted field is left alone, an empty one clears the override. Cached episodes made with the old settings are cleared at once ([`episodes.md`](episodes.md)) |
 | `DELETE /api/v1/feeds/{id}` | Remove the feed, its episodes and its cached audio |
 
 Responses carry the feed's settings plus `delivery_mode_in_use`, `region_diff_in_use` (the global and per-feed settings combined) and `feed_url` (signed). Invalid settings are `400`; internal error text goes to the log, never to the client.

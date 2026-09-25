@@ -53,6 +53,8 @@ type Provider interface {
 
 The dialer is looked up per connection, so a module can switch servers or restore a tunnel without the core rebuilding clients.
 
+A provider can also implement `outbound.Locator`, saying which countries an exit may come out in and which one its next connection uses; `Manager.ExitCountries` / `ExitCountry` pass that on (`direct` is always unknown). Region diff uses it to avoid comparing two exits in the same country.
+
 ### Episode processors (`episodes`)
 
 The core hands a processor a job and caches what it returns. The processor downloads the source through any exit via the job, so region diff needs nothing else from the core.
@@ -62,6 +64,7 @@ type Processor interface {
     Name() string
     Handles(feed models.Feed) bool       // which feeds it applies to
     HideOnFailure(feed models.Feed) bool // failure policy: withhold, or publish unprocessed
+    Recipe(feed models.Feed) string      // the settings that shape the output, with a version
     Process(ctx context.Context, job Job) (Processed, error)
 }
 // Job carries the feed, the episode, its stated duration and
@@ -71,6 +74,7 @@ type Processor interface {
 ```
 
 - Errors are retried with the pipeline's back-off unless they wrap `episodes.ErrPermanent`.
+- When a feed's `Recipe` changes, episodes processed with the old one are processed again ([`episodes.md`](episodes.md)).
 - `feeds` can't import `episodes`, so `feeds.Options.Processed` (the processor's `Handles`) tells the feed side which feeds are processed, and `RegionDiffAvailable` / `ProcessBacklog` carry the module's settings it needs.
 - At most one processor per feed; there is one processor (region diff).
 
@@ -92,4 +96,4 @@ How the pipeline runs a processor: [`episodes.md`](episodes.md).
 - `episodes.Housekeeper` — cache retention and stray files ([`episodes.md`](episodes.md)).
 - `exits.Module` — closes idle tunnels, refreshes the Proton server list; only when the VPN module is on ([`exits.md`](exits.md)).
 
-Start-up order: settings → time zone → logger → database → exits module → `outbound.Manager` → region diff → feeds service (and a check of every feed's settings against what is available) → cache and pipeline recovery → HTTP server.
+Start-up order: settings → time zone → logger → database → exits module → `outbound.Manager` → region diff → feeds service (and a check of every feed's settings against what is available) → cache and pipeline recovery → reconciling episodes with the settings → HTTP server.

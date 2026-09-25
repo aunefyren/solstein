@@ -28,6 +28,10 @@ type Processor interface {
 	// Handles reports whether the processor applies to a feed's episodes.
 	Handles(feed models.Feed) bool
 	HideOnFailure(feed models.Feed) bool
+	// Recipe describes the settings that shape the processor's output for
+	// a feed. When it changes, episodes processed before are processed
+	// again. Include a version to bump when the processing itself changes.
+	Recipe(feed models.Feed) string
 	Process(ctx context.Context, job Job) (Processed, error)
 }
 

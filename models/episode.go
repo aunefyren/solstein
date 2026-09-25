@@ -48,6 +48,11 @@ type Episode struct {
 	Withheld bool `json:"withheld"`
 	// ProcessNote says what a processor did, e.g. how much it removed.
 	ProcessNote string `json:"process_note"`
+	// PreparedWith describes the settings the episode's file was made with
+	// (or, for a failed episode, those it failed under), so a change of
+	// settings can be told apart; see episodes.Pipeline.Reconcile. Empty
+	// for episodes from before it was recorded.
+	PreparedWith string `json:"prepared_with"`
 
 	// CacheFile is relative to the cache directory; empty when not cached.
 	CacheFile string `json:"-"`

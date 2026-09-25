@@ -1,7 +1,7 @@
 # ---------- Build ----------
 # Runs on the build host's own platform and cross-compiles (CGO is off), so the
 # multi-arch images don't compile under QEMU emulation.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.3-alpine AS builder
 ARG TARGETOS
 ARG TARGETARCH
 ARG TARGETVARIANT

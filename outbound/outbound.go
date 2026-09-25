@@ -49,6 +49,16 @@ type Provider interface {
 	Dialer(exit string) (Dialer, error)
 }
 
+// Locator is implemented by providers that know where their exits come out.
+// Region diff uses it to avoid comparing two exits in the same country.
+type Locator interface {
+	// ExitCountries lists every country (ISO 3166-1 alpha-2) the exit may
+	// use; known is false when that can't be told.
+	ExitCountries(exit string) (countries []string, known bool)
+	// ExitCountry is the country the exit's next connection goes out in.
+	ExitCountry(exit string) (country string, known bool)
+}
+
 // Options configures a Manager.
 type Options struct {
 	// UserAgent is sent on every request that doesn't set its own.
@@ -156,6 +166,25 @@ func (manager *Manager) DefaultExit() string {
 		return manager.options.DefaultExit
 	}
 	return DirectExit
+}
+
+// ExitCountries lists every country an exit may come out in, when its
+// provider can tell (see Locator). The direct exit's country is unknown:
+// finding it would take an outside geolocation service.
+func (manager *Manager) ExitCountries(exit string) ([]string, bool) {
+	if locator, ok := manager.providers[exit].(Locator); ok {
+		return locator.ExitCountries(exit)
+	}
+	return nil, false
+}
+
+// ExitCountry is the country an exit's next connection goes out in, when
+// its provider can tell.
+func (manager *Manager) ExitCountry(exit string) (string, bool) {
+	if locator, ok := manager.providers[exit].(Locator); ok {
+		return locator.ExitCountry(exit)
+	}
+	return "", false
 }
 
 // dialerFor is looked up on every connection rather than once per client, so

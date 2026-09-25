@@ -241,3 +241,39 @@ func (module *Module) ServerNames(provider string) []string {
 	slices.Sort(names)
 	return names
 }
+
+// ExitCountries lists every country an exit may come out in: those of the
+// servers its locations allow, fallbacks included, after its exclusions and
+// its provider's filter. known is false when some of those servers have no
+// country (a .conf server named without a location), or the exit doesn't
+// exist. For outbound.Locator.
+func (module *Module) ExitCountries(exitName string) (countries []string, known bool) {
+	exit, ok := module.config.Exits[exitName]
+	if !ok {
+		return nil, false
+	}
+	set := map[string]bool{}
+	for _, tier := range tiers(exit, module.serversOf(exit.Provider)) {
+		for _, server := range tier {
+			if server.Location.Country == "" {
+				return nil, false
+			}
+			set[server.Location.Country] = true
+		}
+	}
+	return sortedSet(set), len(set) > 0
+}
+
+// ExitCountry is the country of the server an exit would use now: the one
+// its next connection goes through. For outbound.Locator.
+func (module *Module) ExitCountry(exitName string) (string, bool) {
+	exit, ok := module.config.Exits[exitName]
+	if !ok {
+		return "", false
+	}
+	server, err := module.pick(exit)
+	if err != nil || server.Location.Country == "" {
+		return "", false
+	}
+	return server.Location.Country, true
+}

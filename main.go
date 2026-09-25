@@ -24,6 +24,8 @@ import (
 	"aunefyren/solstein/server"
 	"aunefyren/solstein/settings"
 
+	"github.com/google/uuid"
+
 	// Embeds the time zone database so -timezone works on hosts without one
 	// (Windows, minimal containers).
 	_ "time/tzdata"
@@ -143,7 +145,7 @@ func run() int {
 
 	// Region diff is optional too: off unless region_diff names two exits
 	// that exist. It needs nothing started; it runs inside the pipeline.
-	regionDiff, regionDiffWarnings := regiondiff.Setup(cfg.RegionDiff, exitManager.Exits())
+	regionDiff, regionDiffWarnings := regiondiff.Setup(cfg.RegionDiff, exitManager.Exits(), exitManager)
 	for _, warning := range regionDiffWarnings {
 		logger.Log.Warn("Region diff: " + warning)
 	}
@@ -180,6 +182,11 @@ func run() int {
 	})
 	if err := pipeline.Recover(ctx); err != nil {
 		logger.Log.Error("Failed to recover interrupted downloads. Error: " + err.Error())
+		return 1
+	}
+	// config.json may have changed since the last run.
+	if err := pipeline.Reconcile(ctx, uuid.Nil); err != nil {
+		logger.Log.Error("Failed to bring episodes in line with the settings. Error: " + err.Error())
 		return 1
 	}
 	poller := feeds.NewPoller(feedService, time.Duration(cfg.PollIntervalMinutes)*time.Minute, pipeline.Wake)

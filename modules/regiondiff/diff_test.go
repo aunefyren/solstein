@@ -3,6 +3,7 @@ package regiondiff
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -287,5 +288,126 @@ func TestDiffLiveDownloads(t *testing.T) {
 		t.Errorf("write the cleaned episode: %v", err)
 	} else {
 		t.Logf("cleaned episode written to %s", cleaned)
+	}
+
+	// With break markers trimmed: the four chimes that are their own
+	// spliced segment go (after the pre-roll, before each mid-roll and the
+	// post-roll); the two encoded into the show after the mid-rolls stay.
+	options.TrimBreakMarkers = true
+	trimmed, err := Diff(norway, sweden, options)
+	if err != nil {
+		t.Fatalf("Diff with trimming: %v", err)
+	}
+	var markers []string
+	for _, marker := range trimmed.Markers {
+		markers = append(markers, fmt.Sprintf("%d-%d", marker.Start, marker.End))
+	}
+	if got := strings.Join(markers, ","); got != "3471-3558,34070-34157,71199-71286,99325-99412" {
+		t.Errorf("markers = %s", got)
+	}
+	if removed := fromNorway.Duration - trimmed.Duration; removed != 4*87*norwayFrameDuration(t, norway) {
+		t.Errorf("trimming removed %s more, want 4 × 87 frames", removed)
+	}
+	trimmedPath := filepath.Join(directory, "cleaned-trimmed.mp3")
+	if err := os.WriteFile(trimmedPath, trimmed.Output, 0o644); err != nil {
+		t.Errorf("write the trimmed episode: %v", err)
+	} else {
+		t.Logf("trimmed episode (%s) written to %s", trimmed.Duration.Round(time.Second), trimmedPath)
+	}
+}
+
+func norwayFrameDuration(t *testing.T, data []byte) time.Duration {
+	t.Helper()
+	file, err := mp3.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return file.Frames[0].Header.Duration()
+}
+
+// withoutCleanStart is a segment whose first frame borrows from the one
+// before it, as show audio encoded together with a marker in front does.
+func withoutCleanStart(segment []byte) []byte {
+	segment = bytes.Clone(segment)
+	segment[4], segment[5] = 0x10, 0
+	return segment
+}
+
+func diffTrimming(t *testing.T, home, other []byte) Result {
+	t.Helper()
+	options := DefaultOptions()
+	options.TrimBreakMarkers = true
+	options.MaxRemovedShare = 0.6 // these made-up episodes are ad-heavy
+	result, err := Diff(home, other, options)
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	return result
+}
+
+func TestDiffTrimsBreakMarkers(t *testing.T) {
+	marker := audio(87, 99) // 2.27 s, its own spliced segment
+	home := join(tag("h"), audio(100, 11), marker, show1, marker, audio(80, 12), show2, marker, audio(60, 13))
+	other := join(tag("o"), audio(90, 21), marker, show1, marker, audio(70, 22), show2, marker, audio(50, 23))
+
+	result := diffTrimming(t, home, other)
+	if want := join(tag("h"), show1, show2); !bytes.Equal(result.Output, want) {
+		t.Errorf("output is %d bytes, want the show alone (%d)", len(result.Output), len(want))
+	}
+	if len(result.Markers) != 3 || result.Markers[0].End-result.Markers[0].Start != 87 {
+		t.Errorf("markers = %+v, want three of 87 frames", result.Markers)
+	}
+	// They are part of the removed audio, merged with the breaks next to them.
+	if len(result.Removed) != 3 {
+		t.Errorf("removed = %+v", result.Removed)
+	}
+
+	// Off (the default), the markers stay.
+	if kept := mustDiff(t, home, other); len(kept.Markers) != 0 || !bytes.Contains(kept.Output, marker) {
+		t.Error("markers removed with trimming off")
+	}
+}
+
+func TestDiffKeepsMarkersItCantCutCleanly(t *testing.T) {
+	// After the mid-roll, the marker is encoded together with the show
+	// segment that follows (no clean frame after it): cutting it would break
+	// the first show frame, so it stays. The two clean ones go.
+	marker := audio(87, 99)
+	baked := join(marker, withoutCleanStart(show2))
+	home := join(tag("h"), audio(100, 11), marker, show1, marker, audio(80, 12), baked, marker, audio(60, 13))
+	other := join(tag("o"), audio(90, 21), marker, show1, marker, audio(70, 22), baked, marker, audio(50, 23))
+
+	result := diffTrimming(t, home, other)
+	if want := join(tag("h"), show1, baked); !bytes.Equal(result.Output, want) {
+		t.Errorf("output is %d bytes, want %d: the show and the marker encoded into it", len(result.Output), len(want))
+	}
+	if len(result.Markers) != 3 {
+		t.Errorf("markers = %+v, want the three that are their own segment", result.Markers)
+	}
+}
+
+func TestDiffKeepsShortPiecesThatDontRepeat(t *testing.T) {
+	// Short spliced pieces at the break edges, but all different: that's
+	// show audio (a one-off intro, say), never a marker.
+	home := join(tag("h"), audio(100, 11), audio(90, 31), show1, audio(80, 32), audio(80, 12), show2)
+	other := join(tag("o"), audio(90, 21), audio(90, 31), show1, audio(80, 32), audio(70, 22), show2)
+
+	result := diffTrimming(t, home, other)
+	if len(result.Markers) != 0 {
+		t.Errorf("removed %+v, which never repeat", result.Markers)
+	}
+	if want := join(tag("h"), audio(90, 31), show1, audio(80, 32), show2); !bytes.Equal(result.Output, want) {
+		t.Error("show audio was cut")
+	}
+}
+
+func TestDiffKeepsLongRepeatedSegments(t *testing.T) {
+	// The same 6-second segment at two break edges is too long for a marker.
+	long := audio(230, 98)
+	home := join(tag("h"), audio(100, 11), long, show1, long, audio(80, 12), show2)
+	other := join(tag("o"), audio(90, 21), long, show1, long, audio(70, 22), show2)
+
+	if result := diffTrimming(t, home, other); len(result.Markers) != 0 {
+		t.Errorf("removed %+v, longer than a marker can be", result.Markers)
 	}
 }

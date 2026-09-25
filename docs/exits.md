@@ -91,7 +91,7 @@ An exit is a named route that feeds and region diff refer to; it picks servers f
 
 Where exits are used:
 - **Per feed:** a feed's `exit` (default `default_exit`, else `direct`) carries its polls, downloads and streams: another region's ads, or geo-blocked feeds, without region diff.
-- **Region diff:** a pair of exits, home region first ([`region-diff.md`](region-diff.md)).
+- **Region diff:** a pair of exits, home region first ([`region-diff.md`](region-diff.md)). The module implements `outbound.Locator` for it: `ExitCountries` lists every country an exit's servers are in (all tiers, after `exclude` and the provider's filter; unknown if any server has no location), and `ExitCountry` the country of the server the exit would use now.
 - **Wiring:** `exits.Setup` loads the block, reads the `.conf` files, builds the module and returns warnings; `main.go` logs them, registers the module with `outbound.Manager` and runs it with the other background loops. Tested end to end: a feed on a host that exists only inside a WireGuard tunnel was subscribed, polled and rendered through an exit, and was unreachable through `direct`.
 
 ## Testing

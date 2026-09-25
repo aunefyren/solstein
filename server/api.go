@@ -90,12 +90,13 @@ func (handlers *handlers) apiGetFeed(context *gin.Context) {
 // updateFeedRequest has pointer fields so an omitted field is left alone and
 // an empty one clears the override.
 type updateFeedRequest struct {
-	Exit                *string   `json:"exit"`
-	DeliveryMode        *string   `json:"delivery_mode"`
-	PollIntervalMinutes *int      `json:"poll_interval_minutes"`
-	RegionDiff          *string   `json:"region_diff"`
-	RegionDiffExits     *[]string `json:"region_diff_exits"`
-	RegionDiffOnFailure *string   `json:"region_diff_on_failure"`
+	Exit                       *string   `json:"exit"`
+	DeliveryMode               *string   `json:"delivery_mode"`
+	PollIntervalMinutes        *int      `json:"poll_interval_minutes"`
+	RegionDiff                 *string   `json:"region_diff"`
+	RegionDiffExits            *[]string `json:"region_diff_exits"`
+	RegionDiffOnFailure        *string   `json:"region_diff_on_failure"`
+	RegionDiffTrimBreakMarkers *string   `json:"region_diff_trim_break_markers"`
 }
 
 func (handlers *handlers) apiUpdateFeed(context *gin.Context) {
@@ -127,6 +128,9 @@ func (handlers *handlers) apiUpdateFeed(context *gin.Context) {
 	if request.RegionDiffOnFailure != nil {
 		feed.RegionDiffOnFailure = *request.RegionDiffOnFailure
 	}
+	if request.RegionDiffTrimBreakMarkers != nil {
+		feed.RegionDiffTrimBreakMarkers = *request.RegionDiffTrimBreakMarkers
+	}
 
 	err := handlers.feeds.Update(context.Request.Context(), &feed)
 	if errors.Is(err, feeds.ErrInvalidSettings) {
@@ -139,6 +143,13 @@ func (handlers *handlers) apiUpdateFeed(context *gin.Context) {
 		context.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update feed."})
 		context.Abort()
 		return
+	}
+	if handlers.episodes != nil {
+		// Cached files made with the old settings go; the settings are saved
+		// either way, and serving checks each episode again.
+		if err := handlers.episodes.FeedChanged(context.Request.Context(), feed.ID); err != nil {
+			logger.Log.Error("Failed to update the episodes of feed '" + feed.Title + "' to its new settings. Error: " + err.Error())
+		}
 	}
 	context.JSON(http.StatusOK, handlers.feedResponse(context, feed))
 }

@@ -22,6 +22,9 @@ type Feed struct {
 	// RegionDiffOnFailure overrides region_diff.on_failure ("publish" or
 	// "hide"); empty uses the global policy.
 	RegionDiffOnFailure string `json:"region_diff_on_failure"`
+	// RegionDiffTrimBreakMarkers is "on" or "off", or empty to follow
+	// region_diff.trim_break_markers.
+	RegionDiffTrimBreakMarkers string `json:"region_diff_trim_break_markers"`
 
 	LastPolledAt  *time.Time `json:"last_polled_at"`
 	LastSuccessAt *time.Time `json:"last_success_at"`

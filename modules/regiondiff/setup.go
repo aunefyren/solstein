@@ -11,11 +11,12 @@ import (
 )
 
 // Setup builds the processor from config.json's region_diff block, given
-// the exits that exist. It returns nil when region diff is off: not set up,
+// the exits that exist and, through locator (nil to skip), where they come
+// out. It returns nil when region diff is off: not set up,
 // or unable to run. A module that can't run doesn't stop Solstein (see
 // docs/architecture.md): the warnings say why it is off, or which fallback exits
 // were dropped.
-func Setup(config settings.RegionDiff, available []string) (*Processor, []string) {
+func Setup(config settings.RegionDiff, available []string, locator Locator) (*Processor, []string) {
 	if len(config.Exits) == 0 {
 		if config.Enabled {
 			return nil, []string{"region_diff.enabled is on but region_diff.exits is empty; region diff stays off. Name two exits, the home region first, e.g. [\"norway\", \"sweden\"]."}
@@ -38,13 +39,22 @@ func Setup(config settings.RegionDiff, available []string) (*Processor, []string
 	}
 
 	var warnings []string
+	home := config.Exits[0]
+	if reason, certain := sameCountry(locator, home, config.Exits[1]); certain {
+		return off("region_diff.exits: " + reason + ", so the two downloads would carry the same ads")
+	} else if reason != "" {
+		warnings = append(warnings, "region_diff.exits: "+reason+"; while they do, episodes are compared through a fallback exit or wait.")
+	}
 	var fallbacks []string
 	for _, exit := range config.FallbackExits {
+		reason, certain := sameCountry(locator, home, exit)
 		switch {
 		case slices.Contains(config.Exits, exit) || slices.Contains(fallbacks, exit):
 			warnings = append(warnings, fmt.Sprintf("region_diff.fallback_exits: %q is listed already; skipped.", exit))
 		case unavailable(exit, available) != "":
 			warnings = append(warnings, "region_diff.fallback_exits: "+unavailable(exit, available)+"; skipped.")
+		case certain:
+			warnings = append(warnings, "region_diff.fallback_exits: "+reason+"; skipped.")
 		default:
 			fallbacks = append(fallbacks, exit)
 		}
@@ -53,17 +63,49 @@ func Setup(config settings.RegionDiff, available []string) (*Processor, []string
 	diff := DefaultOptions()
 	diff.MinShared = time.Duration(config.MinSharedSeconds * float64(time.Second))
 	diff.MaxRemovedShare = config.MaxRemovedShare
+	diff.TrimBreakMarkers = config.TrimBreakMarkers
 	processor, err := NewProcessor(ProcessorOptions{
 		Enabled:       config.Enabled,
 		Exits:         [2]string{config.Exits[0], config.Exits[1]},
 		FallbackExits: fallbacks,
 		Diff:          diff,
 		HideOnFailure: config.OnFailure == "hide",
+		Locator:       locator,
 	})
 	if err != nil {
 		return off(err.Error())
 	}
 	return processor, warnings
+}
+
+// sameCountry reports whether two exits can come out in the same country.
+// certain is true when both can only come out in one country and it is the
+// same: comparing them could never find anything. Otherwise reason, when not
+// empty, names the countries they share through their fallback locations.
+// Exits whose countries are unknown (direct) are never flagged.
+func sameCountry(locator Locator, home, other string) (reason string, certain bool) {
+	if locator == nil {
+		return "", false
+	}
+	homeCountries, homeKnown := locator.ExitCountries(home)
+	otherCountries, otherKnown := locator.ExitCountries(other)
+	if !homeKnown || !otherKnown {
+		return "", false
+	}
+	var shared []string
+	for _, country := range homeCountries {
+		if slices.Contains(otherCountries, country) {
+			shared = append(shared, country)
+		}
+	}
+	switch {
+	case len(shared) == 0:
+		return "", false
+	case len(homeCountries) == 1 && len(otherCountries) == 1:
+		return fmt.Sprintf("%q and %q both come out in %s only", home, other, shared[0]), true
+	default:
+		return fmt.Sprintf("%q and %q can both come out in %s", home, other, strings.Join(shared, ", ")), false
+	}
 }
 
 // unavailable explains why an exit can't be used, or returns "".
@@ -89,6 +131,9 @@ func (processor *Processor) Summary() string {
 		summary += "; on for every feed that doesn't switch it off"
 	} else {
 		summary += "; only for feeds that switch it on"
+	}
+	if options.Diff.TrimBreakMarkers {
+		summary += "; break markers are trimmed"
 	}
 	if options.HideOnFailure {
 		return summary + "; episodes that can't be processed are kept out of the feed"

@@ -27,7 +27,7 @@ jobs:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         goos: ${{ matrix.goos }}
         goarch: ${{ matrix.goarch }}
-        goversion: "1.26"
+        goversion: "1.26.3"
         binary_name: "solstein"
         ldflags: "-s -w -X main.version=${{ github.event.release.tag_name }}"
         extra_files: README.md LICENSE

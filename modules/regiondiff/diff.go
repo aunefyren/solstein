@@ -28,9 +28,14 @@ var (
 	ErrUnsupported = errors.New("the downloads can't be compared frame by frame")
 )
 
-// anchorFrames is how many consecutive frames make an anchor: 16 frames is
-// about 0.4 s, long enough that a run of show audio is unique in the file.
-const anchorFrames = 16
+const (
+	// anchorFrames is how many consecutive frames make an anchor: 16 frames
+	// is about 0.4 s, long enough that a run of show audio is unique in the
+	// file.
+	anchorFrames = 16
+	// maxMarker is the longest a break marker can be.
+	maxMarker = 5 * time.Second
+)
 
 // Options tunes the diff and its sanity checks.
 type Options struct {
@@ -42,6 +47,10 @@ type Options struct {
 	// zero if unknown. The result must be within DurationTolerance of it.
 	ExpectedDuration  time.Duration
 	DurationTolerance float64
+	// TrimBreakMarkers also removes break markers: short spliced pieces the
+	// regions share, repeated at the edges of the show segments (see
+	// trimMarkers).
+	TrimBreakMarkers bool
 }
 
 // DefaultOptions are the decided defaults (see docs/region-diff.md).
@@ -62,6 +71,9 @@ type Result struct {
 	Output []byte
 	// Kept are the shared runs of the home download; Removed the rest.
 	Kept, Removed []Segment
+	// Markers are the break markers removed with TrimBreakMarkers; they
+	// are part of Removed too.
+	Markers []Segment
 	// Durations of the home download, the other one and the output.
 	HomeDuration, OtherDuration, Duration time.Duration
 }
@@ -117,6 +129,18 @@ func Diff(home, other []byte, options Options) (Result, error) {
 	}
 	if len(result.Removed) == 0 && otherShared == len(otherFile.Frames) {
 		return result, ErrIdentical
+	}
+	if options.TrimBreakMarkers {
+		var markers []run
+		kept, markers = trimMarkers(kept, homeFile, frameDuration)
+		result.Kept, result.Removed = segments(kept, homeFile)
+		result.Duration = 0
+		for _, segment := range result.Kept {
+			result.Duration += segment.Duration
+		}
+		for _, marker := range markers {
+			result.Markers = append(result.Markers, Segment{Start: marker.home, End: marker.home + marker.length, Duration: time.Duration(marker.length) * frameDuration})
+		}
 	}
 	if err := check(result, options); err != nil {
 		return result, err
@@ -287,6 +311,102 @@ func toSegmentBoundaries(candidate run, frames []mp3.Frame) (run, bool) {
 	}
 	shift := start - candidate.home
 	return run{home: start, other: candidate.other + shift, length: end - start}, true
+}
+
+// trimMarkers removes break markers from the kept runs: the chimes or
+// stings a host splices in around ad breaks, which are the same in every
+// region and so survive the diff. A piece is taken for a marker only when
+// all of these hold, so show audio is never cut:
+//   - it is a whole spliced segment: it starts on a clean frame (or the
+//     file's first) and the frame after it starts clean (or the file ends),
+//     so cutting it out leaves no decode error either side;
+//   - it is at the edge of a kept run, next to removed audio or the file's
+//     start or end;
+//   - it is at most maxMarker long;
+//   - its frames are byte-identical to another such piece in the episode.
+//
+// A marker encoded into the start of a show segment (no clean frame after
+// it) can't be cut without breaking the frame after it, and is kept.
+func trimMarkers(kept []run, file mp3.File, frameDuration time.Duration) ([]run, []run) {
+	longest := int(maxMarker / frameDuration)
+	cleanAt := func(i int) bool { return i == 0 || i == len(file.Frames) || file.Frames[i].MainDataBegin == 0 }
+
+	// Candidate pieces: [start, end) of the home file.
+	type piece struct{ start, end int }
+	var pieces []piece
+	for i, candidate := range kept {
+		start, end := candidate.home, candidate.home+candidate.length
+		// An edge counts only next to removed audio or the file's ends.
+		openStart := i == 0 || kept[i-1].home+kept[i-1].length < start
+		openEnd := i == len(kept)-1 || kept[i+1].home > end
+		first := start + 1 // first segment start inside the run
+		for first < end && !cleanAt(first) {
+			first++
+		}
+		if first == end {
+			// The run is one segment: a candidate only as a whole.
+			if (openStart || openEnd) && end-start <= longest {
+				pieces = append(pieces, piece{start, end})
+			}
+			continue
+		}
+		if openStart && first-start <= longest {
+			pieces = append(pieces, piece{start, first})
+		}
+		last := end - 1 // last segment start inside the run
+		for last > first && !cleanAt(last) {
+			last--
+		}
+		if openEnd && end-last <= longest && last >= first {
+			pieces = append(pieces, piece{last, end})
+		}
+	}
+
+	same := func(a, b piece) bool {
+		if a.end-a.start != b.end-b.start {
+			return false
+		}
+		for i := range a.end - a.start {
+			if !bytes.Equal(file.FrameBytes(file.Frames[a.start+i]), file.FrameBytes(file.Frames[b.start+i])) {
+				return false
+			}
+		}
+		return true
+	}
+	remove := map[piece]bool{}
+	for i, a := range pieces {
+		for _, b := range pieces[i+1:] {
+			if a != b && same(a, b) {
+				remove[a], remove[b] = true, true
+			}
+		}
+	}
+	if len(remove) == 0 {
+		return kept, nil
+	}
+
+	var result, markers []run
+	for _, candidate := range kept {
+		start, end := candidate.home, candidate.home+candidate.length
+		for marker := range remove {
+			if marker.start == start && marker.end <= end {
+				markers = append(markers, run{home: marker.start, length: marker.end - marker.start})
+				start = marker.end
+			}
+		}
+		for marker := range remove {
+			if marker.end == end && marker.start >= start && marker.start > candidate.home {
+				markers = append(markers, run{home: marker.start, length: marker.end - marker.start})
+				end = marker.start
+			}
+		}
+		if end > start {
+			shift := start - candidate.home
+			result = append(result, run{home: start, other: candidate.other + shift, length: end - start})
+		}
+	}
+	sort.Slice(markers, func(a, b int) bool { return markers[a].home < markers[b].home })
+	return result, markers
 }
 
 // segments turns kept runs into kept and removed ranges of the home file.

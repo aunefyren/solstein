@@ -1,6 +1,6 @@
 module aunefyren/solstein
 
-go 1.26.0
+go 1.26.3
 
 require (
 	github.com/gin-gonic/gin v1.12.0
@@ -29,7 +29,7 @@ require (
 	github.com/go-playground/validator/v10 v10.30.5 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
-	github.com/google/btree v1.1.2 // indirect
+	github.com/google/btree v1.1.3 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -49,7 +49,7 @@ require (
 	go.mongodb.org/mongo-driver/v2 v2.9.1 // indirect
 	golang.org/x/arch v0.31.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/time v0.7.0 // indirect
+	golang.org/x/time v0.16.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gvisor.dev/gvisor v0.0.0-20250503011706-39ed1f5ac29c // indirect

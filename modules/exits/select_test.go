@@ -278,3 +278,40 @@ func TestGeographyTable(t *testing.T) {
 		t.Error("XX accepted as a country")
 	}
 }
+
+func TestExitCountries(t *testing.T) {
+	located := europeServers[:len(europeServers)-1] // without the unlocated server
+	module := New(Config{
+		Providers: map[string]Provider{"vpn": {Name: "vpn", Type: TypeWireGuard}},
+		Exits: map[string]Exit{
+			"sweden":  {Name: "sweden", Provider: "vpn", Locations: mustLocations(t, "SE"), Strict: true, Selection: SelectionSticky},
+			"nordic":  {Name: "nordic", Provider: "vpn", Locations: mustLocations(t, "SE", "area:northern-europe"), Exclude: []string{"NO"}, Selection: SelectionSticky},
+			"anyhere": {Name: "anyhere", Provider: "vpn", Selection: SelectionSticky},
+		},
+	}, map[string][]Server{"vpn": located}, nil)
+
+	for exit, want := range map[string]string{"sweden": "SE", "nordic": "DK,SE", "anyhere": "BR,DE,DK,NO,SE,US"} {
+		countries, known := module.ExitCountries(exit)
+		if !known || strings.Join(countries, ",") != want {
+			t.Errorf("%s: countries %v (known %v), want %s", exit, countries, known, want)
+		}
+	}
+	if country, known := module.ExitCountry("nordic"); !known || country != "SE" {
+		t.Errorf("nordic now: %q, %v; want SE (first tier)", country, known)
+	}
+	if _, known := module.ExitCountries("atlantis"); known {
+		t.Error("unknown exit reported countries")
+	}
+
+	// A server without a location makes the answer unknown.
+	unlocated := New(Config{
+		Providers: map[string]Provider{"vpn": {Name: "vpn", Type: TypeWireGuard}},
+		Exits:     map[string]Exit{"any": {Name: "any", Provider: "vpn", Selection: SelectionSticky}},
+	}, map[string][]Server{"vpn": {testServer("unlocated", "", "")}}, nil)
+	if _, known := unlocated.ExitCountries("any"); known {
+		t.Error("exit with an unlocated server reported its countries")
+	}
+	if _, known := unlocated.ExitCountry("any"); known {
+		t.Error("unlocated server reported a country")
+	}
+}

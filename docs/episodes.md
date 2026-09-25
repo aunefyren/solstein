@@ -29,6 +29,7 @@ discovered → acquiring → ready
 - **ready:** published and served; `cache_file` is set unless the episode is served by streaming or its copy has expired.
 - **failed:** given up on. Published and served unprocessed, unless `withheld`.
 - Backlog episodes start **ready** without a file (or **discovered** when queued for processing up front).
+- `prepared_with` records the settings the episode's file was made with (below).
 - A processor's result is recorded on the episode: `process_note` (e.g. "removed 4m15s of ads in 4 breaks, comparing norway with sweden", or "no dynamic ads found") and `cache_seconds` (the processed duration). `source_seconds` holds the source's stated `itunes:duration`.
 
 ## The pipeline
@@ -60,15 +61,25 @@ An episode of a processed feed can be requested before it has its processed file
 - **Outcomes:** success caches the file (the episode stays ready, or becomes ready). A permanent failure applies the failure policy: publish (stream the source; in cache mode the stream is cached, and from then on that version is served) or withhold (`404`). A retryable failure answers `503` and leaves a published episode as it is; the next request tries again. Published episodes get no retry schedule, since clients don't re-request on their own.
 - **Lifetime:** `Pipeline.Run` returns only after on-request work has stopped, so the database is never closed under it, and refuses new work (`ErrBusy`) once stopping. A cancelled job records nothing.
 
+## Settings changes
+
+Each episode records `prepared_with`: a description of the settings its file was made with — the processor's recipe (for region diff: the exits, fallbacks, diff settings, `trim_break_markers` and an algorithm version), or `download through <exit>` for a plain download; a failed episode records the settings it failed under and what the failure policy did with it. `Pipeline.Reconcile` compares that with the feed's settings now, at start-up (for every feed, since `config.json` may have changed), right after a feed is changed through the API, and for each episode as it is served:
+- **A cached file made with other settings is deleted:** another exit, `delivery_mode` changed, region diff switched on or off, other region-diff settings, a new diff algorithm. The episode stays published; the next request prepares it again the current way — processed on request, re-downloaded while streaming, or just streamed.
+- **A failed episode whose settings or failure policy changed gets a fresh start:** withheld or not, it is retried from the first attempt — by the pipeline, or, for backlog, on request.
+- Episodes being prepared are left alone; a file they record with the old settings is caught when it is served.
+- Episodes from before settings were recorded are taken to match the current ones, except a processed feed's cached file with no processor's note, which wasn't processed: it is cleared, so switching region diff on for a feed cleans its cached episodes too.
+- Not recorded, so changing them clears nothing: `poll_interval_minutes`, `cache_retention_days`, `region_diff.backlog`.
+
 ## Serving
 
 `GET`/`HEAD /api/episodes/{feedID}/{episodeID}.{ext}?sig=…`, the signature checked over that exact path ([`security.md`](security.md)):
 - **Withheld:** `404`.
+- **Settings checked:** a cached file made with settings that have since changed is cleared first (above).
 - **Cached:** served from disk with `http.ServeContent` (`Range`, `If-Range`, conditional requests, `HEAD`). A cached file that has gone missing is forgotten and the episode handled as uncached.
 - **Processed feed, not failed:** processed on request (above).
 - **`original` mode:** `302` to the source.
 - **Otherwise streamed** from the source through the feed's exit. `Range` is forwarded; only `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Ranges` and `Last-Modified` are passed back (no cookies or tracking headers). A source error or non-audio response becomes `502` before anything is sent.
-- **Tee into the cache:** in cache mode, a full (non-`Range`) `GET` of an episode the pipeline won't download is written to the cache while it streams: backlog, failed, or ready but uncached — for a processed feed, failed ones only, so the unprocessed version can never take a processed file's place. The source request then runs on its own context, so the download completes even if the listener leaves, and the next play comes from disk. One tee per episode at a time; a second listener meanwhile gets a plain stream. A failed episode cached this way becomes ready.
+- **Tee into the cache:** in cache mode, a full (non-`Range`) `GET` of an episode the pipeline won't download is written to the cache while it streams: backlog, failed, or ready but uncached — for a processed feed, failed ones only, so the unprocessed version can never take a processed file's place. The source request then runs on its own context, so the download completes even if the listener leaves, and the next play comes from disk. One tee per episode at a time; a second listener meanwhile gets a plain stream. A failed download cached this way becomes ready; a processed feed's failed episode stays failed, so a change of settings retries it.
 
 Checked against Acast's CDN: a backlog episode (21.5 MB) streamed and cached in 0.9 s, the second play came from the cache, and a `Range` request returned `206`.
 

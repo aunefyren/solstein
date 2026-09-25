@@ -572,6 +572,9 @@ func TestValidateRegionDiffSettings(t *testing.T) {
 		{on, Settings{RegionDiffExits: []string{"direct"}}, false},
 		{on, Settings{RegionDiffExits: []string{"direct", "direct"}}, false},
 		{on, Settings{RegionDiffExits: []string{"direct", "sweden"}}, false}, // no such exit
+		{on, Settings{RegionDiffTrimBreakMarkers: "on"}, true},
+		{off, Settings{RegionDiffTrimBreakMarkers: "off"}, true},
+		{on, Settings{RegionDiffTrimBreakMarkers: "yes"}, false},
 	}
 	for _, c := range cases {
 		err := c.service.ValidateSettings(c.settings)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -216,5 +217,79 @@ func TestProcessorUsesFeedExits(t *testing.T) {
 	}
 	if !strings.HasSuffix(processed.Note, "comparing norway with denmark") || len(source.fetched) != 2 {
 		t.Errorf("note %q, fetched %v", processed.Note, source.fetched)
+	}
+}
+
+func TestProcessorSkipsExitsInTheHomeCountry(t *testing.T) {
+	good := map[string][]byte{
+		"norway":  join(show1, audio(200, 10), show2),
+		"sweden":  join(show1, audio(200, 11), show2),
+		"germany": join(show1, audio(200, 12), show2),
+	}
+	newProcessor := func(locator fakeLocator) *Processor {
+		processor, err := NewProcessor(ProcessorOptions{Exits: [2]string{"norway", "sweden"}, FallbackExits: []string{"germany"}, Diff: DefaultOptions(), Locator: locator})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return processor
+	}
+
+	// Sweden has fallen back to a Norwegian server: Germany is compared instead.
+	source := &fakeSource{downloads: good}
+	processed, err := newProcessor(fakeLocator{"norway": {"NO"}, "sweden": {"NO"}, "germany": {"DE"}}).Process(context.Background(), source.job())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(processed.Note, "comparing norway with germany") || slices.Contains(source.fetched, "sweden") {
+		t.Errorf("note %q, fetched %v", processed.Note, source.fetched)
+	}
+
+	// Everything in Norway: nothing is downloaded, and it is retried later.
+	source = &fakeSource{downloads: good}
+	_, err = newProcessor(fakeLocator{"norway": {"NO"}, "sweden": {"NO"}, "germany": {"NO"}}).Process(context.Background(), source.job())
+	if err == nil || errors.Is(err, episodes.ErrPermanent) || !strings.Contains(err.Error(), "all come out in NO") || len(source.fetched) != 0 {
+		t.Errorf("err = %v, fetched %v; want a retryable error before any download", err, source.fetched)
+	}
+
+	// Unknown countries (direct) are trusted.
+	source = &fakeSource{downloads: good}
+	if _, err := newProcessor(fakeLocator{"sweden": {"SE"}}).Process(context.Background(), source.job()); err != nil {
+		t.Errorf("unknown home country: %v", err)
+	}
+}
+
+func TestProcessorTrimsBreakMarkersPerFeed(t *testing.T) {
+	marker := audio(87, 99)
+	source := &fakeSource{downloads: map[string][]byte{
+		"norway": join(audio(100, 11), marker, show1, marker, audio(80, 12), show2),
+		"sweden": join(audio(90, 21), marker, show1, marker, audio(70, 22), show2),
+	}}
+	options := DefaultOptions()
+	options.MaxRemovedShare = 0.6
+	processor, err := NewProcessor(ProcessorOptions{Exits: [2]string{"norway", "sweden"}, Diff: options})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process := func(feed models.Feed) episodes.Processed {
+		t.Helper()
+		job := source.job()
+		job.Feed = feed
+		processed, err := processor.Process(context.Background(), job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return processed
+	}
+	// Off globally; a feed switches it on.
+	if note := process(models.Feed{}).Note; strings.Contains(note, "marker") {
+		t.Errorf("trimmed with trimming off: %q", note)
+	}
+	if note := process(models.Feed{RegionDiffTrimBreakMarkers: "on"}).Note; note != "removed 9s of ads in 2 breaks, comparing norway with sweden, including 2 break markers (5s)" {
+		t.Errorf("note = %q", note)
+	}
+	// On globally; a feed switches it off.
+	processor.options.Diff.TrimBreakMarkers = true
+	if note := process(models.Feed{RegionDiffTrimBreakMarkers: "off"}).Note; strings.Contains(note, "marker") {
+		t.Errorf("trimmed for a feed that switched it off: %q", note)
 	}
 }
