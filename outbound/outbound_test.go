@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -409,5 +410,55 @@ func TestExitCountries(t *testing.T) {
 		if _, known := manager.ExitCountry(exit); known {
 			t.Errorf("%s: country reported as known", exit)
 		}
+	}
+}
+
+func TestClientsCanDropIdleConnections(t *testing.T) {
+	var opened atomic.Int32
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Write([]byte("ok"))
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			opened.Add(1)
+		}
+	}
+	server.Start()
+	t.Cleanup(server.Close)
+
+	manager, err := New(Options{AllowPrivateDestinations: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, _ := manager.Client(DirectExit)
+	get := func() {
+		t.Helper()
+		response, err := client.Get(server.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+	}
+	get()
+	get()
+	if opened.Load() != 1 {
+		t.Fatalf("%d connections for two requests, want one kept alive", opened.Load())
+	}
+	// Through the User-Agent wrapper, CloseIdleConnections reaches the
+	// transport, so the next request starts on a new connection.
+	client.CloseIdleConnections()
+	get()
+	if opened.Load() != 2 {
+		t.Errorf("%d connections after CloseIdleConnections, want a new one", opened.Load())
+	}
+}
+
+func TestClientsHealthCheckHTTP2(t *testing.T) {
+	manager, _ := New(Options{})
+	client, _ := manager.Client(DirectExit)
+	transport := client.Transport.(userAgentTransport).next.(*http.Transport)
+	if transport.HTTP2 == nil || transport.HTTP2.SendPingTimeout != http2PingAfter || transport.HTTP2.PingTimeout != http2PingTimeout {
+		t.Errorf("HTTP/2 config = %+v, want health-check pings", transport.HTTP2)
 	}
 }

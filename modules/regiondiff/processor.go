@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"aunefyren/solstein/episodes"
@@ -138,18 +137,18 @@ func (processor *Processor) Process(ctx context.Context, job episodes.Job) (epis
 	if err != nil {
 		return episodes.Processed{}, err
 	}
-	home, other, err := fetchPair(ctx, job, pair)
+	home, other, compared, fallbacks, err := processor.fetchPair(ctx, job, pair, fallbacks)
 	if err != nil {
 		return episodes.Processed{}, err
 	}
 	home.duration, other.duration = audioDuration(home.Data), audioDuration(other.Data)
 	home = processor.recheck(ctx, job, pair[0], home, other.duration)
-	other = processor.recheck(ctx, job, pair[1], other, home.duration)
+	other = processor.recheck(ctx, job, compared, other, home.duration)
 
 	options := processor.options.Diff
 	options.ExpectedDuration = job.ExpectedDuration
 	options.TrimBreakMarkers = processor.trimsMarkers(job.Feed)
-	compared, against := pair[1], other
+	against := other
 	result, err := Diff(home.Data, other.Data, options)
 	for _, exit := range fallbacks {
 		if !errors.Is(err, ErrIdentical) {
@@ -317,36 +316,55 @@ func (processor *Processor) inDifferentCountries(pair [2]string, fallbacks []str
 	return [2]string{pair[0], others[0]}, others[1:], nil
 }
 
-// fetchPair downloads through both exits at the same moment, so the only
-// difference between the two requests is the region.
-func fetchPair(ctx context.Context, job episodes.Job, exits [2]string) (home, other checkedDownload, err error) {
+// fetchPair downloads through the home exit and its partner at the same
+// moment, so the only difference between the two requests is the region.
+// When the partner's download fails (its exit is down, or the host doesn't
+// answer through it), the fallback exits take its place in turn, while the
+// home download carries on; it returns the partner used and the fallbacks
+// left for the identical-audio case. When the home download fails there is
+// nothing to compare with, and the attempt fails.
+func (processor *Processor) fetchPair(ctx context.Context, job episodes.Job, pair [2]string, fallbacks []string) (home, other checkedDownload, partner string, left []string, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	var downloads [2]checkedDownload
-	var errs [2]error
-	var wait sync.WaitGroup
-	for i, exit := range exits {
-		wait.Go(func() {
-			var download episodes.Download
-			download, errs[i] = job.Fetch(ctx, exit, job.Fresh)
-			downloads[i] = checkedDownload{Download: download}
-			if errs[i] != nil {
-				errs[i] = fmt.Errorf("download through exit %q: %w", exit, errs[i])
-				cancel() // no use finishing the other
-			}
-		})
-	}
-	wait.Wait()
-	// The first real failure, not the other download's cancellation.
-	for _, err := range errs {
-		if err != nil && !errors.Is(err, context.Canceled) {
-			return checkedDownload{}, checkedDownload{}, err
+
+	var homeErr error
+	homeDone := make(chan struct{})
+	go func() {
+		defer close(homeDone)
+		var download episodes.Download
+		if download, homeErr = job.Fetch(ctx, pair[0], job.Fresh); homeErr != nil {
+			homeErr = fmt.Errorf("download through exit %q: %w", pair[0], homeErr)
+			cancel() // no use finishing the partner's
+			return
+		}
+		home = checkedDownload{Download: download}
+	}()
+
+	candidates := append([]string{pair[1]}, fallbacks...)
+	var partnerErr error
+	for i, exit := range candidates {
+		download, fetchErr := job.Fetch(ctx, exit, job.Fresh)
+		if fetchErr == nil {
+			other, partner, left = checkedDownload{Download: download}, exit, candidates[i+1:]
+			break
+		}
+		if ctx.Err() != nil {
+			break // the home download failed
+		}
+		partnerErr = errors.Join(partnerErr, fmt.Errorf("download through exit %q: %w", exit, fetchErr))
+		if i+1 < len(candidates) {
+			logger.Log.Warn(fmt.Sprintf("Region diff: downloading '%s' through %s failed; comparing with %s instead. Error: %s", job.Episode.Title, exit, candidates[i+1], fetchErr))
 		}
 	}
-	if err := errors.Join(errs[0], errs[1]); err != nil {
-		return checkedDownload{}, checkedDownload{}, err
+	<-homeDone
+
+	switch {
+	case homeErr != nil:
+		return checkedDownload{}, checkedDownload{}, "", nil, homeErr
+	case partner == "":
+		return checkedDownload{}, checkedDownload{}, "", nil, partnerErr
 	}
-	return downloads[0], downloads[1], nil
+	return home, other, partner, left, nil
 }
 
 // identicalNote describes an episode every region gave the same audio. A

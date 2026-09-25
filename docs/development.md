@@ -104,7 +104,9 @@ Notes:
   - allows only `http` and `https`, at most 10 redirects;
   - ignores `HTTP_PROXY`/`HTTPS_PROXY`, which would carry traffic out of another route;
   - sets `Solstein/<version> (+https://github.com/aunefyren/solstein)` as User-Agent unless the request sets one;
-  - has dial, TLS-handshake and response-header timeouts, but no overall timeout.
+  - has dial, TLS-handshake and response-header (30 s) timeouts, but no overall timeout;
+  - health-checks HTTP/2 connections: one quiet for 15 s is pinged and closed if the ping gets no answer in 10 s. A connection whose path died silently (seen through VPN tunnels, where the WireGuard handshake stays fresh) would otherwise take every request to that host until each timed out;
+  - supports `Client.CloseIdleConnections` through its User-Agent wrapper, so a caller can make its next request start on a new connection.
 - Errors to branch on with `errors.Is`: `outbound.ErrUnknownExit`, `ErrExitUnavailable`, `ErrDestinationBlocked`.
 - **Live tests** (`modules/exits/live_test.go`, build tag `live`) run against real Proton servers, ifconfig.co and Acast; never in CI. Run them in a Go container with the keys from `.env`, which is never opened or printed:
   ```

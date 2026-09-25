@@ -41,6 +41,9 @@ func (source *fakeSource) job() episodes.Job {
 			data = again
 		}
 		source.mutex.Unlock()
+		if err == nil && data == nil {
+			err = errors.New("no such exit in this test") // as a real fetch never succeeds empty
+		}
 		if err != nil {
 			return episodes.Download{}, err
 		}
@@ -155,7 +158,9 @@ func TestProcessorFailures(t *testing.T) {
 		permanent bool
 		contains  string
 	}{
-		{"download fails", &fakeSource{downloads: map[string][]byte{"norway": good}, failures: map[string]error{"sweden": unavailable}}, 0, false, `exit "sweden": tunnel down`},
+		// The partner and the fallback fail: nothing to compare with.
+		{"download fails", &fakeSource{downloads: map[string][]byte{"norway": good}, failures: map[string]error{"sweden": unavailable, "germany": unavailable}}, 0, false, `exit "sweden": tunnel down`},
+		{"home download fails", &fakeSource{downloads: map[string][]byte{"sweden": good, "germany": good}, failures: map[string]error{"norway": unavailable}}, 0, false, `exit "norway": tunnel down`},
 		{"not MP3", &fakeSource{downloads: map[string][]byte{"norway": []byte("not audio at all"), "sweden": []byte("other bytes, not audio")}}, 0, true, "frame by frame"},
 		{"implausible", &fakeSource{downloads: map[string][]byte{"norway": good, "sweden": join(show1, audio(200, 11), show2)}}, time.Hour, false, "implausible"},
 		{"fallback fails", &fakeSource{downloads: map[string][]byte{"norway": good, "sweden": good}, failures: map[string]error{"germany": unavailable}}, 0, false, `fallback exit "germany"`},
@@ -380,4 +385,29 @@ func TestProcessorKeepsFailedDownloads(t *testing.T) {
 	// Off without a directory.
 	processor.options.FailureDir = ""
 	processor.keepFailed(job, err, nil) // must not panic or write
+}
+
+func TestProcessorFallsBackWhenThePartnerFails(t *testing.T) {
+	source := &fakeSource{
+		downloads: map[string][]byte{"norway": join(show1, audio(200, 10), show2), "germany": join(show1, audio(200, 12), show2)},
+		failures:  map[string]error{"sweden": errors.New("http2: timeout awaiting response headers")},
+	}
+	processed, err := newTestProcessor(t, "germany").Process(context.Background(), source.job())
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if !strings.HasSuffix(processed.Note, "comparing norway with germany") || !bytes.Equal(processed.Audio, join(show1, show2)) {
+		t.Errorf("note %q", processed.Note)
+	}
+	// The home download isn't repeated; germany is fetched once.
+	if count := func(exit string) (n int) {
+		for _, fetched := range source.fetched {
+			if fetched == exit {
+				n++
+			}
+		}
+		return n
+	}; count("norway") != 1 || count("germany") != 1 {
+		t.Errorf("fetched %v", source.fetched)
+	}
 }

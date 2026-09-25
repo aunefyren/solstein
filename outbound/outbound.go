@@ -204,6 +204,16 @@ func (manager *Manager) dialerFor(exit string) (Dialer, error) {
 
 const maxRedirects = 10
 
+// HTTP/2 health checks: a connection that has been quiet this long is
+// pinged, and closed when the ping gets no answer in time. Without them, a
+// connection whose path died silently — seen through VPN tunnels, where the
+// WireGuard handshake stays fresh — would take every request to that host
+// until each timed out.
+const (
+	http2PingAfter   = 15 * time.Second
+	http2PingTimeout = 10 * time.Second
+)
+
 func (manager *Manager) newClient(exit string) *http.Client {
 	transport := &http.Transport{
 		// Never HTTP_PROXY/HTTPS_PROXY from the environment: a proxy would
@@ -217,7 +227,11 @@ func (manager *Manager) newClient(exit string) *http.Client {
 			return guardedDial(ctx, dialer, network, address, manager.options.AllowPrivateDestinations)
 		},
 		// A custom DialContext turns HTTP/2 off unless this is set.
-		ForceAttemptHTTP2:     true,
+		ForceAttemptHTTP2: true,
+		HTTP2: &http.HTTP2Config{
+			SendPingTimeout: http2PingAfter,
+			PingTimeout:     http2PingTimeout,
+		},
 		TLSHandshakeTimeout:   15 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
 		ExpectContinueTimeout: time.Second,
@@ -252,6 +266,15 @@ func checkScheme(request *http.Request) error {
 type userAgentTransport struct {
 	next      http.RoundTripper
 	userAgent string
+}
+
+// CloseIdleConnections lets http.Client.CloseIdleConnections reach the
+// transport underneath, so a caller can make its next request start on a
+// new connection.
+func (transport userAgentTransport) CloseIdleConnections() {
+	if closer, ok := transport.next.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
 }
 
 func (transport userAgentTransport) RoundTrip(request *http.Request) (*http.Response, error) {

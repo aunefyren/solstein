@@ -471,6 +471,10 @@ func (pipeline *Pipeline) fetch(ctx context.Context, exit, sourceURL string, fre
 		// tunnel as a bare EOF) is tried once more at once, rather than
 		// failing the attempt and, for a request waiting on processing,
 		// answering 503. Nothing has been written yet, so this is safe.
+		// The retry must not go out on the connection that just failed
+		// (an HTTP/2 connection to the host is shared by every request), so
+		// idle connections are closed first.
+		client.CloseIdleConnections()
 		select {
 		case <-time.After(fetchRetryDelay):
 			response, err = client.Do(request)

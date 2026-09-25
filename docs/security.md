@@ -23,7 +23,7 @@ Outbound, enforced in `outbound` so it covers every fetch through every exit (de
 - Only `http` and `https`, at most 10 redirects.
 - **`allow_private_destinations`** (off by default): loopback, private, link-local, CGNAT, documentation, multicast and reserved ranges (including IPv4-mapped, NAT64 and 6to4 forms) are refused. Checked on each IP a connection actually dials, redirects included, so DNS tricks can't get round it. Applies inside VPN tunnels too.
 - **`allowed_source_hosts`:** optional allowlist of hosts feeds can be subscribed from (a name includes its subdomains). It applies to feed URLs only, not every fetch: enclosures and redirects legitimately point at CDNs and ad servers.
-- `HTTP_PROXY`/`HTTPS_PROXY` are ignored (a proxy would carry traffic out of another route); a fixed `Solstein/<version>` User-Agent; dial, TLS and response-header timeouts.
+- `HTTP_PROXY`/`HTTPS_PROXY` are ignored (a proxy would carry traffic out of another route); a fixed `Solstein/<version>` User-Agent; dial, TLS and response-header timeouts; HTTP/2 health-check pings.
 
 ## Keeping the home address out
 
