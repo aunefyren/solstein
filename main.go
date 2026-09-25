@@ -145,7 +145,7 @@ func run() int {
 
 	// Region diff is optional too: off unless region_diff names two exits
 	// that exist. It needs nothing started; it runs inside the pipeline.
-	regionDiff, regionDiffWarnings := regiondiff.Setup(cfg.RegionDiff, exitManager.Exits(), exitManager)
+	regionDiff, regionDiffWarnings := regiondiff.Setup(cfg.RegionDiff, exitManager.Exits(), exitManager, startup.ConfigDir)
 	for _, warning := range regionDiffWarnings {
 		logger.Log.Warn("Region diff: " + warning)
 	}

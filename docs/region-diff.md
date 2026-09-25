@@ -54,11 +54,12 @@ Off by default because a show's own sting, if it is spliced in as its own segmen
 
 `regiondiff.Processor`, for each episode of a feed it handles:
 1. **Check the countries.** Two exits in the same country get the same ads, so a diff between them would find nothing and the episode would be published with its ads. Before downloading, the processor asks which country each exit's next connection goes out in (`outbound.Manager.ExitCountry`). An exit that is in the home exit's country right now — say a loose exit that fell back — is skipped, and the first fallback in another country takes its place; with none left, the attempt fails and is retried later, when the exits may have moved. Exits whose country is unknown (`direct`, servers without a location) are trusted.
-2. **Download through both exits at the same moment**, with the same User-Agent, so the only difference is the region. If one download fails, the other is cancelled.
-3. **Diff.** The home exit's download is the one kept.
-4. **Identical audio** means no dynamic ads, or the same campaign in both markets; two files can't tell which. Each of `fallback_exits` is then tried in turn against the home download (skipping any that is part of the feed's own pair). If every region agrees, the episode is kept as it is and noted "no dynamic ads found" — with a hint when the file is more than 5% longer than stated, which suggests ads that are the same everywhere.
-5. **Errors:** not MP3 or mismatched formats fail for good (`ErrPermanent`); an implausible result, a failed download or a failed fallback is retried with the pipeline's back-off, since the next downloads may carry other ads.
-6. The result goes to the pipeline with its duration and a note, e.g. "removed 4m15s of ads in 4 breaks, comparing norway with sweden" ([`episodes.md`](episodes.md)).
+2. **Download through both exits at the same moment**, with the same User-Agent, so the only difference is the region. If one download fails, the other is cancelled. After a failed attempt, downloads ask caches on the way not to answer from a stored copy (`Cache-Control: no-cache`), in case the host's CDN served a broken one.
+3. **Check each download.** A download that plays under 80% of the feed's stated duration (or, without one, of the other download), or isn't MP3 when the other is, looks like a cut-off or wrong file: it is downloaded again, fresh, once. If that is no better, the first is kept and the diff decides. This is checked because a host that serves a partial file with a matching `Content-Length` gets past the download checks, and would otherwise make the diff look implausible.
+4. **Diff.** The home exit's download is the one kept.
+5. **Identical audio** means no dynamic ads, or the same campaign in both markets; two files can't tell which. Each of `fallback_exits` is then tried in turn against the home download (skipping any that is part of the feed's own pair). If every region agrees, the episode is kept as it is and noted "no dynamic ads found" — with a hint when the file is more than 5% longer than stated, which suggests ads that are the same everywhere.
+6. **Errors:** not MP3 or mismatched formats fail for good (`ErrPermanent`); an implausible result, a failed download or a failed fallback is retried with the pipeline's back-off, since the next downloads may carry other ads. The error names both downloads' sizes and durations, e.g. "(norway: 105.2 MB, 1h54m16s; sweden: 52.1 MB, 57m2s)", so a bad download can be told from a bad diff. With `keep_failed_downloads`, both downloads and a note of the error are kept in `regiondiff-failures/{feedID}/{episodeID}/` in the config directory (replaced by the episode's next failure, removed after 14 days).
+7. The result goes to the pipeline with its duration and a note, e.g. "removed 4m15s of ads in 4 breaks, comparing norway with sweden" ([`episodes.md`](episodes.md)).
 
 Every episode of a processed feed is served cleaned: new episodes are processed before they are published, backlog episodes (and processed files past their retention) are processed on first request with a bounded wait, and the newest `backlog` episodes are processed as soon as a feed is added ([`episodes.md`](episodes.md), [`feeds.md`](feeds.md)). The unprocessed version is served only when processing fails for good and the policy is `publish`.
 
@@ -73,7 +74,8 @@ Every episode of a processed feed is served cleaned: new episodes are processed 
   "max_removed_share": 0.3,
   "on_failure": "publish",           // publish (with ads) | hide
   "backlog": 0,                      // newest existing episodes processed when a feed is added
-  "trim_break_markers": false        // also remove break markers that can be cut cleanly
+  "trim_break_markers": false,       // also remove break markers that can be cut cleanly
+  "keep_failed_downloads": false     // keep both downloads of a failed diff, for 14 days
 }
 ```
 
@@ -92,3 +94,5 @@ Solstein and ABS (v2.36) in Docker; Proton exits `norway` and `sweden` (two keys
 - The cleaned 40-minute episode was **byte-identical to the one diffed from the earlier direct/Sweden downloads**, tag included (38,491,718 bytes), although the Norwegian download came through Proton hours later with different ads (4:15 removed instead of 4:32).
 - The feed then served the cleaned length and duration and no source audio URL. ffmpeg decoded all three ABS copies with no errors; ABS stores the audio unchanged (its ffmpeg copy writes its own ID3 tag and adds one Info frame).
 - The first request's Norway download failed at once with a bare `EOF`, as the Swedish tunnel opened; the pipeline now retries a request that gets no response ([`episodes.md`](episodes.md)). ABS itself retried the download once with another User-Agent ([`clients.md`](clients.md)).
+
+A larger backlog in production (2026-09-25): ABS re-downloaded all 115 episodes of "It Was A Sh*t Show" through Solstein, with Proton `norway` and `sweden`. 110 went through; five failed as implausible ("share no show audio", "would remove 50%") within a minute of each other, in the middle of the burst. Downloaded again afterwards, direct and through Proton NO, both episodes checked diffed cleanly, and the show's segments start and end on clean frames like Corner Piece's. So the downloads at the time were most likely incomplete; what followed from it is the download check above, fresh downloads after a failure, the three-attempt limit on request ([`episodes.md`](episodes.md)) and `keep_failed_downloads`. Proton NO transfers were also cut off mid-body now and then (`unexpected EOF`, `connection reset`), which the pipeline treats as failed downloads.

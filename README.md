@@ -136,7 +136,8 @@ Hosts such as Acast insert ads per listener region. Region diff downloads each e
   "fallback_exits": ["germany"],
   "on_failure": "publish",
   "backlog": 0,
-  "trim_break_markers": false
+  "trim_break_markers": false,
+  "keep_failed_downloads": false
 }
 ```
 
@@ -147,6 +148,8 @@ Hosts such as Acast insert ads per listener region. Region diff downloads each e
 - `backlog`: how many of a new feed's newest existing episodes are cleaned straight away. The rest are cleaned the first time they are played: the client waits a few seconds (about 5 for a 40-minute episode). If it takes over 20 seconds, it gets `503` and `Retry-After`, and the next attempt gets the clean file.
 - `trim_break_markers`: also remove the short chime or sting a host splices in around ad breaks, where it can be cut without a glitch (it has to repeat identically, be under 5 seconds and sit at a break). Off by default, since a show's own sting at breaks would go too.
 - `min_shared_seconds` (default `2`) and `max_removed_share` (default `0.3`) tune the diff and its sanity check.
+- An episode that can't be cleaned on request (ABS gets `503`) is tried again on each request, and after three failed attempts `on_failure` applies. A download that looks cut off is fetched again before the diff.
+- `keep_failed_downloads`: keep both downloads of an episode whose diff failed, with a note, in `regiondiff-failures/` in the config directory for 14 days, to see what the host sent. Off by default; episodes are large.
 - The two exits must come out in different countries: two in the same one get the same ads. Solstein checks this for VPN exits (not for `direct`, whose country it can't know): at start-up it stays off if both can only be in one and the same country, and before each download it skips an exit that has fallen back to the home exit's country.
 - Changing a setting that affects the result (exits, diff settings, `trim_break_markers`, switching region diff on or off, a feed's exit or delivery mode) clears the cached episodes made with the old settings; they are prepared again the next time they are played.
 - New episodes appear in the feed once cleaned, whatever the feed's `delivery_mode`, and the feed carries the cleaned file's size and duration.

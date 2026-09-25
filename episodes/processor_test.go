@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -66,7 +67,7 @@ func (processor *fakeProcessor) Process(ctx context.Context, job Job) (Processed
 	if err != nil {
 		return Processed{}, err
 	}
-	download, err := job.Fetch(ctx, outbound.DirectExit)
+	download, err := job.Fetch(ctx, outbound.DirectExit, false)
 	if err != nil {
 		return Processed{}, err
 	}
@@ -122,18 +123,18 @@ func TestPipelineRunsProcessor(t *testing.T) {
 func TestProcessorFetchHasDownloadChecks(t *testing.T) {
 	setup := newTestSetup(t)
 	fetch := setup.pipeline.fetchForJob(setup.host.URL + "/html.mp3")
-	if _, err := fetch(context.Background(), outbound.DirectExit); !errors.Is(err, ErrPermanent) {
+	if _, err := fetch(context.Background(), outbound.DirectExit, false); !errors.Is(err, ErrPermanent) {
 		t.Errorf("HTML page: err = %v, want permanent", err)
 	}
 	fetch = setup.pipeline.fetchForJob(setup.host.URL + "/truncated.mp3")
-	if _, err := fetch(context.Background(), outbound.DirectExit); err == nil || errors.Is(err, ErrPermanent) {
+	if _, err := fetch(context.Background(), outbound.DirectExit, false); err == nil || errors.Is(err, ErrPermanent) {
 		t.Errorf("short body: err = %v, want a retryable error", err)
 	}
 	fetch = setup.pipeline.fetchForJob(setup.host.URL + "/ok.mp3")
-	if _, err := fetch(context.Background(), "nowhere"); !errors.Is(err, ErrPermanent) || !errors.Is(err, outbound.ErrUnknownExit) {
+	if _, err := fetch(context.Background(), "nowhere", false); !errors.Is(err, ErrPermanent) || !errors.Is(err, outbound.ErrUnknownExit) {
 		t.Errorf("unknown exit: err = %v", err)
 	}
-	download, err := fetch(context.Background(), outbound.DirectExit)
+	download, err := fetch(context.Background(), outbound.DirectExit, false)
 	if err != nil || string(download.Data) != audio || download.ContentType != "audio/mpeg" {
 		t.Errorf("download = %q %q, %v", download.Data, download.ContentType, err)
 	}
@@ -414,5 +415,83 @@ func TestPrepareJoinsWorkerAndStopsWithPipeline(t *testing.T) {
 	}
 	if stored := setup.reload(t, backlog); stored.CacheFile != "" || stored.LastError != "" {
 		t.Errorf("abandoned job recorded: %+v", stored)
+	}
+}
+
+func TestServeGivesUpAfterRepeatedFailuresOnRequest(t *testing.T) {
+	for _, hide := range []bool{false, true} {
+		t.Run(fmt.Sprintf("hide=%v", hide), func(t *testing.T) {
+			setup := newTestSetup(t)
+			// A failure that retrying doesn't fix, but that isn't permanent.
+			processor := &fakeProcessor{err: errors.New("the diff result is implausible"), hide: hide}
+			server := setup.processedServer(t, processor, 5*time.Second)
+			backlog := setup.addBacklog(t, "/ok.mp3")
+
+			for attempt := 1; attempt < maxRequestFailures; attempt++ {
+				recorder, err := serve(t, server, backlog, http.MethodGet, "")
+				if err != nil || recorder.Code != http.StatusServiceUnavailable {
+					t.Fatalf("attempt %d: %d, %v; want 503", attempt, recorder.Code, err)
+				}
+			}
+			// The last allowed attempt fails too: the failure policy applies.
+			recorder, err := serve(t, server, backlog, http.MethodGet, "")
+			stored := setup.reload(t, backlog)
+			if stored.State != models.EpisodeFailed || stored.FailedAttempts != maxRequestFailures || stored.Withheld != hide {
+				t.Fatalf("episode = %+v", stored)
+			}
+			if hide && !errors.Is(err, database.ErrEpisodeNotFound) {
+				t.Errorf("withheld: err = %v", err)
+			}
+			if !hide && (err != nil || recorder.Code != http.StatusOK || recorder.Body.String() != audio) {
+				t.Errorf("published unprocessed: %d %q, %v", recorder.Code, recorder.Body.String(), err)
+			}
+
+			// Every retry asked for fresh copies; the first didn't.
+			processor.mutex.Lock()
+			defer processor.mutex.Unlock()
+			for i, job := range processor.jobs {
+				if job.Fresh != (i > 0) {
+					t.Errorf("job %d: fresh = %v", i, job.Fresh)
+				}
+			}
+		})
+	}
+}
+
+func TestSuccessResetsFailedAttempts(t *testing.T) {
+	setup := newTestSetup(t)
+	processor := &fakeProcessor{err: errors.New("tunnel down")}
+	server := setup.processedServer(t, processor, 5*time.Second)
+	backlog := setup.addBacklog(t, "/ok.mp3")
+	serve(t, server, backlog, http.MethodGet, "")
+	processor.setErr(nil)
+	if recorder, err := serve(t, server, backlog, http.MethodGet, ""); err != nil || recorder.Code != http.StatusOK {
+		t.Fatalf("%d, %v", recorder.Code, err)
+	}
+	if stored := setup.reload(t, backlog); stored.FailedAttempts != 0 || stored.LastError != "" {
+		t.Errorf("episode = %+v", stored)
+	}
+}
+
+func TestFreshFetchAsksCachesNotToAnswer(t *testing.T) {
+	setup := newTestSetup(t)
+	var seen []string
+	var mutex sync.Mutex
+	host := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		mutex.Lock()
+		seen = append(seen, request.Header.Get("Cache-Control")+"|"+request.Header.Get("Pragma"))
+		mutex.Unlock()
+		writer.Header().Set("Content-Type", "audio/mpeg")
+		writer.Write([]byte(audio))
+	}))
+	t.Cleanup(host.Close)
+	fetch := setup.pipeline.fetchForJob(host.URL + "/episode.mp3")
+	for _, fresh := range []bool{false, true} {
+		if _, err := fetch(context.Background(), outbound.DirectExit, fresh); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(seen) != 2 || seen[0] != "|" || seen[1] != "no-cache|no-cache" {
+		t.Errorf("headers = %q", seen)
 	}
 }

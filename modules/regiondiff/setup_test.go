@@ -1,6 +1,7 @@
 package regiondiff
 
 import (
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -31,7 +32,7 @@ func TestSetupOff(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			processor, warnings := Setup(c.config, c.available, nil)
+			processor, warnings := Setup(c.config, c.available, nil, "")
 			if processor != nil {
 				t.Fatal("region diff is on")
 			}
@@ -43,7 +44,7 @@ func TestSetupOff(t *testing.T) {
 }
 
 func TestSetupOn(t *testing.T) {
-	processor, warnings := Setup(regionDiffConfig([]string{"norway", "sweden"}, []string{"germany", "sweden", "atlantis", "denmark"}), []string{"direct", "norway", "sweden", "germany", "denmark"}, nil)
+	processor, warnings := Setup(regionDiffConfig([]string{"norway", "sweden"}, []string{"germany", "sweden", "atlantis", "denmark"}), []string{"direct", "norway", "sweden", "germany", "denmark"}, nil, "")
 	if processor == nil {
 		t.Fatalf("off: %q", warnings)
 	}
@@ -62,7 +63,7 @@ func TestSetupOn(t *testing.T) {
 
 func TestProcessorFeedSettings(t *testing.T) {
 	processor, _ := Setup(settings.RegionDiff{Exits: []string{"norway", "sweden"}, FallbackExits: []string{"germany", "denmark"}, MinSharedSeconds: 2, MaxRemovedShare: 0.3, OnFailure: "publish"},
-		[]string{"norway", "sweden", "germany", "denmark"}, nil)
+		[]string{"norway", "sweden", "germany", "denmark"}, nil, "")
 	if processor == nil {
 		t.Fatal("off")
 	}
@@ -115,30 +116,30 @@ func TestSetupSameCountry(t *testing.T) {
 		"germany": {"DE"},
 	}
 	// Both only in Norway: off.
-	processor, warnings := Setup(regionDiffConfig([]string{"norway", "oslo"}, nil), available, locator)
+	processor, warnings := Setup(regionDiffConfig([]string{"norway", "oslo"}, nil), available, locator, "")
 	if processor != nil || len(warnings) != 1 || !strings.Contains(warnings[0], `"norway" and "oslo" both come out in NO only`) {
 		t.Errorf("same country: processor %v, warnings %q", processor != nil, warnings)
 	}
 	// Can overlap through fallback locations: on, with a warning.
-	processor, warnings = Setup(regionDiffConfig([]string{"norway", "nordic"}, nil), available, locator)
+	processor, warnings = Setup(regionDiffConfig([]string{"norway", "nordic"}, nil), available, locator, "")
 	if processor == nil || len(warnings) != 1 || !strings.Contains(warnings[0], `can both come out in NO`) {
 		t.Errorf("possible overlap: processor %v, warnings %q", processor != nil, warnings)
 	}
 	// A fallback only in the home country is dropped.
-	processor, warnings = Setup(regionDiffConfig([]string{"norway", "sweden"}, []string{"oslo", "germany"}), available, locator)
+	processor, warnings = Setup(regionDiffConfig([]string{"norway", "sweden"}, []string{"oslo", "germany"}), available, locator, "")
 	if processor == nil || len(warnings) != 1 || !strings.Contains(warnings[0], `"oslo" both come out in NO only; skipped`) ||
 		!reflect.DeepEqual(processor.options.FallbackExits, []string{"germany"}) {
 		t.Errorf("fallback in the home country: warnings %q", warnings)
 	}
 	// direct's country is unknown: never flagged.
-	if processor, warnings = Setup(regionDiffConfig([]string{"direct", "norway"}, nil), available, locator); processor == nil || len(warnings) != 0 {
+	if processor, warnings = Setup(regionDiffConfig([]string{"direct", "norway"}, nil), available, locator, ""); processor == nil || len(warnings) != 0 {
 		t.Errorf("direct: processor %v, warnings %q", processor != nil, warnings)
 	}
 }
 
 func TestRecipe(t *testing.T) {
 	config := regionDiffConfig([]string{"norway", "sweden"}, []string{"germany"})
-	processor, _ := Setup(config, []string{"norway", "sweden", "germany", "denmark"}, nil)
+	processor, _ := Setup(config, []string{"norway", "sweden", "germany", "denmark"}, nil, "")
 	recipes := map[string]string{
 		"global":         processor.Recipe(models.Feed{}),
 		"feed pair":      processor.Recipe(models.Feed{RegionDiffExits: []string{"norway", "denmark"}}),
@@ -155,5 +156,18 @@ func TestRecipe(t *testing.T) {
 	}
 	if recipes["failure policy"] != recipes["global"] {
 		t.Errorf("failure policy changed the recipe: %q", recipes["failure policy"])
+	}
+}
+
+func TestSetupKeepsFailedDownloadsWhenAsked(t *testing.T) {
+	config := regionDiffConfig([]string{"norway", "sweden"}, nil)
+	processor, _ := Setup(config, []string{"norway", "sweden"}, nil, "/config")
+	if processor.options.FailureDir != "" {
+		t.Errorf("kept without being asked: %q", processor.options.FailureDir)
+	}
+	config.KeepFailedDownloads = true
+	processor, _ = Setup(config, []string{"norway", "sweden"}, nil, "/config")
+	if want := filepath.Join("/config", "regiondiff-failures"); processor.options.FailureDir != want || !strings.Contains(processor.Summary(), want) {
+		t.Errorf("failure dir %q, summary %q", processor.options.FailureDir, processor.Summary())
 	}
 }

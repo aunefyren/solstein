@@ -2,6 +2,7 @@ package regiondiff
 
 import (
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -12,11 +13,12 @@ import (
 
 // Setup builds the processor from config.json's region_diff block, given
 // the exits that exist and, through locator (nil to skip), where they come
-// out. It returns nil when region diff is off: not set up,
+// out. Failed attempts' downloads are kept under configDir when the block
+// asks for it. It returns nil when region diff is off: not set up,
 // or unable to run. A module that can't run doesn't stop Solstein (see
 // docs/architecture.md): the warnings say why it is off, or which fallback exits
 // were dropped.
-func Setup(config settings.RegionDiff, available []string, locator Locator) (*Processor, []string) {
+func Setup(config settings.RegionDiff, available []string, locator Locator, configDir string) (*Processor, []string) {
 	if len(config.Exits) == 0 {
 		if config.Enabled {
 			return nil, []string{"region_diff.enabled is on but region_diff.exits is empty; region diff stays off. Name two exits, the home region first, e.g. [\"norway\", \"sweden\"]."}
@@ -71,11 +73,21 @@ func Setup(config settings.RegionDiff, available []string, locator Locator) (*Pr
 		Diff:          diff,
 		HideOnFailure: config.OnFailure == "hide",
 		Locator:       locator,
+		FailureDir:    failureDir(config, configDir),
 	})
 	if err != nil {
 		return off(err.Error())
 	}
 	return processor, warnings
+}
+
+// failureDir is where failed attempts' downloads are kept, or "" for not at
+// all.
+func failureDir(config settings.RegionDiff, configDir string) string {
+	if !config.KeepFailedDownloads || configDir == "" {
+		return ""
+	}
+	return filepath.Join(configDir, "regiondiff-failures")
 }
 
 // sameCountry reports whether two exits can come out in the same country.
@@ -134,6 +146,9 @@ func (processor *Processor) Summary() string {
 	}
 	if options.Diff.TrimBreakMarkers {
 		summary += "; break markers are trimmed"
+	}
+	if options.FailureDir != "" {
+		summary += "; downloads of failed attempts are kept in " + options.FailureDir
 	}
 	if options.HideOnFailure {
 		return summary + "; episodes that can't be processed are kept out of the feed"

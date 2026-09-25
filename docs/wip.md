@@ -11,6 +11,10 @@ Everything about Solstein that isn't finished: known issues, gaps, open question
 
 ## Region diff
 
+### Why five backlog downloads were implausible (open question)
+
+Five of 115 "It Was A Sh*t Show" episodes failed as implausible in production within a minute (2026-09-25, [`region-diff.md`](region-diff.md)); downloaded again, they diff cleanly. Most likely one side got a partial or wrong file during the burst of downloads, but it is unconfirmed. Solstein now re-fetches downloads that look cut off, asks for fresh copies after a failure, and applies the failure policy after three failed attempts on request. To settle it: run with `keep_failed_downloads` on, and look at the kept files and note the next time it happens. Then decide whether anything else is needed (e.g. pacing large backlogs).
+
 ### Break markers encoded into show segments (open)
 
 `trim_break_markers` removes only markers that are their own spliced segment ([`region-diff.md`](region-diff.md)). In "Corner Piece", the chime after each mid-roll is encoded together with the start of the next show segment, so one chime per break remains even with trimming on.
@@ -25,9 +29,9 @@ Off by default because a show's own sting spliced in at breaks would go too. Rev
 
 The same-country checks can't see `direct`'s country (it would need an outside geolocation service, which is ruled out), so a pair like `["direct", "norway"]` from Norway is never flagged. An optional `home_country` setting, declared by the operator, would let the checks treat `direct` as that country. Not asked for yet.
 
-### Keeping the raw downloads (idea)
+### Keeping the raw downloads of successful diffs (idea)
 
-`keep_sources`: keep both regions' downloads next to the cleaned file, to debug a bad cut. Proposed in the design, not built; the live-test downloads in `config/live/` cover development for now.
+`keep_failed_downloads` keeps them for failed diffs. Keeping them for successful ones too (the original `keep_sources` idea) would help debug a bad cut that passed the sanity checks; not built, and costs twice an episode's size per episode.
 
 ### Open questions
 
@@ -50,6 +54,10 @@ The same-country checks can't see `direct`'s country (it would need an outside g
 
 ## Core
 
+- **`disable_direct` on by default (wanted, 2026-09-25).** The maintainer wants the direct exit off unless switched on. To work out before building:
+  - A fresh install has no VPN, so `disable_direct` with no `default_exit` can't simply stop start-up as it does today. Options: direct is disabled only once a VPN exit exists (and `default_exit` then defaults to the first, or must be named); or start-up refuses until either a VPN is set up or `disable_direct: false` is set explicitly (safe, but a harder first run).
+  - Existing `config.json` files have `"disable_direct": false` written out, so a new default wouldn't reach them; only a missing field would take it. Possibly a tri-state (unset = default) or a one-time notice.
+  - Region diff's `direct` home side and feeds with `exit: direct` then become invalid by default; the start-up warnings and the README would need to say how to opt back in.
 - **Cache size cap (question):** whether to add a size limit on top of the 14-day retention, and whether to evict an episode early once a client has fetched it completely.
 - **Publish immediately, swap later (idea, for clients other than ABS):** publish an episode of a processed feed at once with its ads, and swap in the processed file when ready. Useless for ABS, which downloads once and matches by GUID afterwards; only worth it for clients that re-download changed enclosures (unknown, see below).
 - **Chaining processors (idea):** the processor interface allows one processor per feed; chaining would let e.g. a loudness pass run after region diff.

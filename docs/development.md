@@ -113,6 +113,7 @@ Notes:
     go test -tags live -run Live -v -count=1 ./modules/exits/
   ```
   They print countries, sizes and hashes, never keys or the host's own IP. Downloads go to `config/live/` (gitignored).
+  `TestLiveAcastRegions` downloads one episode twice from each region; `LIVE_SHOW` (a feed URL) and `LIVE_EPISODE` (part of a title) pick the show and episode, `LIVE_HOME_COUNTRY` (e.g. `NO`) takes the home side through a Proton exit instead of directly, and `LIVE_OUTPUT_DIR` says where the files go.
 - Tunnel tests in `modules/exits` run a real WireGuard peer inside the test process (its own netstack device on a local UDP port, with a web server and a DNS server reachable only through the tunnel), so the handshake, DNS and HTTP paths are tested for real without root or network setup. Pool tests use a fake opener.
 - Tests use a fake `Dialer` that resolves made-up hostnames to chosen IPs and connects to a local `httptest` server, so public/private behaviour is tested without real network.
 

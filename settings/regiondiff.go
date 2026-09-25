@@ -43,6 +43,10 @@ type RegionDiff struct {
 	// splices in around ad breaks, where they can be cut cleanly. Off by
 	// default: a show's own sting at breaks would go too.
 	TrimBreakMarkers bool `json:"trim_break_markers"`
+	// KeepFailedDownloads keeps both downloads of an attempt whose diff
+	// failed, in regiondiff-failures/ in the config directory, for 14 days:
+	// to see what the host sent. Off by default; episodes are large.
+	KeepFailedDownloads bool `json:"keep_failed_downloads"`
 }
 
 func (regionDiff *RegionDiff) applyDefaults() {

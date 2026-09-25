@@ -39,10 +39,14 @@ type Episode struct {
 	// feeds.Service.Render for why.
 	ReleasedAt *time.Time `json:"released_at"`
 
-	State         EpisodeState `json:"state" gorm:"not null;index"`
-	Attempts      int          `json:"attempts"`
-	NextAttemptAt *time.Time   `json:"next_attempt_at"`
-	LastError     string       `json:"last_error"`
+	State    EpisodeState `json:"state" gorm:"not null;index"`
+	Attempts int          `json:"attempts"`
+	// FailedAttempts counts failures since the last success. It limits how
+	// often an episode already published is retried on request, and makes
+	// retries ask the source for a fresh copy.
+	FailedAttempts int        `json:"failed_attempts"`
+	NextAttemptAt  *time.Time `json:"next_attempt_at"`
+	LastError      string     `json:"last_error"`
 	// Withheld marks a failed episode the processor's failure policy keeps
 	// out of the feed, rather than publishing it unprocessed.
 	Withheld bool `json:"withheld"`

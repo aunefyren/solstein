@@ -14,21 +14,32 @@ import (
 
 	"aunefyren/solstein/episodes"
 	"aunefyren/solstein/models"
+
+	"github.com/google/uuid"
 )
 
 // fakeSource serves a download per exit, recording which exits were used.
+// fresh, when set for an exit, is what a fresh fetch gets instead.
 type fakeSource struct {
 	mutex     sync.Mutex
 	downloads map[string][]byte
+	fresh     map[string][]byte
 	failures  map[string]error
 	fetched   []string
 }
 
 func (source *fakeSource) job() episodes.Job {
-	return episodes.Job{Fetch: func(ctx context.Context, exit string) (episodes.Download, error) {
+	return episodes.Job{Fetch: func(ctx context.Context, exit string, fresh bool) (episodes.Download, error) {
 		source.mutex.Lock()
-		source.fetched = append(source.fetched, exit)
+		label := exit
+		if fresh {
+			label += " (fresh)"
+		}
+		source.fetched = append(source.fetched, label)
 		data, err := source.downloads[exit], source.failures[exit]
+		if again, ok := source.fresh[exit]; ok && fresh {
+			data = again
+		}
 		source.mutex.Unlock()
 		if err != nil {
 			return episodes.Download{}, err
@@ -73,7 +84,7 @@ func TestProcessorDownloadsInParallel(t *testing.T) {
 	both := make(chan struct{})
 	go func() { started.Wait(); close(both) }()
 	data := map[string][]byte{"norway": join(show1, audio(200, 10), show2), "sweden": join(show1, audio(200, 11), show2)}
-	job := episodes.Job{Fetch: func(ctx context.Context, exit string) (episodes.Download, error) {
+	job := episodes.Job{Fetch: func(ctx context.Context, exit string, fresh bool) (episodes.Download, error) {
 		started.Done()
 		select {
 		case <-both:
@@ -292,4 +303,81 @@ func TestProcessorTrimsBreakMarkersPerFeed(t *testing.T) {
 	if note := process(models.Feed{RegionDiffTrimBreakMarkers: "off"}).Note; strings.Contains(note, "marker") {
 		t.Errorf("trimmed for a feed that switched it off: %q", note)
 	}
+}
+
+func TestProcessorRefetchesIncompleteDownloads(t *testing.T) {
+	full := join(show1, audio(200, 11), show2)
+	source := &fakeSource{
+		downloads: map[string][]byte{"norway": join(show1, audio(200, 10), show2), "sweden": show1}, // cut off
+		fresh:     map[string][]byte{"sweden": full},
+	}
+	job := source.job()
+	job.ExpectedDuration = 18 * time.Second
+	processed, err := newTestProcessor(t).Process(context.Background(), job)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if !bytes.Equal(processed.Audio, join(show1, show2)) {
+		t.Error("the diff didn't use the fresh download")
+	}
+	if !slices.Contains(source.fetched, "sweden (fresh)") || slices.Contains(source.fetched, "norway (fresh)") {
+		t.Errorf("fetched %v; want only the short side again, fresh", source.fetched)
+	}
+
+	// Without a stated duration, the other download is the yardstick.
+	source = &fakeSource{
+		downloads: map[string][]byte{"norway": join(show1, audio(200, 10), show2), "sweden": show1},
+		fresh:     map[string][]byte{"sweden": full},
+	}
+	if _, err := newTestProcessor(t).Process(context.Background(), source.job()); err != nil || !slices.Contains(source.fetched, "sweden (fresh)") {
+		t.Errorf("err = %v, fetched %v", err, source.fetched)
+	}
+
+	// Complete downloads are never fetched twice.
+	source = &fakeSource{downloads: map[string][]byte{"norway": join(show1, audio(200, 10), show2), "sweden": full}}
+	job = source.job()
+	job.ExpectedDuration = 18 * time.Second
+	if _, err := newTestProcessor(t).Process(context.Background(), job); err != nil || len(source.fetched) != 2 {
+		t.Errorf("err = %v, fetched %v", err, source.fetched)
+	}
+}
+
+func TestProcessorKeepsFailedDownloads(t *testing.T) {
+	directory := t.TempDir()
+	processor, err := NewProcessor(ProcessorOptions{Exits: [2]string{"norway", "sweden"}, Diff: DefaultOptions(), FailureDir: directory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Nothing in common, and a fresh fetch doesn't help: implausible.
+	source := &fakeSource{downloads: map[string][]byte{"norway": join(audio(300, 1)), "sweden": join(audio(300, 2))}}
+	job := source.job()
+	job.Feed.ID, job.Episode.ID, job.Episode.Title, job.Episode.SourceURL = uuid.New(), uuid.New(), "Bad day", "https://host.example/e.mp3?token=secret"
+	_, err = processor.Process(context.Background(), job)
+	if !errors.Is(err, ErrImplausible) || !strings.Contains(err.Error(), "(norway: 0.1 MB, 8s; sweden: 0.1 MB, 8s)") {
+		t.Fatalf("err = %v; want implausible, describing both downloads", err)
+	}
+
+	kept := filepath.Join(directory, job.Feed.ID.String(), job.Episode.ID.String())
+	for _, name := range []string{"norway.mp3", "sweden.mp3", "failure.txt"} {
+		if _, err := os.Stat(filepath.Join(kept, name)); err != nil {
+			t.Errorf("%s not kept: %v", name, err)
+		}
+	}
+	note, _ := os.ReadFile(filepath.Join(kept, "failure.txt"))
+	if !strings.Contains(string(note), "Bad day") || !strings.Contains(string(note), "implausible") || strings.Contains(string(note), "secret") {
+		t.Errorf("note = %s", note)
+	}
+
+	// Old sets go when the next failure is kept.
+	old := time.Now().Add(-failureRetention - time.Hour)
+	os.Chtimes(kept, old, old)
+	job.Episode.ID = uuid.New()
+	processor.Process(context.Background(), job)
+	if _, err := os.Stat(kept); !os.IsNotExist(err) {
+		t.Errorf("old set still there: %v", err)
+	}
+
+	// Off without a directory.
+	processor.options.FailureDir = ""
+	processor.keepFailed(job, err, nil) // must not panic or write
 }

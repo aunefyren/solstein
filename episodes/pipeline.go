@@ -32,6 +32,11 @@ const (
 	defaultIdleTimeout = 2 * time.Minute
 	// downloadTimeout bounds a whole download, however slowly it trickles.
 	downloadTimeout = time.Hour
+	// maxRequestFailures is how many attempts in a row may fail for an
+	// episode prepared on request (already published, so without a retry
+	// schedule) before the failure policy applies. Without a limit, an
+	// episode that fails the same way every time would never be served.
+	maxRequestFailures = 3
 	// fetchRetryDelay is the pause before retrying a request that got no
 	// response at all.
 	fetchRetryDelay = 500 * time.Millisecond
@@ -308,7 +313,7 @@ func (pipeline *Pipeline) prepare(ctx context.Context, feed models.Feed, episode
 		episode.State = models.EpisodeReady
 		episode.CacheFile, episode.CacheSize, episode.CacheSeconds, episode.CachedAt = prepared.cacheFile, prepared.size, prepared.seconds, &now
 		episode.LastError, episode.NextAttemptAt, episode.Withheld, episode.ProcessNote = "", nil, false, prepared.note
-		episode.PreparedWith = recipe
+		episode.PreparedWith, episode.FailedAttempts = recipe, 0
 		message := fmt.Sprintf("Cached episode '%s' of '%s' (%.1f MB)", episode.Title, feed.Title, float64(prepared.size)/(1<<20))
 		if prepared.note != "" {
 			message += "; " + processor.Name() + ": " + prepared.note
@@ -318,12 +323,13 @@ func (pipeline *Pipeline) prepare(ctx context.Context, feed models.Feed, episode
 	}
 
 	episode.LastError = err.Error()
+	episode.FailedAttempts++
 	action := "download"
 	if processing {
 		action = "process"
 	}
 	switch {
-	case errors.Is(err, ErrPermanent) || (claimed && episode.Attempts > len(retryDelays)):
+	case errors.Is(err, ErrPermanent) || (claimed && episode.Attempts > len(retryDelays)) || (!claimed && episode.FailedAttempts >= maxRequestFailures):
 		episode.State, episode.NextAttemptAt, episode.PreparedWith = models.EpisodeFailed, nil, failedRecipe
 		fallback := "it will be streamed from the source instead"
 		if processing {
@@ -333,13 +339,13 @@ func (pipeline *Pipeline) prepare(ctx context.Context, feed models.Feed, episode
 				fallback = "it is kept out of the feed"
 			}
 		}
-		logger.Log.Warn(fmt.Sprintf("Gave up trying to %s episode '%s' of '%s' after %d attempts; %s. Error: %s", action, episode.Title, feed.Title, episode.Attempts, fallback, err))
+		logger.Log.Warn(fmt.Sprintf("Gave up trying to %s episode '%s' of '%s' after %d failed attempts; %s. Error: %s", action, episode.Title, feed.Title, episode.FailedAttempts, fallback, err))
 	case claimed:
 		next := now.Add(retryDelays[episode.Attempts-1])
 		episode.State, episode.NextAttemptAt = models.EpisodeDiscovered, &next
 		logger.Log.Warn(fmt.Sprintf("Failed to %s episode '%s' of '%s' (attempt %d), retrying at %s. Error: %s", action, episode.Title, feed.Title, episode.Attempts, next.Local().Format("15:04"), err))
 	default:
-		logger.Log.Warn(fmt.Sprintf("Failed to %s episode '%s' of '%s' on request; the next request tries again. Error: %s", action, episode.Title, feed.Title, err))
+		logger.Log.Warn(fmt.Sprintf("Failed to %s episode '%s' of '%s' on request (%d of %d attempts); the next request tries again. Error: %s", action, episode.Title, feed.Title, episode.FailedAttempts, maxRequestFailures, err))
 	}
 	return pipeline.store.UpdateEpisode(ctx, &episode)
 }
@@ -376,7 +382,7 @@ func (pipeline *Pipeline) download(ctx context.Context, feed models.Feed, episod
 	var commit func() (string, error)
 	var discard func()
 	var size int64
-	err := pipeline.fetch(ctx, feed.Exit, episode.SourceURL, maxEpisodeBytes, func(contentType string, body io.Reader) (int64, error) {
+	err := pipeline.fetch(ctx, feed.Exit, episode.SourceURL, episode.FailedAttempts > 0, maxEpisodeBytes, func(contentType string, body io.Reader) (int64, error) {
 		file, commitFile, discardFile, err := pipeline.cache.create(feed.ID, episode.ID, feeds.AudioExtension(episode.SourceURL, contentType))
 		if err != nil {
 			return 0, err
@@ -404,6 +410,7 @@ func (pipeline *Pipeline) process(ctx context.Context, feed models.Feed, episode
 		Feed:             feed,
 		Episode:          episode,
 		ExpectedDuration: time.Duration(episode.SourceSeconds) * time.Second,
+		Fresh:            episode.FailedAttempts > 0,
 		Fetch:            pipeline.fetchForJob(episode.SourceURL),
 	}
 	processed, err := pipeline.options.Processor.Process(ctx, job)
@@ -439,7 +446,7 @@ func (pipeline *Pipeline) process(ctx context.Context, feed models.Feed, episode
 // and returns how much it took; the download then fails if that was nothing,
 // more than limit, or less than the source announced. write's own errors are
 // returned as they are.
-func (pipeline *Pipeline) fetch(ctx context.Context, exit, sourceURL string, limit int64, write func(contentType string, body io.Reader) (int64, error)) error {
+func (pipeline *Pipeline) fetch(ctx context.Context, exit, sourceURL string, fresh bool, limit int64, write func(contentType string, body io.Reader) (int64, error)) error {
 	client, err := pipeline.exits.Client(exit)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrPermanent, err)
@@ -452,6 +459,11 @@ func (pipeline *Pipeline) fetch(ctx context.Context, exit, sourceURL string, lim
 		return fmt.Errorf("%w: %w", ErrPermanent, err)
 	}
 	request.Header.Set("Accept", "*/*")
+	if fresh {
+		// After a failure: in case a CDN edge served a broken copy.
+		request.Header.Set("Cache-Control", "no-cache")
+		request.Header.Set("Pragma", "no-cache")
+	}
 
 	response, err := client.Do(request)
 	if err != nil && !errors.Is(err, outbound.ErrDestinationBlocked) && ctx.Err() == nil {

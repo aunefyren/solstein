@@ -145,7 +145,7 @@ func (pipeline *Pipeline) reconcileEpisode(feed models.Feed, episode *models.Epi
 		}
 		pipeline.removeCacheFile(episode)
 		episode.ForgetCache()
-		episode.Attempts, episode.NextAttemptAt, episode.LastError = 0, nil, ""
+		episode.Attempts, episode.FailedAttempts, episode.NextAttemptAt, episode.LastError = 0, 0, nil, ""
 		episode.Withheld, episode.ProcessNote, episode.PreparedWith = false, "", ""
 		episode.State = models.EpisodeDiscovered
 		if episode.Backlog || !pipeline.prepares(feed) {

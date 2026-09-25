@@ -20,6 +20,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -184,26 +185,48 @@ func TestLiveTwoKeysTwoTunnels(t *testing.T) {
 // and through Sweden twice, and keeps the files for comparison.
 func TestLiveAcastRegions(t *testing.T) {
 	requireKeys(t, "PROTON_KEY_1")
-	manager, _ := liveManager(t, []string{"env:PROTON_KEY_1"}, 0, map[string]string{"sweden": "SE"})
+	// LIVE_HOME_COUNTRY downloads the home side through a Proton exit in
+	// that country instead of directly, as a disable_direct setup does.
+	exits := map[string]string{"sweden": "SE"}
+	home, tunnels := outbound.DirectExit, 0
+	if country := os.Getenv("LIVE_HOME_COUNTRY"); country != "" {
+		exits["home"], home, tunnels = country, "home", 2 // one key holds both
+	}
+	manager, _ := liveManager(t, []string{"env:PROTON_KEY_1"}, tunnels, exits)
 	output := os.Getenv("LIVE_OUTPUT_DIR")
 	if output == "" {
 		output = t.TempDir()
 	}
 	os.MkdirAll(output, 0o755)
 
-	feedData := fetch(t, manager, outbound.DirectExit, liveShow, filepath.Join(output, "feed.xml"))
+	// LIVE_SHOW and LIVE_EPISODE (part of a title) pick another show and
+	// episode than the default show's newest.
+	show := liveShow
+	if value := os.Getenv("LIVE_SHOW"); value != "" {
+		show = value
+	}
+	feedData := fetch(t, manager, outbound.DirectExit, show, filepath.Join(output, "feed.xml"))
 	feed, err := rss.Parse(feedData.body)
 	if err != nil || len(feed.Items) == 0 || feed.Items[0].Enclosure == nil {
 		t.Fatalf("feed: %v", err)
 	}
 	episode := feed.Items[0]
+	if wanted := os.Getenv("LIVE_EPISODE"); wanted != "" {
+		index := slices.IndexFunc(feed.Items, func(item rss.Item) bool {
+			return item.Enclosure != nil && strings.Contains(strings.ToLower(item.Title), strings.ToLower(wanted))
+		})
+		if index < 0 {
+			t.Fatalf("no episode titled like %q", wanted)
+		}
+		episode = feed.Items[index]
+	}
 	t.Logf("show %q, newest episode %q, stated length %d, duration %s", feed.Title, episode.Title, episode.Enclosure.Length, episode.Duration)
 
 	type result struct{ label, exit, file string }
 	runs := []result{
-		{"direct #1 (NO)", outbound.DirectExit, "direct-1.mp3"},
+		{"direct #1 (NO)", home, "direct-1.mp3"},
 		{"sweden #1 (SE)", "sweden", "sweden-1.mp3"},
-		{"direct #2 (NO)", outbound.DirectExit, "direct-2.mp3"},
+		{"direct #2 (NO)", home, "direct-2.mp3"},
 		{"sweden #2 (SE)", "sweden", "sweden-2.mp3"},
 	}
 	hashes := map[string]string{}

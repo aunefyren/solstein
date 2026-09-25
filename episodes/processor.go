@@ -41,10 +41,14 @@ type Job struct {
 	Episode models.Episode
 	// ExpectedDuration is the source's stated duration, zero if unknown.
 	ExpectedDuration time.Duration
+	// Fresh is set when the last attempt failed: fetches should then ask
+	// for a fresh copy, in case a cache on the way served a bad one.
+	Fresh bool
 	// Fetch downloads the episode's source through an exit, with the checks
 	// the pipeline's own downloads get: audio only, complete, and at most
-	// 512 MB.
-	Fetch func(ctx context.Context, exit string) (Download, error)
+	// 512 MB. fresh asks caches on the way (the host's CDN) not to answer
+	// from a stored copy.
+	Fetch func(ctx context.Context, exit string, fresh bool) (Download, error)
 }
 
 // Download is a fetched copy of an episode's source.
@@ -65,11 +69,11 @@ type Processed struct {
 }
 
 // fetchForJob fetches into memory for a processor.
-func (pipeline *Pipeline) fetchForJob(sourceURL string) func(ctx context.Context, exit string) (Download, error) {
-	return func(ctx context.Context, exit string) (Download, error) {
+func (pipeline *Pipeline) fetchForJob(sourceURL string) func(ctx context.Context, exit string, fresh bool) (Download, error) {
+	return func(ctx context.Context, exit string, fresh bool) (Download, error) {
 		var buffer bytes.Buffer
 		var download Download
-		err := pipeline.fetch(ctx, exit, sourceURL, maxProcessBytes, func(contentType string, body io.Reader) (int64, error) {
+		err := pipeline.fetch(ctx, exit, sourceURL, fresh, maxProcessBytes, func(contentType string, body io.Reader) (int64, error) {
 			download.ContentType = contentType
 			return buffer.ReadFrom(body)
 		})
