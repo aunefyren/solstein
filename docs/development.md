@@ -115,6 +115,13 @@ Notes:
   - sets `Solstein/<version> (+https://github.com/aunefyren/solstein)` as User-Agent unless the request sets one;
   - has dial, TLS-handshake and response-header timeouts, but no overall timeout.
 - Errors to branch on with `errors.Is`: `outbound.ErrUnknownExit`, `ErrExitUnavailable`, `ErrDestinationBlocked`.
+- **Live tests** (`modules/exits/live_test.go`, build tag `live`) run against real Proton servers, ifconfig.co and Acast; never in CI. Run them in a Go container with the keys from `.env`, which is never opened or printed:
+  ```
+  docker run --rm --env-file .env -e LIVE_OUTPUT_DIR=/src/config/live \
+    -v <repo>:/src -v solstein-gomod:/go/pkg/mod -w /src golang:1.26 \
+    go test -tags live -run Live -v -count=1 ./modules/exits/
+  ```
+  They print countries, sizes and hashes, never keys or the host's own IP. Downloads go to `config/live/` (gitignored).
 - Tunnel tests in `modules/exits` run a real WireGuard peer inside the test process (its own netstack device on a local UDP port, with a web server and a DNS server reachable only through the tunnel), so the handshake, DNS and HTTP paths are tested for real without root or network setup. Pool tests use a fake opener.
 - Tests use a fake `Dialer` that resolves made-up hostnames to chosen IPs and connects to a local `httptest` server, so public/private behaviour is tested without real network.
 

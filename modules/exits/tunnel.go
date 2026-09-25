@@ -129,7 +129,7 @@ func (tunnel *tunnel) LookupIP(ctx context.Context, host string) ([]netip.Addr, 
 		return nil, err
 	}
 	defer tunnel.release()
-	names, err := tunnel.net.LookupContextHost(ctx, host)
+	names, err := tunnel.lookupWithRetries(ctx, host)
 	if err != nil {
 		return nil, err
 	}
@@ -140,6 +140,36 @@ func (tunnel *tunnel) LookupIP(ctx context.Context, host string) ([]netip.Addr, 
 		}
 	}
 	return addresses, nil
+}
+
+// dnsAttempts are the time limits of successive lookup attempts; the last
+// attempt gets whatever the caller's context allows. Live tests against
+// Proton showed the first DNS packet through a new tunnel sometimes going
+// unanswered, which cost the resolver's full 5-second timeout. Retrying after
+// a second makes that cost a second. TCP needs nothing like it: it
+// retransmits after about a second on its own.
+var dnsAttempts = []time.Duration{time.Second, 2 * time.Second}
+
+func (tunnel *tunnel) lookupWithRetries(ctx context.Context, host string) ([]string, error) {
+	for _, limit := range dnsAttempts {
+		attempt, cancel := context.WithTimeout(ctx, limit)
+		names, err := tunnel.net.LookupContextHost(attempt, host)
+		cancel()
+		if err == nil || ctx.Err() != nil || !isTimeout(err, attempt) {
+			return names, err
+		}
+	}
+	return tunnel.net.LookupContextHost(ctx, host)
+}
+
+// isTimeout reports whether a lookup failed only because its attempt ran out
+// of time, as opposed to a real answer such as "no such host".
+func isTimeout(err error, attempt context.Context) bool {
+	var dnsError *net.DNSError
+	if errors.As(err, &dnsError) && dnsError.IsNotFound {
+		return false
+	}
+	return attempt.Err() != nil || (errors.As(err, &dnsError) && dnsError.IsTimeout)
 }
 
 // Dial opens a connection through the tunnel. The tunnel counts as in use

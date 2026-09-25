@@ -73,6 +73,10 @@ func startWireGuardServer(t *testing.T, clientPublic PublicKey) wireGuardServer 
 }
 
 // startWireGuardServerWith is startWireGuardServer with its own web handler.
+// dnsDrop makes the next test WireGuard server's DNS ignore that many
+// queries first. Tests that set it reset it.
+var dnsDrop int
+
 func startWireGuardServerWith(t *testing.T, clientPublic PublicKey, handler http.Handler) wireGuardServer {
 	t.Helper()
 	key := generateKey(t)
@@ -100,7 +104,7 @@ func startWireGuardServerWith(t *testing.T, clientPublic PublicKey, handler http
 	if err != nil {
 		t.Fatal(err)
 	}
-	go serveDNS(dnsConn, map[string]netip.Addr{"example.test.": serverTunnelAddress})
+	go serveDNSDropping(dnsConn, map[string]netip.Addr{"example.test.": serverTunnelAddress}, dnsDrop)
 
 	t.Cleanup(func() {
 		listener.Close()
@@ -112,11 +116,21 @@ func startWireGuardServerWith(t *testing.T, clientPublic PublicKey, handler http
 
 // serveDNS answers A queries for the given names and NXDOMAIN otherwise.
 func serveDNS(packetConn net.PacketConn, records map[string]netip.Addr) {
+	serveDNSDropping(packetConn, records, 0)
+}
+
+// serveDNSDropping is serveDNS that ignores the first drop queries, as a
+// VPN's DNS sometimes does right after a tunnel comes up.
+func serveDNSDropping(packetConn net.PacketConn, records map[string]netip.Addr, drop int) {
 	buffer := make([]byte, 1500)
 	for {
 		size, from, err := packetConn.ReadFrom(buffer)
 		if err != nil {
 			return
+		}
+		if drop > 0 {
+			drop--
+			continue
 		}
 		var parser dnsmessage.Parser
 		header, err := parser.Start(buffer[:size])
@@ -338,5 +352,34 @@ func TestDeviceConfig(t *testing.T) {
 		if !strings.Contains(config, want+"\n") {
 			t.Errorf("device config lacks %s", want)
 		}
+	}
+}
+
+func TestLookupRetriesALostFirstQuery(t *testing.T) {
+	// One lost packet, as seen live with Proton. (Netstack's resolver asks
+	// for A and AAAA one after the other, so each dropped query costs one
+	// attempt.)
+	dnsDrop = 1
+	t.Cleanup(func() { dnsDrop = 0 })
+	opened := openTestTunnel(t, true)
+	dnsDrop = 0
+
+	start := time.Now()
+	addresses, err := opened.LookupIP(context.Background(), "example.test")
+	elapsed := time.Since(start)
+	if err != nil || len(addresses) != 1 {
+		t.Fatalf("LookupIP = %v, %v", addresses, err)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("lookup took %s; a lost first query should cost about a second, not the resolver's 5", elapsed)
+	}
+
+	// A real "no such host" is not retried.
+	start = time.Now()
+	if _, err := opened.LookupIP(context.Background(), "unknown.test"); err == nil {
+		t.Error("unknown name resolved")
+	}
+	if time.Since(start) > 500*time.Millisecond {
+		t.Errorf("NXDOMAIN took %s; it shouldn't be retried", time.Since(start))
 	}
 }
