@@ -139,6 +139,22 @@ var settings = []setting{
 		apply: listSetting(func(cfg *Config) *[]string { return &cfg.AllowedSourceHosts }),
 	},
 	{
+		flag:  "defaultexit",
+		env:   "SOLSTEIN_DEFAULT_EXIT",
+		usage: "Exit for feeds that don't name one; empty means direct.",
+		apply: func(cfg *Config, value string) error {
+			cfg.DefaultExit = value
+			return nil
+		},
+	},
+	{
+		flag:    "disabledirect",
+		env:     "SOLSTEIN_DISABLE_DIRECT",
+		usage:   "Never use the host's own connection; needs a default exit.",
+		boolean: true,
+		apply:   boolSetting(func(cfg *Config) *bool { return &cfg.DisableDirect }),
+	},
+	{
 		flag:  "deliverymode",
 		env:   "SOLSTEIN_DELIVERY_MODE",
 		usage: "Default episode delivery: cache, stream or original.",

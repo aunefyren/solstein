@@ -70,6 +70,12 @@ type Config struct {
 	// name also allows its subdomains. Empty allows any host.
 	AllowedSourceHosts []string `json:"allowed_source_hosts"`
 
+	// DefaultExit is the exit for feeds (and other requests) that don't name
+	// one; empty means direct. DisableDirect refuses the direct exit
+	// altogether, so nothing leaves from the host's own address.
+	DefaultExit   string `json:"default_exit"`
+	DisableDirect bool   `json:"disable_direct"`
+
 	// DeliveryMode is the default for feeds that don't set their own.
 	DeliveryMode        string `json:"delivery_mode"`
 	PollIntervalMinutes int    `json:"poll_interval_minutes"`
@@ -212,6 +218,11 @@ func (cfg *Config) Validate() error {
 		hosts = append(hosts, host)
 	}
 	cfg.AllowedSourceHosts = hosts
+
+	cfg.DefaultExit = strings.TrimSpace(cfg.DefaultExit)
+	if cfg.DisableDirect && (cfg.DefaultExit == "" || cfg.DefaultExit == "direct") {
+		return errors.New("disable_direct needs a default_exit naming a VPN exit")
+	}
 
 	cfg.DeliveryMode = strings.ToLower(strings.TrimSpace(cfg.DeliveryMode))
 	if !slices.Contains(DeliveryModes, cfg.DeliveryMode) {

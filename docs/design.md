@@ -97,6 +97,16 @@ Only matters when a processor (e.g. region diff) is enabled for the feed; with n
 
 Blocking a client request until processing finishes is ruled out: it contradicts poll-time processing and risks client timeouts.
 
+### Not leaking the home address (decided, built)
+
+Not strictly part of any module, but asked for alongside region diff: an operator may want no connection at all to leave from their own address.
+- **`default_exit`** (global): the exit for feeds that don't set their own, so polls, downloads and streams go through a VPN by default. Empty means `direct`, as now.
+- **`disable_direct`**: refuse the `direct` exit entirely, so nothing goes out on the host's connection — including the Proton server-list refresh, which would then go through `default_exit`. A feed or region-diff pair naming `direct` is then an error at start-up.
+- With either, region diff's home side becomes a VPN exit in the home country (e.g. Proton `NO`) instead of `direct`.
+- **Never a silent fallback:** when the default exit is down, requests fail rather than go out directly. A `default_exit` that doesn't exist or failed to load stops start-up — stricter than the usual "a broken module stays off", because the operator has said where traffic must go, and leaking would be worse than not running.
+- Built in `outbound` (`Options.DefaultExit`, `DisableDirect`, `ErrDirectDisabled`) and `settings` (`default_exit`, `disable_direct`, validated together). Requests naming no exit — every feed without its own, and the Proton list refresh — use the default. Tested end to end: with a tunnel as default and direct disabled, a feed naming no exit is subscribed through the tunnel and `direct` is refused as an invalid setting; start-up refuses each misconfiguration with exit code 1.
+- DNS for the tunnels is already inside the tunnels; the VPN endpoints themselves are still resolved and reached from the host, necessarily.
+
 ### Storage (decided)
 
 - SQLite through GORM, using the CGO-free `modernc.org/sqlite` driver, in `solstein.db` in the config directory.
@@ -372,10 +382,88 @@ Each step testable on its own; the core already routes every request through `ou
 
 ## Module: Region diff
 
-- An episode processor (see **Extension points**). Downloads each episode through two exits (configurable default pair, per-feed override). With exits off, only `direct` exists, so this module cannot run.
-- Compare the files to find differing segments.
-- First investigate whether Acast stitches MP3 frames without re-encoding. If so, compare at frame level (fast, exact). Fall back to audio-level alignment only if necessary.
-- If the two downloads are identical (no ads, or the same global ad in both): _brief was truncated here — to be completed._
+**Status: designed from live data (2026-09-25).** All decisions below are agreed (2026-09-25). Not built yet; built in the order under **Region diff build order**.
+
+### What the live data showed
+
+From one episode of a show with Norwegian dynamic ads, downloaded twice from Norway and twice through Sweden (see **Open questions → Acast stitching format** for the full numbers):
+- Same region, same moment: byte-identical. Different regions: different.
+- Acast splices MP3 frames without re-encoding. The show audio is byte-identical frame for frame in both downloads; the ad breaks are whole runs of frames that differ.
+- **Every real splice point starts on a clean frame** (`main_data_begin = 0`: it borrows nothing from earlier frames through MP3's bit reservoir). Acast encodes each segment on its own, so cutting at these points leaves no glitch.
+- Short runs of identical frames also occur inside ad breaks (silence encodes identically). They do **not** start on a clean frame, which, with a minimum length, tells them apart from show audio.
+
+### Processing an episode (decided)
+
+Region diff is an episode processor (see **Extension points**). For a new episode of a feed with region diff on:
+
+1. **Download twice, in parallel,** through the feed's exit pair, with the same User-Agent and at the same time, to keep everything but the region equal. The pair is a home-region exit and one in another ad market: `["direct", "sweden"]` needs one tunnel, but shows the host the home IP; `["norway", "sweden"]` (a Proton exit in the home country) gives the same home-region ads without that, over two tunnels — which one key handles (see **Exits build order**, step 6).
+2. **Parse both as MP3.** Skip the ID3v2 tag (and an ID3v1 tag at the end, and a Xing/LAME/VBRI info frame if present), then read frame headers. A file that isn't clean MPEG audio (e.g. AAC in `.m4a`) can't be processed this way: the failure policy applies.
+3. **Hash every frame** (its full bytes) and **align the two sequences:** find runs of frames that appear in the same order in both. With about 100,000 frames per episode, align on anchors (runs of, say, 16 consecutive frames whose hashes occur once in each file) and extend them, rather than a quadratic diff.
+4. **Keep a shared run only if it is real show audio:** at least `min_shared_seconds` long (proposed 2 s, about 77 frames) **and** its first frame starts clean (`main_data_begin = 0`), or it is the very first frame of the file. Everything else is ad.
+5. **Write the result:** the ID3v2 tag of the home-region download, then the kept runs in order. No re-encoding, so it takes a fraction of a second.
+6. **Sanity checks before accepting it:** the result's duration within a few percent of the feed's `itunes:duration` when the feed states one; the removed audio no more than a set share of the file (proposed 30%); at least one shared run. A result that fails is treated as a failed processing, not published.
+7. **Publish** the processed file from the cache with its real `length` and `itunes:duration` (the core already rewrites both), and discard the two raw downloads (optionally kept for debugging).
+
+### When the two downloads are identical (decided)
+
+Identical downloads mean either no dynamic ads in this episode (or host-read ones, which no diff can find), or the same ad in both regions (a campaign running in both markets). The two can't be told apart from two files alone.
+
+- **Try one more region:** download through a third exit (`fallback_exits`, e.g. a different ad market), and diff against that.
+- **If that is identical too, publish the episode as it is**, and record it as "no dynamic ads found" in the episode's status. Also a hint worth logging: a file clearly longer than the feed's `itunes:duration` suggests ads were present but the same everywhere.
+- **Partly shared ads** (one ad the same in both, others different) leave that one ad in; a third region usually differs there too, so the same fallback helps.
+
+### Every episode is cleaned (decided)
+
+With region diff on for a feed, every episode served should be the cleaned version, including those already in the feed when it was added (backlog), which are otherwise only fetched when first requested:
+
+- **New episodes** are processed in the background before they are published (hide until processed), as for any processor.
+- **Backlog episodes are processed the first time a client requests one.** Solstein downloads both versions and cuts while the client waits — about 5 s for a 40-minute episode in the live test, well inside ABS's 30 s — then serves the clean file and keeps it, so later plays are instant.
+- **If that takes longer than about 20 s**, the client gets `503 Service Unavailable` with `Retry-After` while processing finishes in the background; the next attempt gets the clean file. The version with ads is not served. (This is the one exception to "never make a client wait on processing", and it is bounded.)
+- **Optionally the latest N backlog episodes are processed as soon as the feed is added** (`backlog`, default 0), so the most likely plays are ready at once.
+- The unprocessed version is served only when processing genuinely fails and `on_failure` is `publish`.
+
+### Configuration (proposed)
+
+```jsonc
+"region_diff": {
+  "enabled": true,
+  "exits": ["direct", "sweden"],     // the pair; per-feed override
+  "fallback_exits": ["germany"],     // tried when the pair gives identical files
+  "min_shared_seconds": 2,
+  "max_removed_share": 0.3,
+  "on_failure": "publish",           // publish unprocessed (with ads) | hide; per-feed override
+  "backlog": 0,                      // existing episodes to process right away when a feed is added; the rest on first request
+  "keep_sources": false
+}
+```
+
+Per feed: region diff on or off, its own exit pair, and its own `on_failure`.
+
+### Decisions
+
+Decided 2026-09-25:
+1. The algorithm: MP3 frame alignment, keeping shared runs that are long enough **and** start clean.
+2. Identical downloads: try `fallback_exits`, then publish as it is.
+3. **Failure policy is a setting of the feature** (`on_failure`: `publish` unprocessed with ads, or `hide` and flag), globally and per feed; default `publish` so a feed never stalls.
+5. Publishing waits for the processed file ("hide until processed").
+6. Region diff can be switched on globally and per feed; it needs at least two distinct exits and stays off with a warning otherwise.
+
+4. **Every episode is cleaned**, backlog on first request with a bounded wait (see above), plus an optional `backlog` count processed up front.
+
+### Region diff build order
+
+1. **MP3 frame reader** (`mp3` package, no Solstein dependencies): tags, info frames, frame headers, `main_data_begin`; tested on generated frames and the live downloads.
+2. **Diff:** hash, anchor-align, keep shared runs by length and clean start, write the result, sanity checks; tested on synthetic splices and the real Norway/Sweden pair.
+3. **Processor:** the double download, identical-download fallback, `on_failure`, as an episode processor in the pipeline, hiding episodes until processed.
+4. **Backlog on first request** with the bounded wait and `503` / `Retry-After`, plus `backlog: N` up front.
+5. **Wiring and settings:** the `region_diff` block, per-feed switches, start-up checks (two distinct exits, home side not `direct` when `disable_direct`).
+6. **Live check** against the Acast show with Norwegian ads, and with ABS.
+
+### Still to find out
+
+- Whether ads change over time from the same region (downloads hours apart), with the User-Agent, or with Proton's per-session exit IPs. Only same-moment downloads have been compared so far.
+- Other hosts than Acast: whether they splice at frame level too. The design refuses anything else rather than guessing.
+- The rest of the original brief (it stops at "If the two downloads are identical…"); the section above proposes that part.
 
 ## Client compatibility: Audiobookshelf
 
@@ -432,7 +520,7 @@ ABS 2.36.1 and Solstein in Docker on one compose network, with the real Acast fe
 - **Cache size cap.** Whether to add a size limit on top of the 14-day retention, and whether to evict an episode early once a client has fetched it completely.
 
 ### Region diff and exits
-- **Rest of the brief.** The original specification was cut off mid-sentence in the region-diff section; everything after it is still to be supplied.
+- **Rest of the brief.** The original specification was cut off mid-sentence in the region-diff section; **Module: Region diff** now proposes the missing part (identical downloads) for the maintainer to confirm.
 - ~~**Acast stitching format.**~~ **Answered (2026-09-25): frame-level splice, no re-encoding.** One episode of a show with Norwegian dynamic ads ("Corner Piece", confirmed by the maintainer), downloaded twice from Norway (direct) and twice through a Swedish Proton exit:
   - NO vs NO and SE vs SE were byte-identical; NO vs SE differed (42,848,705 vs 43,044,093 bytes; the feed states 38,273,358).
   - Both files are CBR 128 kbps, 44.1 kHz MPEG-1 Layer III; every byte after a 188-byte ID3 tag is a valid frame (no Xing/LAME header, no junk).
@@ -441,7 +529,7 @@ ABS 2.36.1 and Solstein in Docker on one compose network, with the real Acast fe
   - **Caution:** inside the post-rolls, runs of 3 and 31 frames also matched, almost certainly identical silence. The diff needs a minimum length for a shared run (a couple of seconds) so silence isn't taken for show audio.
   - Files kept locally in `config/live/` (gitignored) for developing the diff.
 - **Other variance sources.** Whether ad selection also depends on User-Agent, cookies, time or random rotation; whether host-read/baked-in ads exist that no diff can catch. Data so far: two downloads from the same region, seconds apart and with the same User-Agent, were byte-identical both for a show without dynamic ads (2026-09-24) and for one with Norwegian ads (2026-09-25). Not yet tested: downloads hours apart, different User-Agents, and whether Proton's per-session exit IPs change the ads.
-- **Identical-download fallback.** Serve as-is, retry with a third exit, or flag for review.
+- **Identical-download fallback.** Proposed in **Module: Region diff**: try a third exit, then publish as it is.
 - ~~**Concurrent tunnels on one Proton key.**~~ Answered by the live test: one key holds several tunnels at once. Whether Proton counts them as one connection or several against the plan limit (Free 1, Plus 10) is still unknown.
 - **Geolocation drift.** What decides the ads is how Acast geolocates the exit IP, not the country in the server list; VPN IPs are sometimes misplaced. Optional check via an IP-geolocation service through the tunnel (off by default, as it adds an external dependency)? The real test remains whether the two downloads differ.
 - **Server-list resilience.** Behaviour if gluetun-servers changes schema version (its files carry a `version`); refresh interval; falling back to the embedded snapshot.

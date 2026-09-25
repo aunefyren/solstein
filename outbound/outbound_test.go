@@ -305,6 +305,60 @@ func TestDuplicateExitNames(t *testing.T) {
 	}
 }
 
+func TestDefaultExit(t *testing.T) {
+	_, dialer := newTestSetup(t, http.NotFoundHandler(), false)
+	withDefault, err := New(Options{
+		DefaultExit: "test",
+		Providers:   []Provider{fakeProvider{dialers: map[string]Dialer{"test": dialer}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withDefault.DefaultExit() != "test" {
+		t.Errorf("DefaultExit = %s", withDefault.DefaultExit())
+	}
+	// A request naming no exit goes through the default: the fake dialer
+	// sees the dial.
+	if _, err := get(t, withDefault, "", "http://public.example/"); err != nil {
+		t.Fatalf("request through the default exit: %v", err)
+	}
+	if len(dialer.dialed) != 1 {
+		t.Errorf("default exit not used: dialed %v", dialer.dialed)
+	}
+	// Direct still exists when not disabled.
+	if _, err := withDefault.Client(DirectExit); err != nil {
+		t.Errorf("direct with a default exit: %v", err)
+	}
+
+	if _, err := New(Options{DefaultExit: "nowhere"}); err == nil || !strings.Contains(err.Error(), "not an available exit") {
+		t.Errorf("unknown default exit: err = %v", err)
+	}
+}
+
+func TestDisableDirect(t *testing.T) {
+	provider := fakeProvider{dialers: map[string]Dialer{"norway": &fakeDialer{}}}
+	manager, err := New(Options{DefaultExit: "norway", DisableDirect: true, Providers: []Provider{provider}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(manager.Exits(), ","); got != "norway" {
+		t.Errorf("Exits = %s, want direct left out", got)
+	}
+	if _, err := manager.Client(DirectExit); !errors.Is(err, ErrDirectDisabled) || !errors.Is(err, ErrUnknownExit) {
+		t.Errorf("direct when disabled: err = %v", err)
+	}
+	if client, err := manager.Client(""); err != nil || client == nil {
+		t.Errorf("no exit named: %v", err)
+	}
+
+	if _, err := New(Options{DisableDirect: true}); err == nil || !strings.Contains(err.Error(), "needs a default_exit") {
+		t.Errorf("disable_direct without default_exit: err = %v", err)
+	}
+	if _, err := New(Options{DisableDirect: true, DefaultExit: DirectExit}); err == nil {
+		t.Error("disable_direct with default_exit direct accepted")
+	}
+}
+
 func TestTransportIgnoresProxyEnvironment(t *testing.T) {
 	manager, err := New(Options{})
 	if err != nil {

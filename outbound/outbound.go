@@ -14,18 +14,23 @@ import (
 	"net/http"
 	"net/netip"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
 
 // DirectExit is the name of the built-in exit that goes out through the host's
-// own network. It is always available.
+// own network. It exists unless DisableDirect is set.
 const DirectExit = "direct"
 
 var (
 	ErrUnknownExit        = errors.New("unknown exit")
 	ErrExitUnavailable    = errors.New("exit unavailable")
 	ErrDestinationBlocked = errors.New("destination address is not allowed")
+	// ErrDirectDisabled is returned for the direct exit when disable_direct
+	// is on. It wraps ErrUnknownExit, since to everything else the exit
+	// simply doesn't exist.
+	ErrDirectDisabled = fmt.Errorf("%w: the direct exit is disabled (disable_direct)", ErrUnknownExit)
 )
 
 // Dialer is one route out: how to resolve names and open connections through
@@ -52,6 +57,12 @@ type Options struct {
 	// non-public addresses, e.g. for a feed hosted on the LAN.
 	AllowPrivateDestinations bool
 	Providers                []Provider
+	// DefaultExit is used for requests that name no exit. Empty means
+	// direct.
+	DefaultExit string
+	// DisableDirect removes the direct exit, so nothing goes out on the
+	// host's own connection. It requires a DefaultExit.
+	DisableDirect bool
 }
 
 // Manager hands out HTTP clients per exit. It is safe for concurrent use.
@@ -65,7 +76,10 @@ type Manager struct {
 }
 
 // New builds a Manager. It fails if two providers claim the same exit name,
-// or one claims "direct".
+// one claims "direct", DefaultExit names no exit, or DisableDirect is set
+// without a DefaultExit. The last two are errors rather than a quiet fall
+// back to direct, which would leak the host's address against the
+// operator's explicit wish.
 func New(options Options) (*Manager, error) {
 	manager := &Manager{
 		options:   options,
@@ -81,10 +95,22 @@ func New(options Options) (*Manager, error) {
 			manager.providers[exit] = provider
 		}
 	}
+	if options.DisableDirect {
+		delete(manager.providers, DirectExit)
+		if options.DefaultExit == "" {
+			return nil, errors.New("disable_direct needs a default_exit: every request without an exit of its own has to go somewhere")
+		}
+	}
+	if options.DefaultExit != "" {
+		if _, ok := manager.providers[options.DefaultExit]; !ok {
+			return nil, fmt.Errorf("default_exit %q is not an available exit (available: %s)", options.DefaultExit, strings.Join(manager.Exits(), ", "))
+		}
+	}
 	return manager, nil
 }
 
-// Exits lists every exit name, sorted, including "direct".
+// Exits lists every exit name, sorted, including "direct" unless it is
+// disabled.
 func (manager *Manager) Exits() []string {
 	exits := make([]string, 0, len(manager.providers))
 	for exit := range manager.providers {
@@ -94,8 +120,10 @@ func (manager *Manager) Exits() []string {
 	return exits
 }
 
-// Client returns the HTTP client for an exit; an empty name means "direct".
-// It returns ErrUnknownExit for names no provider has. Availability is checked
+// Client returns the HTTP client for an exit; an empty name means the
+// default exit ("direct" unless DefaultExit is set). It returns
+// ErrUnknownExit for names no provider has, and ErrDirectDisabled for
+// "direct" when it is disabled. Availability is checked
 // per connection, so a client for a VPN exit whose tunnel is down fails its
 // requests with ErrExitUnavailable rather than failing here.
 //
@@ -103,7 +131,10 @@ func (manager *Manager) Exits() []string {
 // callers bound each request with a context deadline instead.
 func (manager *Manager) Client(exit string) (*http.Client, error) {
 	if exit == "" {
-		exit = DirectExit
+		exit = manager.DefaultExit()
+	}
+	if exit == DirectExit && manager.options.DisableDirect {
+		return nil, ErrDirectDisabled
 	}
 	if _, ok := manager.providers[exit]; !ok {
 		return nil, fmt.Errorf("%w: %q", ErrUnknownExit, exit)
@@ -117,6 +148,14 @@ func (manager *Manager) Client(exit string) (*http.Client, error) {
 	client := manager.newClient(exit)
 	manager.clients[exit] = client
 	return client, nil
+}
+
+// DefaultExit is the exit used for requests that name none.
+func (manager *Manager) DefaultExit() string {
+	if manager.options.DefaultExit != "" {
+		return manager.options.DefaultExit
+	}
+	return DirectExit
 }
 
 // dialerFor is looked up on every connection rather than once per client, so

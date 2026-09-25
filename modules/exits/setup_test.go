@@ -142,6 +142,20 @@ func TestFeedThroughVPNExit(t *testing.T) {
 		t.Errorf("render: %v", err)
 	}
 
+	// With the tunnel as the default exit and direct disabled, a feed that
+	// names no exit goes through the tunnel, and direct is refused.
+	noLeak, err := outbound.New(outbound.Options{AllowPrivateDestinations: true, Providers: []outbound.Provider{module}, DefaultExit: "germany", DisableDirect: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	noLeakService := feeds.New(store, noLeak, feeds.Options{DefaultDeliveryMode: "cache"})
+	if feed, _, err := noLeakService.Subscribe(subscribeCtx, "http://example.test/default.xml", feeds.Settings{}); err != nil || feed.Title != "Tunnel Show" {
+		t.Errorf("subscribe through the default exit = %+v, %v", feed, err)
+	}
+	if _, _, err := noLeakService.Subscribe(subscribeCtx, "http://example.test/direct.xml", feeds.Settings{Exit: "direct"}); !errors.Is(err, feeds.ErrInvalidSettings) || !errors.Is(err, outbound.ErrDirectDisabled) {
+		t.Errorf("direct with disable_direct: err = %v", err)
+	}
+
 	// The same host doesn't exist outside the tunnel.
 	if _, _, err := service.Subscribe(subscribeCtx, "http://example.test/other.xml", feeds.Settings{}); err == nil {
 		t.Error("the tunnel-only host was reachable through direct")

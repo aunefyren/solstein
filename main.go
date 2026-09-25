@@ -109,20 +109,29 @@ func run() int {
 		UserAgent:                "Solstein/" + version + " (+https://github.com/aunefyren/solstein)",
 		AllowPrivateDestinations: cfg.AllowPrivateDestinations,
 		Providers:                exitProviders,
+		DefaultExit:              cfg.DefaultExit,
+		DisableDirect:            cfg.DisableDirect,
 	})
 	if err != nil {
+		// default_exit and disable_direct problems end up here: refusing to
+		// start is better than sending traffic the operator said mustn't
+		// leave directly.
 		logger.Log.Error("Failed to set up exits. Error: " + err.Error())
 		return 1
 	}
-	logger.Log.Info("Exits available: " + strings.Join(exitManager.Exits(), ", ") + ".")
+	logger.Log.Info("Exits available: " + strings.Join(exitManager.Exits(), ", ") + "; default: " + exitManager.DefaultExit() + ".")
+	if cfg.DisableDirect {
+		logger.Log.Info("The direct exit is disabled: nothing goes out on this host's own connection except the VPN tunnels themselves.")
+	}
 	if vpnModule != nil {
-		// Server-list refreshes go out directly, with the core's safeguards.
-		directClient, err := exitManager.Client(outbound.DirectExit)
+		// Server-list refreshes take the default route like everything else,
+		// with the core's safeguards; the built-in list covers the start.
+		defaultClient, err := exitManager.Client("")
 		if err != nil {
-			logger.Log.Error("Failed to get the direct client. Error: " + err.Error())
+			logger.Log.Error("Failed to get the default exit's client. Error: " + err.Error())
 			return 1
 		}
-		vpnModule.SetFetchClient(directClient)
+		vpnModule.SetFetchClient(defaultClient)
 	}
 	if cfg.AllowPrivateDestinations {
 		logger.Log.Warn("Private destinations are allowed; Solstein can fetch from loopback and internal network addresses.")

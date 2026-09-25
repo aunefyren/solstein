@@ -165,6 +165,13 @@ func TestValidate(t *testing.T) {
 		{name: "bad delivery mode", modify: func(cfg *Config) { cfg.DeliveryMode = "carrier-pigeon" }, wantErr: true},
 		{name: "bad poll interval", modify: func(cfg *Config) { cfg.PollIntervalMinutes = -1 }, wantErr: true},
 		{name: "bad retention", modify: func(cfg *Config) { cfg.CacheRetentionDays = -3 }, wantErr: true},
+		{name: "disable direct without default exit", modify: func(cfg *Config) { cfg.DisableDirect = true }, wantErr: true},
+		{name: "disable direct with default exit direct", modify: func(cfg *Config) { cfg.DisableDirect, cfg.DefaultExit = true, "direct" }, wantErr: true},
+		{name: "disable direct with a VPN default", modify: func(cfg *Config) { cfg.DisableDirect, cfg.DefaultExit = true, " norway " }, check: func(t *testing.T, cfg Config) {
+			if cfg.DefaultExit != "norway" {
+				t.Errorf("default exit = %q", cfg.DefaultExit)
+			}
+		}},
 	}
 
 	for _, c := range cases {

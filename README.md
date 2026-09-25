@@ -121,6 +121,8 @@ In `config.json` (paths are relative to the config directory, `/app/config` in D
 - Keys can stay out of `config.json`: `private_keys` accepts `env:NAME` (e.g. from Docker's `env_file`) and `file:PATH` (e.g. a Docker secret) as well as the key itself.
 - A mistake in one provider or exit only disables that one; Solstein logs why at start-up.
 
+**Keeping your own address out of it.** Set `default_exit` to a VPN exit (for example one in your own country) so every feed goes through it unless it names another, and `disable_direct: true` so nothing ever goes out on your own connection: the server-list refresh takes the default exit too, and a feed or setting naming `direct` is refused. Solstein never falls back to `direct` when the VPN is down; requests fail instead, and a `default_exit` that doesn't exist or failed to load stops start-up. Only the WireGuard connections to the VPN servers themselves leave from your address, as they must.
+
 ## Configuration
 
 On first run Solstein creates `config.json` in its config directory (`/app/config` in Docker); that file is the configuration. Every setting can also be changed with a flag or an environment variable. These are applied at start-up and saved back to `config.json`, so they stay in effect after the flag or variable is removed. If both are given, the flag wins.
@@ -138,6 +140,8 @@ On first run Solstein creates `config.json` in its config directory (`/app/confi
 | `allowed_client_networks` | `-allowedclientnetworks` | `SOLSTEIN_ALLOWED_CLIENT_NETWORKS` | `[]` (any) | IPs/CIDRs allowed to use Solstein at all, e.g. `172.16.0.0/12` for a Docker network. Comma-separated for flag and env. |
 | `trusted_proxies` | `-trustedproxies` | `SOLSTEIN_TRUSTED_PROXIES` | `[]` (none) | Reverse proxies whose `X-Forwarded-For`/`-Proto`/`-Host` are believed. |
 | `allowed_source_hosts` | `-allowedsourcehosts` | `SOLSTEIN_ALLOWED_SOURCE_HOSTS` | `[]` (any) | Hosts feeds may be subscribed from; subdomains included, e.g. `acast.com`. |
+| `default_exit` | `-defaultexit` | `SOLSTEIN_DEFAULT_EXIT` | `""` (direct) | Exit for feeds that don't name one, e.g. a VPN exit. Must exist, or Solstein doesn't start. |
+| `disable_direct` | `-disabledirect` | `SOLSTEIN_DISABLE_DIRECT` | `false` | Never use this host's own connection; needs `default_exit`. |
 | `delivery_mode` | `-deliverymode` | `SOLSTEIN_DELIVERY_MODE` | `cache` | Default for feeds: `cache` (download and serve from disk), `stream` (pass through live) or `original` (only proxy the feed). |
 | `poll_interval_minutes` | `-pollinterval` | `SOLSTEIN_POLL_INTERVAL` | `15` | Minutes between feed polls. |
 | `cache_retention_days` | `-cacheretention` | `SOLSTEIN_CACHE_RETENTION` | `14` | Days cached episodes are kept on disk. Expired episodes stay in the feed and are fetched from the source again if played. |
