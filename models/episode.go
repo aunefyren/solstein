@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// EpisodeState is where an episode is in the pipeline; see docs/design.md.
+// EpisodeState is where an episode is in the pipeline; see docs/episodes.md.
 type EpisodeState string
 
 const (

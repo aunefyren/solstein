@@ -62,7 +62,7 @@ func (store *Store) GetEpisode(ctx context.Context, feedID, episodeID uuid.UUID)
 
 // ListEpisodes returns a feed's episodes, oldest publish date first; episodes
 // without a publish date come last. That is the order they must be published
-// in (see docs/design.md, Publish policy).
+// in (see docs/feeds.md, Publish rules).
 func (store *Store) ListEpisodes(ctx context.Context, feedID uuid.UUID) ([]models.Episode, error) {
 	var episodes []models.Episode
 	err := store.withContext(ctx).

@@ -1,0 +1,81 @@
+# Episodes
+
+The `episodes` package prepares and serves episode audio: the download pipeline, running a processor, the cache, serving, and housekeeping.
+
+## Delivery modes
+
+How audio reaches the client when no processor handles the episode. Global `delivery_mode`, per-feed override:
+
+| Mode | Behaviour | Trade-offs |
+|---|---|---|
+| `cache` (default) | New episodes are downloaded at poll time through the feed's exit and served from disk | Exact `length` in the feed, full `Range` support, one consistent file however often it is requested; uses disk, and downloads even if nobody plays it |
+| `stream` | Fetched from the source through the feed's exit at request time and passed through, `Range` forwarded | No disk; the feed's `length` is the source's claim; with dynamic ads each (range) request may be stitched differently, which could break seeking in clients that use `Range` (ABS doesn't); a slow source hits the client, and ABS gives up after 30 s |
+| `original` | The enclosure keeps pointing at the source; only the feed is proxied | Costs nothing; the audio bypasses Solstein and its exits, so the client's own address and region pick the ads |
+
+A processor always produces a file, so an episode of a processed feed is served from the cache whatever the mode; the mode then only applies when processing has failed and the policy publishes it unprocessed.
+
+## Episode states
+
+```
+discovered → acquiring → ready
+     ↑           ↓
+     └─ retry ───┤
+                 ↓
+               failed (published unprocessed, or withheld)
+```
+
+- **discovered:** waiting for a worker, possibly until a retry time (`next_attempt_at`).
+- **acquiring:** a worker (or a request) is downloading or processing it.
+- **ready:** published and served; `cache_file` is set unless the episode is served by streaming or its copy has expired.
+- **failed:** given up on. Published and served unprocessed, unless `withheld`.
+- Backlog episodes start **ready** without a file (or **discovered** when queued for processing up front).
+- A processor's result is recorded on the episode: `process_note` (e.g. "removed 4m15s of ads in 4 breaks, comparing norway with sweden", or "no dynamic ads found") and `cache_seconds` (the processed duration). `source_seconds` holds the source's stated `itunes:duration`.
+
+## The pipeline
+
+- **Two workers.** Each claims the oldest waiting episode (`ClaimNextEpisode`) in one database transaction, so no episode is prepared twice and older episodes go first, matching the publish-in-order rule. Waiting means discovered, retry time reached, and the feed in `cache` mode or handled by the processor.
+- Workers wake when a poll finds episodes, and otherwise check every 30 s for retries coming due.
+- **Downloads** go through the feed's exit into `cache/{feedID}/{episodeID}.{ext}` via a uniquely named `.part` file, renamed into place once complete, so a partial file is never served and two downloads never share a file. The extension comes from the source URL and content type.
+- A download is abandoned after **2 minutes without data** or **1 hour in total**, and capped at 2 GB.
+- **Checks:** a response that isn't audio (HTML, XML, JSON, text) is refused, so a host's error page served with status 200 is never cached as an episode. An empty or short body (less than `Content-Length`) is retried.
+- **A connection dropped before any response** (seen live through a VPN tunnel as a bare `EOF`) is retried once after 0.5 s within the same attempt.
+- **Retries** after 1 min, 5 min, 15 min, 1 h and 3 h. Permanent failures (4xx other than 408/429, blocked destination, not audio, unknown exit, a processor's `ErrPermanent`) and the sixth failure mark the episode **failed**.
+- **Recovery:** on start-up, episodes left acquiring are reset to discovered and leftover `.part` files removed. On shutdown, work in progress is abandoned and picked up again this way.
+
+Checked against Acast's CDN (`sphinx.acast.com`): a new episode was found by the poller, 20.5 MB downloaded in about a second as a valid MP3, and the served feed listed it with its real byte length.
+
+## Processors in the pipeline
+
+For a feed the processor handles (see [`architecture.md`](architecture.md) for the interface):
+- Its new episodes are claimed whatever the feed's delivery mode, and the processor runs instead of the plain download. Its downloads (`Job.Fetch`) go through the same checks as the pipeline's own, into memory, at most 512 MB each.
+- The output is cached like a download (`.part`, then renamed), with its duration.
+- The episode is published once processed ([`feeds.md`](feeds.md)). A retryable failure holds the feed like a pending download. After the last retry, or at once for a permanent error, the episode is failed: published unprocessed (`HideOnFailure` false), or **withheld**: left out of the feed and answered `404`.
+
+### Processing on request
+
+An episode of a processed feed can be requested before it has its processed file: a backlog episode, one whose processed copy has expired from the cache, or one still waiting for its turn or retry (e.g. published by the never-empty rule). Serving the version with ads would defeat the processor, so:
+- The request goes to `Pipeline.Prepare`, which processes the episode in the background under the pipeline's lifetime. The request waits up to **20 s** (`ProcessingWait`), then gets the processed file from the cache, `Range` included.
+- If that takes longer, the client gets **`503` with `Retry-After: 30`** while processing carries on, and the next request gets the file. This is the one case where a client waits on processing; it is bounded, well inside ABS's 30 s.
+- **One job per episode:** workers and on-request work register the episodes they are preparing; a request joins a running job instead of starting another. A waiting episode is claimed in the database first (`ClaimEpisode`, ignoring its retry time), so a worker can't take it too. A worker that has claimed it but not yet registered gives `503`.
+- **Outcomes:** success caches the file (the episode stays ready, or becomes ready). A permanent failure applies the failure policy: publish (stream the source; in cache mode the stream is cached, and from then on that version is served) or withhold (`404`). A retryable failure answers `503` and leaves a published episode as it is; the next request tries again. Published episodes get no retry schedule, since clients don't re-request on their own.
+- **Lifetime:** `Pipeline.Run` returns only after on-request work has stopped, so the database is never closed under it, and refuses new work (`ErrBusy`) once stopping. A cancelled job records nothing.
+
+## Serving
+
+`GET`/`HEAD /api/episodes/{feedID}/{episodeID}.{ext}?sig=…`, the signature checked over that exact path ([`security.md`](security.md)):
+- **Withheld:** `404`.
+- **Cached:** served from disk with `http.ServeContent` (`Range`, `If-Range`, conditional requests, `HEAD`). A cached file that has gone missing is forgotten and the episode handled as uncached.
+- **Processed feed, not failed:** processed on request (above).
+- **`original` mode:** `302` to the source.
+- **Otherwise streamed** from the source through the feed's exit. `Range` is forwarded; only `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Ranges` and `Last-Modified` are passed back (no cookies or tracking headers). A source error or non-audio response becomes `502` before anything is sent.
+- **Tee into the cache:** in cache mode, a full (non-`Range`) `GET` of an episode the pipeline won't download is written to the cache while it streams: backlog, failed, or ready but uncached — for a processed feed, failed ones only, so the unprocessed version can never take a processed file's place. The source request then runs on its own context, so the download completes even if the listener leaves, and the next play comes from disk. One tee per episode at a time; a second listener meanwhile gets a plain stream. A failed episode cached this way becomes ready.
+
+Checked against Acast's CDN: a backlog episode (21.5 MB) streamed and cached in 0.9 s, the second play came from the cache, and a `Range` request returned `206`.
+
+## Housekeeping
+
+An hourly sweep, and once at start-up:
+- **Retention:** cache copies older than `cache_retention_days` (default 14, by `cached_at`) are deleted and the episode's cache fields cleared. The episode stays published; a later play streams and re-caches it, or, for a processed feed, processes it again. A file that can't be deleted (e.g. being served, on Windows) is left for the next sweep rather than forgotten.
+- **Strays:** files no episode refers to — a deleted feed's audio, abandoned `.part` files — are removed, then empty feed directories. Files younger than 70 minutes (the longest a download can run, plus a margin) are left alone, so a finished download not yet recorded is never removed.
+
+Deleting a feed through the API removes its cache directory at once.

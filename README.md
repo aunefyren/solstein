@@ -9,7 +9,7 @@ A self-hosted podcast RSS proxy that sits between podcast hosts and Audiobookshe
 
 The name comes from the Viking sunstone (Iceland spar), which shows everything twice through double refraction.
 
-> **Status:** early development. The core proxy works: subscribing, rewritten feeds, background polling, caching new episodes, serving audio (from the cache with range support, or streamed from the source) and cache clean-up. VPN exits work with any WireGuard VPN through `.conf` files, and with Proton VPN from its server list. Ad removal (region diff) works on Acast shows, checked end to end with Audiobookshelf. See `docs/design.md`.
+> **Status:** early development. The core proxy works: subscribing, rewritten feeds, background polling, caching new episodes, serving audio (from the cache with range support, or streamed from the source) and cache clean-up. VPN exits work with any WireGuard VPN through `.conf` files, and with Proton VPN from its server list. Ad removal (region diff) works on Acast shows, checked end to end with Audiobookshelf. How it all works: [`docs/`](docs/README.md); what is planned: [`docs/wip.md`](docs/wip.md).
 
 ## Running
 
@@ -181,7 +181,7 @@ The container starts as root only to fix ownership of `/app/config`, then drops 
 
 ## Development
 
-See `docs/development.md`.
+See `docs/development.md`, and [`docs/README.md`](docs/README.md) for how Solstein works.
 
 ## Licence
 

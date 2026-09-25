@@ -63,7 +63,7 @@ func (regionDiff *RegionDiff) applyDefaults() {
 // validate normalises the block and rejects values region diff can't run
 // with. The exits are only trimmed: whether they exist and form a usable
 // pair is checked by the module at start-up, which stays off with a warning
-// rather than stopping Solstein (see docs/design.md).
+// rather than stopping Solstein (see docs/region-diff.md).
 func (regionDiff *RegionDiff) validate() error {
 	regionDiff.Exits = trimNames(regionDiff.Exits)
 	regionDiff.FallbackExits = trimNames(regionDiff.FallbackExits)

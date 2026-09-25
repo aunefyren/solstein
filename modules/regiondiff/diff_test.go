@@ -156,7 +156,7 @@ func TestDiffHomeWithoutAds(t *testing.T) {
 
 func TestDiffSameAdInBothRegionsStays(t *testing.T) {
 	// A campaign running in both markets can't be told from the show: the
-	// known limit (docs/design.md), which a third region may resolve.
+	// known limit (docs/region-diff.md), which a third region may resolve.
 	campaign := audio(100, 50)
 	home := join(tag("h"), campaign, show1, audio(80, 12), show2)
 	other := join(tag("o"), campaign, show1, audio(90, 22), show2)

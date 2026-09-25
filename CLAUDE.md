@@ -11,9 +11,18 @@ Solstein — a self-hosted Go podcast RSS proxy that sits between podcast hosts 
 
 The name is the Viking sunstone (Iceland spar), which shows everything twice through double refraction — a nod to the region-diff module. Licence: GPL-3.0.
 
-**Status: core proxy, exits (VPN) and region diff built and checked live.** The core (feeds, episodes, serving, auth, housekeeping) and the exits module are complete — see **Core build order** and **Exits build order** in `docs/design.md`. Region diff's design is agreed and it is built in the order under **Region diff build order** (all six steps done, checked live with Acast and ABS). Known issues and unscheduled ideas go in `docs/wip.md`.
+**Status: core proxy, exits (VPN) and region diff are built and checked live** against Acast and Audiobookshelf.
 
-Never open, print or copy secret files (such as the maintainer's Proton key env file); refer to them only by path (`docker --env-file`) or through `env:` / `file:` references. The working design lives in `docs/design.md` — read it at the start of every session and keep it current as decisions are made; record open questions there rather than silently picking an answer.
+## Documentation
+
+`docs/` describes Solstein as built, one document per service or module; [`docs/README.md`](docs/README.md) is the index. `docs/wip.md` holds everything not finished.
+
+- **At the start of every session, read `docs/wip.md`**, and the documents for the areas you will touch.
+- **Add to `docs/wip.md` as you go:** issues, gaps, open questions, ideas and trade-offs, as soon as they are discovered or discussed. Record open questions there rather than silently picking an answer.
+- **When a WIP item is resolved** (built, decided, answered or dropped), remove it from `wip.md` and record the outcome in the document for that area. `wip.md` never holds finished items, and the other documents never hold unfinished ones.
+- Keep the documents current with the code: a change in behaviour updates the document that describes it in the same piece of work.
+
+Never open, print or copy secret files (such as the maintainer's Proton key env file); refer to them only by path (`docker --env-file`) or through `env:` / `file:` references.
 
 Never run `git` commands that change state (commit, push, branch, reset, etc.) — git is managed by the maintainer.
 
@@ -34,7 +43,7 @@ Run locally with `go run .` (serves on :8080, config directory `./config`); `go 
 ## Architectural constraints already decided
 
 - The RSS proxy is the core; exits and region diff are modules. The core must build, run and be useful with every module disabled, and must not import module packages directly — modules plug in through interfaces the core defines. A disabled module costs nothing at runtime (no tunnels opened, no server list fetched).
-- WireGuard runs in-process via `golang.zx2c4.com/wireguard` + `tun/netstack` — no gluetun sidecar, no `NET_ADMIN`, no `network_mode` coupling. Each exit gets its own `http.Transport` using the netstack `DialContext`; exits run concurrently; a `direct` exit (no tunnel) also exists.
+- WireGuard runs in-process via `golang.zx2c4.com/wireguard` + `tun/netstack` — no gluetun sidecar, no `NET_ADMIN`, no `network_mode` coupling. Modules supply dialers and the core (`outbound`) builds every HTTP client on them, so the outbound safeguards apply to every exit; exits run concurrently; a `direct` exit (no tunnel) also exists.
 - New episodes are processed when feeds are polled, and published only once processed, so Audiobookshelf never waits on diffing. The one exception (agreed): an episode without its processed file (backlog, or expired from the cache) is processed on its first request, with a bounded wait (20 s, then `503` + `Retry-After`).
 - Cleaned episodes are served from a cache with correct `Content-Length` and HTTP range support; the rewritten feed carries the updated enclosure `length` and duration.
 - Any WireGuard VPN is supported (generic provider from wg-quick `.conf` files); Proton is a convenience provider fed by the MIT-licensed `github.com/qdm12/gluetun-servers` data (keep attribution). VPN configuration lives in `config.json`, not flags/env.

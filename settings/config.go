@@ -32,7 +32,7 @@ const (
 	defaultCacheRetentionDays = 14
 )
 
-// DeliveryModes are the valid values for delivery_mode; see docs/design.md.
+// DeliveryModes are the valid values for delivery_mode; see docs/episodes.md.
 var DeliveryModes = []string{"cache", "stream", "original"}
 
 // Config is the persisted configuration in config.json. Module settings get

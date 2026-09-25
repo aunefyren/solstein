@@ -15,7 +15,7 @@ import (
 // published strictly in order: one still pending holds back every newer one.
 // ABS only picks up episodes newer than the newest it already has, so
 // publishing Tuesday's episode before Monday's would make it skip Monday's for
-// good (see docs/design.md, Client compatibility).
+// good (see docs/clients.md).
 //
 // Backlog episodes (there when the feed was added) are always published;
 // they are fetched (or processed) on demand. Failed episodes are published too, and served

@@ -9,7 +9,7 @@ type VPN struct {
 }
 
 // VPNProvider is a pool of WireGuard servers and the credentials to reach
-// them. Which fields apply depends on Type; see docs/design.md.
+// them. Which fields apply depends on Type; see docs/exits.md.
 type VPNProvider struct {
 	// Type is "wireguard" (servers from wg-quick .conf files) or "protonvpn"
 	// (servers from the published Proton server list).

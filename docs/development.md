@@ -1,8 +1,6 @@
 # Development
 
-How to write code in Solstein: layout, conventions, dependencies, build, test and release. Architecture and product decisions live in `docs/design.md`; this file covers *how* to build it. Much of it is borrowed from Pønskelisten (`github.com/aunefyren/poenskelisten`) so the two projects feel the same to work on.
-
-Anything marked **(proposed)** has not been agreed yet. Confirm it, or move it to `docs/design.md` as an open question, before relying on it.
+How to write code in Solstein: layout, conventions, dependencies, build, test and release. What Solstein does and why is in the other documents in `docs/` (index: [`README.md`](README.md)); open questions and planned work are in [`wip.md`](wip.md). Much of this is borrowed from Pønskelisten (`github.com/aunefyren/poenskelisten`) so the two projects feel the same to work on.
 
 ## Toolchain
 
@@ -14,35 +12,29 @@ Anything marked **(proposed)** has not been agreed yet. Confirm it, or move it t
 
 ```
 main.go            wiring only: resolve config, init logger, build core, register enabled modules, run server
-settings/          Config struct, config.json load/save, flag + env overrides      (exists)
-logger/            logrus wrapper, logger.Log                                      (exists)
-server/            Gin router, access checks, feed routes, feed API               (exists)
-models/            persisted records (Base with UUID ID, Feed, Episode) and their GORM mapping (exists)
-feeds/             core: polling, parsing, rewriting feeds
-episodes/          core: download pipeline, cache, serving audio (cache, stream, tee)  (exists)
-database/          SQLite via GORM: Store with named query functions, one file per model   (exists)
-rss/               feed parsing and byte-preserving rewriting; no Solstein dependencies   (exists)
-feeds/             core: source URLs, subscribe, refresh, render (publish rules, signed URLs)   (exists)
-signing/           HMAC signatures for feed and episode URLs                               (exists)
-outbound/          core: exit Manager, direct exit, guarded dialling (private-address block) (exists)
-modules/exits/     module: config, .conf parsing, netstack tunnels, pool, geography, selection, health, Setup, Proton provider (exists)
-modules/exits/wireguard/  generic provider: servers from wg-quick .conf files
-modules/exits/proton/     server-list provider for Proton VPN (gluetun-servers data)
-modules/regiondiff/     module: frame diff and cutting, and the episode processor (dual download, fallbacks) (exists)
-mp3/               MP3 frame reader (tags, info frames, headers, main_data_begin), fuzzed; no Solstein dependencies (exists)
-utilities/         small shared helpers
-docs/              design.md (decisions, build orders), development.md (this file), wip.md (known issues and unscheduled ideas)
-config/            default local config directory (config.json, database, log, cache); gitignored. /app/config in Docker
-Dockerfile, entrypoint.sh, .github/workflows/   packaging and CI                  (exists)
+settings/          Config struct, config.json load/save, flag + env overrides, secret references
+logger/            logrus wrapper, logger.Log
+server/            Gin router, access checks, prefix feed route, feed API, episode route
+models/            persisted records (Base with UUID ID, Feed, Episode, FeedDocument) and their GORM mapping
+database/          SQLite via GORM: Store with named query functions, one file per model
+feeds/             core: source URLs, subscribe, refresh, poller, render (publish rules, signed URLs)
+episodes/          core: download pipeline, processor hook, cache, serving audio (cache, stream, tee), housekeeping
+outbound/          core: exit Manager, direct exit, guarded dialling (private-address block)
+rss/               feed parsing and byte-preserving rewriting; no Solstein dependencies
+signing/           HMAC signatures for feed and episode URLs
+mp3/               MP3 frame reader (tags, info frames, headers, main_data_begin), fuzzed; no Solstein dependencies
+modules/exits/     module: config, .conf parsing, netstack tunnels, pool, geography, selection, health, Proton provider, Setup
+modules/regiondiff/  module: frame diff and cutting, the episode processor (dual download, fallbacks), Setup
+docs/              what Solstein does (one document per service or module), development.md, wip.md
+config/            default local config directory (config.json, database, log, cache, live-test downloads); gitignored. /app/config in Docker
+Dockerfile, entrypoint.sh, .github/workflows/   packaging and CI
 ```
-
-Packages marked "exists" are in the skeleton; the rest are the planned layout.
 
 ### Layering rules
 
 - Dependencies flow one way: `main.go` → `server` → core (`feeds`, `episodes`) → `database` → `models`. Handlers never talk to the database directly.
-- **The core never imports anything under `modules/`.** The core defines the interfaces it needs (for example an exit provider that hands out an `*http.Client` for a named exit, and an episode processor hook). Modules implement them, and `main.go` wires the enabled ones in based on config.
-- Modules may import the core and each other only along declared dependencies (`regiondiff` → `exits`, never the reverse).
+- **The core never imports anything under `modules/`.** The core defines the interfaces it needs (`outbound.Provider`/`Dialer` for exits, `episodes.Processor` for processors; see `architecture.md`). Modules implement them, and `main.go` wires the enabled ones in based on config.
+- Modules may import the core (`regiondiff` uses `episodes`, `outbound`, `settings`, `models`, `mp3`), but not each other: region diff reaches the VPN exits only by name, through `outbound`.
 - A disabled module is never constructed: no goroutines, no tunnels, no network calls.
 - Low-level packages with no Solstein knowledge (`mp3`) import nothing from the rest of the repo, so they can be tested and reasoned about in isolation.
 - Every package has a package doc comment on one file explaining its role.
@@ -55,17 +47,16 @@ Keep the list short; every new dependency needs a reason.
 |---|---|---|
 | HTTP router | `github.com/gin-gonic/gin` | In use |
 | Logging | `github.com/sirupsen/logrus` + `github.com/t-tomalak/logrus-easy-formatter` | In use |
-| WireGuard | `golang.zx2c4.com/wireguard` incl. `tun/netstack` | Agreed |
-| WireGuard (in use) | `golang.zx2c4.com/wireguard` `device` + `tun/netstack` (pulls in gVisor's network stack); `golang.org/x/crypto/curve25519` for public keys | In use |
+| WireGuard | `golang.zx2c4.com/wireguard` `device` + `tun/netstack` (pulls in gVisor's network stack); `golang.org/x/crypto/curve25519` for public keys | In use |
 | VPN server lists | Proton's list from `qdm12/gluetun-servers` (MIT), embedded as a gzip file in `modules/exits/data/` (not the Go module); refreshed at runtime. How to update the snapshot: `modules/exits/data/README.md` | In use |
 | Database | `gorm.io/gorm` + `gorm.io/driver/sqlite` on the CGO-free `modernc.org/sqlite` connection, as Pønskelisten | In use |
 | IDs | `github.com/google/uuid` | In use |
 | Feed rewriting | Own `rss` package on `encoding/xml` `RawToken` + byte offsets; `golang.org/x/text/encoding/charmap` for Latin-1/Windows-1252 feeds | In use |
-| MP3 frames | Own `mp3` package | Proposed |
+| MP3 frames | Own `mp3` package | In use |
 
 Notes:
 - **Feed rewriting:** the proxied feed must keep every element and namespace the source had (`itunes:`, `podcast:`, `acast:` …). Unmarshalling into structs drops what we didn't model, and `encoding/xml`'s encoder rewrites namespace prefixes — which breaks ABS, since it looks elements up by literal prefix (`itunes:new-feed-url`). So `rss` copies the **original bytes** through and splices in only the changed values (enclosure `url`/`length`, `media:content`/`podcast:source` URLs, `itunes:duration`, self-links), using the decoder's byte offsets. A rewrite with no changes is byte-identical to the input; a test enforces it. Elements are matched by namespace URI, not prefix. Non-UTF-8 feeds (ISO-8859-1/15, Windows-1252) are converted to UTF-8 first and the declaration updated.
-- **MP3:** frame parsing (sync word, header, frame length, Xing/LAME/ID3 handling) is small enough to own, and the diff engine needs exact byte-level control. Evaluate an existing library only if we end up needing decoding for audio-level alignment.
+- **MP3:** frame parsing (sync word, header, frame length, Xing/LAME/ID3 handling) is small enough to own, and the diff needs exact byte-level control. An existing library would only be worth it if audio-level (decoded) alignment were ever needed.
 - Run `go mod tidy` after adding or removing imports; commit `go.sum`.
 
 ## Code conventions
@@ -248,5 +239,7 @@ Secrets and variables:
 
 ## Working notes
 
-- `docs/wip.md` tracks known bugs, deliberate gaps and unscheduled roadmap ideas. Check it before assuming behaviour is intended, and remove entries once fixed.
+- Read `docs/wip.md` at the start of a session: it holds every known issue, gap, open question and planned item. Check it before assuming behaviour is intended.
+- Add issues, ideas and questions to `wip.md` as soon as they come up. When one is resolved, remove it there and record the outcome in the document for that area; see the rules at the top of `wip.md`.
+- Keep the documents in `docs/` in step with the code: a change in behaviour updates the document that describes it in the same piece of work.
 - Git is managed by the maintainer; don't commit, push or branch.

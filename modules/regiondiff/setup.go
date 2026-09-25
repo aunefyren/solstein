@@ -13,7 +13,7 @@ import (
 // Setup builds the processor from config.json's region_diff block, given
 // the exits that exist. It returns nil when region diff is off: not set up,
 // or unable to run. A module that can't run doesn't stop Solstein (see
-// docs/design.md): the warnings say why it is off, or which fallback exits
+// docs/architecture.md): the warnings say why it is off, or which fallback exits
 // were dropped.
 func Setup(config settings.RegionDiff, available []string) (*Processor, []string) {
 	if len(config.Exits) == 0 {

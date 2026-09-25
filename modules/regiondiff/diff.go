@@ -44,7 +44,7 @@ type Options struct {
 	DurationTolerance float64
 }
 
-// DefaultOptions are the decided defaults (see docs/design.md).
+// DefaultOptions are the decided defaults (see docs/region-diff.md).
 func DefaultOptions() Options {
 	return Options{MinShared: 2 * time.Second, MaxRemovedShare: 0.3, DurationTolerance: 0.05}
 }
