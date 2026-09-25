@@ -138,9 +138,11 @@ func (server *Server) Serve(writer http.ResponseWriter, request *http.Request, f
 
 	// For a processed feed, only a failed episode (published unprocessed) is
 	// cached this way: anything else would put the unprocessed version where
-	// the processed one belongs.
-	teeable := episode.State == models.EpisodeFailed ||
-		(!server.feeds.Processed(feed) && (episode.Backlog || episode.State == models.EpisodeReady))
+	// the processed one belongs. Nor is an episode being prepared (a failed
+	// one's late retry): this stream's outcome would overwrite that one's.
+	teeable := (episode.State == models.EpisodeFailed ||
+		(!server.feeds.Processed(feed) && (episode.Backlog || episode.State == models.EpisodeReady))) &&
+		(server.pipeline == nil || !server.pipeline.preparing(episode.ID))
 	tee := mode == "cache" && request.Method == http.MethodGet && request.Header.Get("Range") == "" &&
 		teeable && server.startTee(episode.ID)
 	if tee {
@@ -251,6 +253,24 @@ func (server *Server) FeedChanged(ctx context.Context, feedID uuid.UUID) error {
 		return nil
 	}
 	return server.pipeline.Reconcile(ctx, feedID)
+}
+
+// RetryFailed queues a feed's failed episodes for another attempt (see
+// Pipeline.RetryFailed).
+func (server *Server) RetryFailed(ctx context.Context, feedID uuid.UUID) (int, error) {
+	if server.pipeline == nil {
+		return 0, ErrNotPrepared
+	}
+	return server.pipeline.RetryFailed(ctx, feedID)
+}
+
+// Queue queues a feed's newest episodes without their file to be prepared
+// ahead (see Pipeline.Queue).
+func (server *Server) Queue(ctx context.Context, feedID uuid.UUID, newest int) (int, error) {
+	if server.pipeline == nil {
+		return 0, ErrNotPrepared
+	}
+	return server.pipeline.Queue(ctx, feedID, newest)
 }
 
 // RemoveFeed deletes a deleted feed's cached audio at once, instead of

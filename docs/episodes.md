@@ -27,9 +27,10 @@ discovered → acquiring → ready
 - **discovered:** waiting for a worker, possibly until a retry time (`next_attempt_at`).
 - **acquiring:** a worker (or a request) is downloading or processing it.
 - **ready:** published and served; `cache_file` is set unless the episode is served by streaming or its copy has expired.
-- **failed:** given up on. Published and served unprocessed, unless `withheld`.
+- **failed:** given up on. Published and served unprocessed, unless `withheld`. A withheld episode is still tried again now and then in the background (below).
 - Backlog episodes start **ready** without a file (or **discovered** when queued for processing up front).
 - `prepared_with` records the settings the episode's file was made with (below).
+- `next_attempt_at` on a ready or failed episode means it is queued for the background (below); `late_retries` counts those attempts since it failed.
 - A processor's result is recorded on the episode: `process_note` (e.g. "removed 4m15s of ads in 4 breaks, comparing norway with sweden", or "no dynamic ads found") and `cache_seconds` (the processed duration). `source_seconds` holds the source's stated `itunes:duration`.
 
 ## The pipeline
@@ -61,11 +62,24 @@ An episode of a processed feed can be requested before it has its processed file
 - **Outcomes:** success caches the file (the episode stays ready, or becomes ready). A permanent failure applies the failure policy: publish (stream the source; in cache mode the stream is cached, and from then on that version is served) or withhold (`404`). A retryable failure answers `503` and leaves a published episode as it is; the next request tries again, asking for fresh copies. Published episodes get no retry schedule, since clients don't re-request on their own — so after **three failed attempts in a row** the failure policy applies, as if the failure were permanent. Without that limit, an episode that fails the same way every time would never be served. A settings change resets the count.
 - **Lifetime:** `Pipeline.Run` returns only after on-request work has stopped, so the database is never closed under it, and refuses new work (`ErrBusy`) once stopping. A cancelled job records nothing.
 
+## Background queue
+
+Episodes that are already published (or withheld) can be queued for an attempt in the background, without changing their state: they stay in the feed as they are meanwhile, and nothing holds newer episodes back. What queues them:
+- **Withheld episodes are retried slowly:** after **1 hour**, **6 hours**, then **daily for about a week** (8 attempts), with fresh downloads. Without it, a passing problem at the host could hide an episode for good: a backlog episode requested by ABS is withheld after three failures that can all fall within a minute. After the last attempt it stays withheld until a retry through the API or a change of settings. Episodes withheld before this existed get their first retry at the next start-up.
+- **`POST /api/v1/feeds/{id}/retry`** queues every failed episode of the feed, withheld or published unprocessed, e.g. after a fix. A withheld one that fails again starts the slow retries afresh; one published unprocessed stays as it was.
+- **`POST /api/v1/feeds/{id}/prepare`** (optionally `{"newest": n}`) queues the feed's newest episodes that are published without their file — backlog, or expired from the cache — to be downloaded or processed before any client asks. One that fails is left for its next request, counting as one of its three attempts. `region_diff.backlog` does this once, at subscription; this does it for a feed already added, or after its files were cleared.
+
+How it runs:
+- The workers take queued episodes only when no new episode is waiting, so new episodes still go out first. Two at a time, which also keeps a large backlog from bursting downloads at the host. Queued at the same time, the newest goes first: there is no publish order to keep, and listeners start from the newest.
+- **Claiming** moves the episode's `next_attempt_at` on by 3 hours in the same transaction (`ClaimQueuedEpisode`), so no two workers take it; if the attempt never records an outcome (a crash), it simply comes due again then. Queueing only writes the queueing fields of episodes still in the right state, so it can't overwrite one prepared meanwhile.
+- **One job per episode**, as for work on request: a request for a queued episode being prepared joins that job; a worker that finds a request's job already running leaves it to that. While it runs, a stream of the episode isn't written to the cache, and settings checks leave it alone until it is done.
+- On success the episode is ready (a withheld one is published; being new to clients, it is dated when first served, so ABS picks it up). A processed file replaces an unprocessed one kept from the failure policy.
+
 ## Settings changes
 
 Each episode records `prepared_with`: a description of the settings its file was made with — the processor's recipe (for region diff: the exits, fallbacks, diff settings, `trim_break_markers` and an algorithm version), or `download through <exit>` for a plain download; a failed episode records the settings it failed under and what the failure policy did with it. `Pipeline.Reconcile` compares that with the feed's settings now, at start-up (for every feed, since `config.json` may have changed), right after a feed is changed through the API, and for each episode as it is served:
 - **A cached file made with other settings is deleted:** another exit, `delivery_mode` changed, region diff switched on or off, other region-diff settings, a new diff algorithm. The episode stays published; the next request prepares it again the current way — processed on request, re-downloaded while streaming, or just streamed.
-- **A failed episode whose settings or failure policy changed gets a fresh start:** withheld or not, it is retried from the first attempt — by the pipeline, or, for backlog, on request.
+- **A failed episode whose settings or failure policy changed gets a fresh start** (its late retries too): withheld or not, it is retried from the first attempt — by the pipeline, or, for backlog, on request.
 - Episodes being prepared are left alone; a file they record with the old settings is caught when it is served.
 - Episodes from before settings were recorded are taken to match the current ones, except a processed feed's cached file with no processor's note, which wasn't processed: it is cleared, so switching region diff on for a feed cleans its cached episodes too.
 - Not recorded, so changing them clears nothing: `poll_interval_minutes`, `cache_retention_days`, `region_diff.backlog`.

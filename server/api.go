@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"aunefyren/solstein/database"
+	"aunefyren/solstein/episodes"
 	"aunefyren/solstein/feeds"
 	"aunefyren/solstein/logger"
 	"aunefyren/solstein/models"
@@ -173,6 +174,70 @@ func (handlers *handlers) apiDeleteFeed(context *gin.Context) {
 	}
 	logger.Log.Info("Deleted feed '" + feed.Title + "'.")
 	context.Status(http.StatusNoContent)
+}
+
+// apiRetryFailed queues the feed's failed episodes, withheld or published
+// unprocessed, for another attempt in the background.
+func (handlers *handlers) apiRetryFailed(context *gin.Context) {
+	feed, ok := handlers.loadFeed(context)
+	if !ok {
+		return
+	}
+	queued, err := 0, episodes.ErrNotPrepared
+	if handlers.episodes != nil {
+		queued, err = handlers.episodes.RetryFailed(context.Request.Context(), feed.ID)
+	}
+	handlers.queued(context, feed, queued, err)
+}
+
+type prepareRequest struct {
+	// Newest limits it to the feed's newest episodes; zero means all.
+	Newest int `json:"newest"`
+}
+
+// apiPrepare queues the feed's newest episodes that are published without
+// their file (backlog, or expired from the cache) to be prepared in the
+// background, before any client asks for them.
+func (handlers *handlers) apiPrepare(context *gin.Context) {
+	var request prepareRequest
+	// The body is optional: none prepares every episode.
+	if context.Request.ContentLength != 0 {
+		if err := context.ShouldBindJSON(&request); err != nil {
+			context.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body: " + err.Error()})
+			context.Abort()
+			return
+		}
+	}
+	if request.Newest < 0 {
+		context.JSON(http.StatusBadRequest, gin.H{"error": "newest can't be negative."})
+		context.Abort()
+		return
+	}
+	feed, ok := handlers.loadFeed(context)
+	if !ok {
+		return
+	}
+	queued, err := 0, episodes.ErrNotPrepared
+	if handlers.episodes != nil {
+		queued, err = handlers.episodes.Queue(context.Request.Context(), feed.ID, request.Newest)
+	}
+	handlers.queued(context, feed, queued, err)
+}
+
+// queued answers a request that queued episodes.
+func (handlers *handlers) queued(context *gin.Context, feed models.Feed, queued int, err error) {
+	if errors.Is(err, episodes.ErrNotPrepared) {
+		context.JSON(http.StatusBadRequest, gin.H{"error": "The feed's episodes aren't prepared by Solstein (stream or original mode, without region diff), so there is nothing to queue."})
+		context.Abort()
+		return
+	}
+	if err != nil {
+		logger.Log.Error("Failed to queue episodes of feed '" + feed.Title + "'. Error: " + err.Error())
+		context.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to queue episodes."})
+		context.Abort()
+		return
+	}
+	context.JSON(http.StatusOK, gin.H{"queued": queued})
 }
 
 // loadFeed reads the :feedID parameter and loads the feed, responding with

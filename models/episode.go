@@ -44,9 +44,16 @@ type Episode struct {
 	// FailedAttempts counts failures since the last success. It limits how
 	// often an episode already published is retried on request, and makes
 	// retries ask the source for a fresh copy.
-	FailedAttempts int        `json:"failed_attempts"`
-	NextAttemptAt  *time.Time `json:"next_attempt_at"`
-	LastError      string     `json:"last_error"`
+	FailedAttempts int `json:"failed_attempts"`
+	// NextAttemptAt is when a waiting episode is tried again. On a failed
+	// or published episode, it means the episode is queued for a
+	// background attempt: a withheld episode's slow retries, a manual
+	// retry, or preparing ahead (see episodes.Pipeline.Queue).
+	NextAttemptAt *time.Time `json:"next_attempt_at"`
+	// LateRetries counts the background attempts made since the episode
+	// failed; it limits a withheld episode's slow retries.
+	LateRetries int    `json:"late_retries"`
+	LastError   string `json:"last_error"`
 	// Withheld marks a failed episode the processor's failure policy keeps
 	// out of the feed, rather than publishing it unprocessed.
 	Withheld bool `json:"withheld"`

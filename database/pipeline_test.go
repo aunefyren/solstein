@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -188,5 +189,88 @@ func TestClaimEpisode(t *testing.T) {
 	}
 	if _, err := store.ClaimEpisode(ctx, ready.ID, now); !errors.Is(err, ErrNoWork) {
 		t.Errorf("ready episode: err = %v, want ErrNoWork", err)
+	}
+}
+
+func TestClaimQueuedEpisode(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	feed := createTestFeed(t, store, "https://example.com/feed")
+
+	monday, tuesday, later := now.Add(-48*time.Hour), now.Add(-24*time.Hour), now.Add(time.Hour)
+	add := func(guid string, state models.EpisodeState, published, next *time.Time, cacheFile string) models.Episode {
+		episode := models.Episode{FeedID: feed.ID, GUID: guid, SourceURL: "x", State: state, PublishedAt: published, NextAttemptAt: next, CacheFile: cacheFile}
+		if err := store.CreateEpisode(ctx, &episode); err != nil {
+			t.Fatal(err)
+		}
+		return episode
+	}
+	add("waiting", models.EpisodeDiscovered, &monday, &now, "") // ClaimNextEpisode's
+	add("not queued", models.EpisodeFailed, &monday, nil, "")
+	add("cached", models.EpisodeReady, &monday, &now, "feed/cached.mp3")
+	add("not due", models.EpisodeFailed, &monday, &later, "")
+	add("old", models.EpisodeReady, &monday, &now, "")
+	add("new", models.EpisodeReady, &tuesday, &now, "")
+	add("failed", models.EpisodeFailed, &monday, &now, "")
+
+	// Queued at the same time: newest first.
+	lease := now.Add(3 * time.Hour)
+	var order []string
+	for {
+		claimed, err := store.ClaimQueuedEpisode(ctx, now, lease, "cache", nil)
+		if errors.Is(err, ErrNoWork) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if claimed.NextAttemptAt == nil || !claimed.NextAttemptAt.Equal(lease) {
+			t.Errorf("%s: next attempt %v, want the lease", claimed.GUID, claimed.NextAttemptAt)
+		}
+		order = append(order, claimed.GUID)
+	}
+	// Same date: the one added last first.
+	if !slices.Equal(order, []string{"new", "failed", "old"}) {
+		t.Fatalf("claimed %v", order)
+	}
+
+	// Claimed episodes keep their state, and come due again after the lease.
+	if claimed, err := store.ClaimQueuedEpisode(ctx, lease, lease.Add(time.Hour), "cache", nil); err != nil || claimed.State == models.EpisodeAcquiring {
+		t.Errorf("after the lease: %+v, %v", claimed, err)
+	}
+}
+
+func TestQueueEpisodes(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	feed := createTestFeed(t, store, "https://example.com/feed")
+	var ids []uuid.UUID
+	for _, episode := range []models.Episode{
+		{GUID: "failed", State: models.EpisodeFailed, LateRetries: 8},
+		{GUID: "uncached", State: models.EpisodeReady},
+		{GUID: "cached", State: models.EpisodeReady, CacheFile: "feed/cached.mp3"},
+		{GUID: "waiting", State: models.EpisodeDiscovered},
+	} {
+		episode.FeedID, episode.SourceURL = feed.ID, "x"
+		if err := store.CreateEpisode(ctx, &episode); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, episode.ID)
+	}
+
+	if queued, err := store.QueueFailedEpisodes(ctx, ids, now); err != nil || queued != 1 {
+		t.Errorf("failed: queued %d, %v", queued, err)
+	}
+	if queued, err := store.QueueUncachedEpisodes(ctx, ids, now); err != nil || queued != 1 {
+		t.Errorf("uncached: queued %d, %v", queued, err)
+	}
+	for i, guid := range []string{"failed", "uncached", "cached", "waiting"} {
+		stored, _ := store.GetEpisode(ctx, feed.ID, ids[i])
+		queued := stored.NextAttemptAt != nil
+		if queued != (i < 2) || stored.LateRetries != 0 {
+			t.Errorf("%s: next attempt %v, late retries %d", guid, stored.NextAttemptAt, stored.LateRetries)
+		}
 	}
 }

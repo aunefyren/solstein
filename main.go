@@ -18,6 +18,7 @@ import (
 	"aunefyren/solstein/episodes"
 	"aunefyren/solstein/feeds"
 	"aunefyren/solstein/logger"
+	"aunefyren/solstein/models"
 	"aunefyren/solstein/modules/exits"
 	"aunefyren/solstein/modules/regiondiff"
 	"aunefyren/solstein/outbound"
@@ -164,6 +165,9 @@ func run() int {
 
 	feedService := feeds.New(store, exitManager, feedOptions)
 	warnAboutFeedSettings(ctx, feedService, exitManager.Exits(), regionDiff != nil)
+	if regionDiff != nil {
+		warnAboutWithholding(ctx, feedService, cfg.RegionDiff.OnFailure == "hide", regionDiff.HideOnFailure)
+	}
 	if cfg.DisableAuth {
 		logger.Log.Warn("Auth is disabled: anyone who can reach Solstein can subscribe to feeds through it. Only use this on a private network.")
 	} else {
@@ -247,4 +251,35 @@ func warnAboutFeedSettings(ctx context.Context, feedService *feeds.Service, avai
 			}
 		}
 	}
+}
+
+// warnAboutWithholding says, when any feed's region-diff failure policy is
+// hide, that episodes which can't be cleaned are kept out of the feed, and
+// when and how they are tried again. Without it, an episode missing from a
+// feed looks like a bug.
+func warnAboutWithholding(ctx context.Context, feedService *feeds.Service, globalHide bool, hideOnFailure func(models.Feed) bool) {
+	list, err := feedService.List(ctx)
+	if err != nil {
+		logger.Log.Error("Failed to check feeds' failure policies. Error: " + err.Error())
+		return
+	}
+	var hiding []string
+	for _, feed := range list {
+		if feedService.Processed(feed) && hideOnFailure(feed) {
+			hiding = append(hiding, "'"+feed.Title+"'")
+		}
+	}
+	scope := ""
+	switch {
+	case globalHide && len(hiding) == len(list):
+		scope = "every feed"
+	case len(hiding) > 0:
+		scope = "feeds " + strings.Join(hiding, ", ")
+	case globalHide:
+		scope = "every feed region diff handles" // none does at the moment
+	default:
+		return
+	}
+	logger.Log.Warn("Region diff: for " + scope + ", episodes that can't be cleaned are kept out of the feed (on_failure: hide). " +
+		"They are tried again " + episodes.WithheldRetrySchedule + ", then stay out until POST /api/v1/feeds/<feed ID>/retry or a change of settings.")
 }

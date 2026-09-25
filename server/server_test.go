@@ -116,7 +116,8 @@ func newTestRouterWithDir(t *testing.T, modify func(cfg *settings.Config)) (*gin
 	if err != nil {
 		t.Fatal(err)
 	}
-	episodeServer := episodes.NewServer(store, exits, cache, service, nil, episodes.Options{})
+	pipeline := episodes.NewPipeline(store, exits, cache, episodes.Options{DefaultDeliveryMode: cfg.DeliveryMode})
+	episodeServer := episodes.NewServer(store, exits, cache, service, pipeline, episodes.Options{})
 	router, err := newRouter(Options{Config: cfg, Version: "v1.2.3", Feeds: service, Episodes: episodeServer})
 	if err != nil {
 		t.Fatal(err)
@@ -394,6 +395,50 @@ func TestFeedAPI(t *testing.T) {
 	}
 }
 
+func TestQueueAPI(t *testing.T) {
+	host := startPodcastHost(t)
+	router := newTestRouter(t, nil)
+	bearer := map[string]string{"Authorization": "Bearer " + testToken, "Content-Type": "application/json"}
+	recorder := do(router, http.MethodPost, "/api/v1/feeds", `{"source_url": "`+host.URL+`/feed"}`, bearer)
+	var feed struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &feed); err != nil || feed.ID == "" {
+		t.Fatalf("create: %d %s", recorder.Code, recorder.Body)
+	}
+	feedPath := "/api/v1/feeds/" + feed.ID
+
+	cases := []struct {
+		name, method, target, body string
+		status                     int
+		response                   string
+	}{
+		{"prepare all, no body", http.MethodPost, feedPath + "/prepare", "", http.StatusOK, `{"queued":1}`},
+		{"prepare newest", http.MethodPost, feedPath + "/prepare", `{"newest": 1}`, http.StatusOK, `{"queued":1}`},
+		{"prepare negative", http.MethodPost, feedPath + "/prepare", `{"newest": -1}`, http.StatusBadRequest, ""},
+		{"prepare bad body", http.MethodPost, feedPath + "/prepare", `[`, http.StatusBadRequest, ""},
+		{"retry, nothing failed", http.MethodPost, feedPath + "/retry", "", http.StatusOK, `{"queued":0}`},
+		{"unknown feed", http.MethodPost, "/api/v1/feeds/00000000-0000-0000-0000-000000000001/retry", "", http.StatusNotFound, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			recorder := do(router, c.method, c.target, c.body, bearer)
+			if recorder.Code != c.status || (c.response != "" && recorder.Body.String() != c.response) {
+				t.Errorf("%d %s", recorder.Code, recorder.Body)
+			}
+		})
+	}
+	if recorder := do(router, http.MethodPost, feedPath+"/retry", "", nil); recorder.Code != http.StatusUnauthorized {
+		t.Errorf("without token: %d", recorder.Code)
+	}
+
+	// Stream mode: nothing is prepared, so nothing can be queued.
+	do(router, http.MethodPatch, feedPath, `{"delivery_mode": "stream"}`, bearer)
+	if recorder := do(router, http.MethodPost, feedPath+"/prepare", "", bearer); recorder.Code != http.StatusBadRequest {
+		t.Errorf("stream mode: %d %s", recorder.Code, recorder.Body)
+	}
+}
+
 func TestRequestLoggerLevelsAndRedaction(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -611,12 +656,14 @@ func TestEpisodeRouteSourceFailure(t *testing.T) {
 // fails here until it is added to both.
 func TestOpenAPICoversEveryRoute(t *testing.T) {
 	documented := map[string]string{
-		"/api/health":                 "/api/health",
-		"/api/rss/:token/*source":     "/api/rss/{token}/{sourceURL}",
-		"/api/feeds/:file":            "/api/feeds/{feedID}.xml",
-		"/api/episodes/:feedID/:file": "/api/episodes/{feedID}/{episodeID}.{extension}",
-		"/api/v1/feeds":               "/api/v1/feeds",
-		"/api/v1/feeds/:feedID":       "/api/v1/feeds/{feedID}",
+		"/api/health":                   "/api/health",
+		"/api/rss/:token/*source":       "/api/rss/{token}/{sourceURL}",
+		"/api/feeds/:file":              "/api/feeds/{feedID}.xml",
+		"/api/episodes/:feedID/:file":   "/api/episodes/{feedID}/{episodeID}.{extension}",
+		"/api/v1/feeds":                 "/api/v1/feeds",
+		"/api/v1/feeds/:feedID":         "/api/v1/feeds/{feedID}",
+		"/api/v1/feeds/:feedID/retry":   "/api/v1/feeds/{feedID}/retry",
+		"/api/v1/feeds/:feedID/prepare": "/api/v1/feeds/{feedID}/prepare",
 	}
 	spec, err := os.ReadFile(filepath.Join("..", "docs", "openapi.yaml"))
 	if err != nil {

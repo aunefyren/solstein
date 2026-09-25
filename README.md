@@ -64,6 +64,8 @@ curl -H "Authorization: Bearer <auth_token>" -H "Content-Type: application/json"
 | `GET /api/v1/feeds/{id}` | One feed |
 | `PATCH /api/v1/feeds/{id}` | Change any of the settings above; an empty value clears the override |
 | `DELETE /api/v1/feeds/{id}` | Unsubscribe and delete everything stored for the feed |
+| `POST /api/v1/feeds/{id}/retry` | Try the feed's failed episodes again in the background (withheld, or published with ads), e.g. after a fix; `{"queued": n}` |
+| `POST /api/v1/feeds/{id}/prepare` | Download (or clean) the feed's episodes that have no file yet — backlog, or expired from the cache — in the background, before anyone plays them; `{"newest": n}` limits it to the newest `n`. `{"queued": n}` |
 
 The API takes the token as `Authorization: Bearer <token>` or `?token=<token>`.
 
@@ -144,8 +146,8 @@ Hosts such as Acast insert ads per listener region. Region diff downloads each e
 - `exits`: the pair, your home region first (its download is the one kept, with its tags). `direct` works as the home side, but shows the host your own address; with `disable_direct` use a VPN exit in your own country.
 - `fallback_exits`: tried in turn when the pair's downloads are identical (no dynamic ads, or the same campaign in both markets). If every one agrees, the episode is kept as it is.
 - `enabled`: region diff for every feed that doesn't set its own `region_diff`. With it `false`, feeds can still switch it on one by one.
-- `on_failure`: `publish` serves an episode that can't be cleaned (not MP3, implausible result) with its ads; `hide` keeps it out of the feed.
-- `backlog`: how many of a new feed's newest existing episodes are cleaned straight away. The rest are cleaned the first time they are played: the client waits a few seconds (about 5 for a 40-minute episode). If it takes over 20 seconds, it gets `503` and `Retry-After`, and the next attempt gets the clean file.
+- `on_failure`: `publish` serves an episode that can't be cleaned (not MP3, implausible result) with its ads; `hide` keeps it out of the feed, and tries it again after 1 hour, after 6 hours, then daily for about a week (Solstein says so at start-up). After that it stays out until `POST /api/v1/feeds/{id}/retry` or a change of settings.
+- `backlog`: how many of a new feed's newest existing episodes are cleaned straight away. The rest are cleaned the first time they are played: the client waits a few seconds (about 5 for a 40-minute episode). If it takes over 20 seconds, it gets `503` and `Retry-After`, and the next attempt gets the clean file. To clean a feed's older episodes ahead instead, use `POST /api/v1/feeds/{id}/prepare`.
 - `trim_break_markers`: also remove the short chime or sting a host splices in around ad breaks, where it can be cut without a glitch (it has to repeat identically, be under 5 seconds and sit at a break). Off by default, since a show's own sting at breaks would go too.
 - `min_shared_seconds` (default `2`) and `max_removed_share` (default `0.3`) tune the diff and its sanity check.
 - An episode that can't be cleaned on request (ABS gets `503`) is tried again on each request, and after three failed attempts `on_failure` applies. A download that looks cut off is fetched again before the diff.

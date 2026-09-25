@@ -82,6 +82,9 @@ func (pipeline *Pipeline) Reconcile(ctx context.Context, feedID uuid.UUID) error
 		}
 		cleared, restarted := 0, 0
 		for _, episode := range episodes {
+			if pipeline.preparing(episode.ID) {
+				continue // checked when served; its outcome would overwrite this
+			}
 			changed, outcome := pipeline.reconcileEpisode(feed, &episode)
 			if !changed {
 				continue
@@ -111,6 +114,9 @@ func (pipeline *Pipeline) Reconcile(ctx context.Context, feedID uuid.UUID) error
 // saves it if that changed anything. It catches files a preparation that
 // was already running during a settings change recorded with the old ones.
 func (pipeline *Pipeline) CheckEpisode(ctx context.Context, feed models.Feed, episode models.Episode) (models.Episode, error) {
+	if pipeline.preparing(episode.ID) {
+		return episode, nil // checked again once its job is done
+	}
 	if changed, _ := pipeline.reconcileEpisode(feed, &episode); changed {
 		if err := pipeline.store.UpdateEpisode(ctx, &episode); err != nil {
 			return episode, err
@@ -134,18 +140,28 @@ func (pipeline *Pipeline) reconcileEpisode(feed models.Feed, episode *models.Epi
 	switch {
 	case episode.State == models.EpisodeFailed:
 		want := pipeline.failedRecipe(feed)
-		switch episode.PreparedWith {
-		case want:
-			return false, unchanged
-		case "":
-			// From before settings were recorded: assume the current ones
-			// rather than retry every old failure at once.
-			episode.PreparedWith = want
+		if episode.PreparedWith == want || episode.PreparedWith == "" {
+			changed := false
+			if episode.PreparedWith == "" {
+				// From before settings were recorded: assume the current ones
+				// rather than retry every old failure at once.
+				episode.PreparedWith, changed = want, true
+			}
+			if episode.Withheld && episode.NextAttemptAt == nil && episode.LateRetries == 0 {
+				// Withheld before withheld episodes were retried: start its
+				// slow retries now.
+				now := pipeline.options.Now().UTC()
+				episode.NextAttemptAt, changed = &now, true
+			}
+			if !changed {
+				return false, unchanged
+			}
 			return true, recorded
 		}
 		pipeline.removeCacheFile(episode)
 		episode.ForgetCache()
 		episode.Attempts, episode.FailedAttempts, episode.NextAttemptAt, episode.LastError = 0, 0, nil, ""
+		episode.LateRetries = 0
 		episode.Withheld, episode.ProcessNote, episode.PreparedWith = false, "", ""
 		episode.State = models.EpisodeDiscovered
 		if episode.Backlog || !pipeline.prepares(feed) {

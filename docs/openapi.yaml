@@ -408,6 +408,76 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+  /api/v1/feeds/{feedID}/retry:
+    parameters:
+      - $ref: "#/components/parameters/FeedID"
+    post:
+      tags: [Feed API]
+      summary: Retry a feed's failed episodes
+      description: |
+        Queues every failed episode of the feed for another attempt in the
+        background: withheld episodes (region diff's `on_failure: hide`)
+        and episodes published unprocessed. New episodes are prepared
+        first; the rest follow two at a time. An episode that succeeds is
+        published (or its processed file replaces the unprocessed one); a
+        withheld episode that fails again starts its slow retries afresh
+        (after 1 hour, 6 hours, then daily for about a week).
+      operationId: retryFailedEpisodes
+      responses:
+        "200":
+          $ref: "#/components/responses/Queued"
+        "400":
+          $ref: "#/components/responses/NotPrepared"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/feeds/{feedID}/prepare:
+    parameters:
+      - $ref: "#/components/parameters/FeedID"
+    post:
+      tags: [Feed API]
+      summary: Prepare a feed's episodes ahead
+      description: |
+        Queues the feed's newest episodes that are published without their
+        file (backlog, or expired from the cache) to be downloaded — or,
+        with region diff, cleaned — in the background, so no client waits
+        for them. New episodes are prepared first; the queued ones follow
+        two at a time, newest first. An episode that fails is left for its
+        next request, as if it hadn't been queued.
+      operationId: prepareEpisodes
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                newest:
+                  type: integer
+                  minimum: 0
+                  description: Only consider the feed's newest this many episodes. Zero or omitted means all of them.
+            examples:
+              newestTen:
+                value:
+                  newest: 10
+      responses:
+        "200":
+          $ref: "#/components/responses/Queued"
+        "400":
+          description: Invalid body, or the feed's episodes aren't prepared (see `NotPrepared`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
 security:
   - bearerToken: []
@@ -442,6 +512,22 @@ components:
         type: string
 
   responses:
+    Queued:
+      description: How many episodes were queued.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [queued]
+            properties:
+              queued:
+                type: integer
+    NotPrepared:
+      description: The feed's episodes aren't prepared by Solstein (`stream` or `original` mode without region diff), so there is nothing to queue.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     Feed:
       description: The rewritten RSS feed. Clients should revalidate on every request.
       headers:

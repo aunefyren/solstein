@@ -50,6 +50,25 @@ const (
 // streaming from the source, so one bad download can't hold a feed back.
 var retryDelays = []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, time.Hour, 3 * time.Hour}
 
+// withheldRetryDelays is the wait before each slow retry of an episode its
+// failure policy withholds: soon, for a passing problem at the host, then
+// daily for about a week. Nothing else would try it again, and a backlog
+// episode can be withheld after three failures within a minute. After the
+// last, it stays withheld until a retry through the API or a change of
+// settings.
+//
+// WithheldRetrySchedule describes it for the log; keep the two in step.
+var withheldRetryDelays = []time.Duration{time.Hour, 6 * time.Hour, 24 * time.Hour, 24 * time.Hour, 24 * time.Hour, 24 * time.Hour, 24 * time.Hour, 24 * time.Hour}
+
+// WithheldRetrySchedule says when a withheld episode is tried again.
+const WithheldRetrySchedule = "after 1 hour, after 6 hours, then daily for about a week"
+
+// queueLease is how long a queued episode stays claimed (see
+// database.Store.ClaimQueuedEpisode). It outlasts any attempt, so it only
+// matters when an attempt never records an outcome: then the episode comes
+// due again after this long.
+const queueLease = 3 * time.Hour
+
 var (
 	// ErrPermanent marks failures a retry won't fix. Processors wrap it too.
 	ErrPermanent = errors.New("permanent failure")
@@ -198,7 +217,12 @@ func (pipeline *Pipeline) ProcessNext(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	episode, err := pipeline.store.ClaimNextEpisode(ctx, pipeline.options.Now().UTC(), pipeline.options.DefaultDeliveryMode, processedFeeds)
+	now := pipeline.options.Now().UTC()
+	// New episodes first: they hold their feeds back until prepared.
+	episode, err := pipeline.store.ClaimNextEpisode(ctx, now, pipeline.options.DefaultDeliveryMode, processedFeeds)
+	if errors.Is(err, database.ErrNoWork) {
+		episode, err = pipeline.store.ClaimQueuedEpisode(ctx, now, now.Add(queueLease), pipeline.options.DefaultDeliveryMode, processedFeeds)
+	}
 	if errors.Is(err, database.ErrNoWork) {
 		return false, nil
 	}
@@ -208,7 +232,12 @@ func (pipeline *Pipeline) ProcessNext(ctx context.Context) (bool, error) {
 	// Other idle workers can take the next one meanwhile.
 	pipeline.Wake()
 
-	done := pipeline.startFlight(episode.ID)
+	done, ok := pipeline.startFlight(episode.ID)
+	if !ok {
+		// A queued episode a client asked for just before: that request's
+		// job prepares it and records the outcome.
+		return true, nil
+	}
 	defer pipeline.endFlight(episode.ID, done)
 
 	feed, err := pipeline.store.GetFeed(ctx, episode.FeedID)
@@ -269,12 +298,25 @@ func (pipeline *Pipeline) Prepare(feed models.Feed, episode models.Episode) (<-c
 	return done, nil
 }
 
-func (pipeline *Pipeline) startFlight(episodeID uuid.UUID) chan struct{} {
-	done := make(chan struct{})
+// startFlight registers an episode as being prepared. It reports false when
+// it already is.
+func (pipeline *Pipeline) startFlight(episodeID uuid.UUID) (chan struct{}, bool) {
 	pipeline.mutex.Lock()
+	defer pipeline.mutex.Unlock()
+	if _, ok := pipeline.inFlight[episodeID]; ok {
+		return nil, false
+	}
+	done := make(chan struct{})
 	pipeline.inFlight[episodeID] = done
-	pipeline.mutex.Unlock()
-	return done
+	return done, true
+}
+
+// preparing reports whether an episode is being prepared right now.
+func (pipeline *Pipeline) preparing(episodeID uuid.UUID) bool {
+	pipeline.mutex.Lock()
+	defer pipeline.mutex.Unlock()
+	_, ok := pipeline.inFlight[episodeID]
+	return ok
 }
 
 func (pipeline *Pipeline) endFlight(episodeID uuid.UUID, done chan struct{}) {
@@ -287,12 +329,19 @@ func (pipeline *Pipeline) endFlight(episodeID uuid.UUID, done chan struct{}) {
 }
 
 // prepare downloads or processes an episode into the cache and records the
-// outcome. The episode is either claimed (acquiring), or ready but without
-// its file (prepared on request); a failure of the latter is recorded
-// without the retry schedule, since the episode is already published and it
-// is the next request that tries again. The error is for database problems.
+// outcome. The episode is one of:
+//   - claimed (acquiring): a failure is retried on the retry schedule;
+//   - ready but without its file, prepared on request or queued to be
+//     prepared ahead: a failure is recorded without the retry schedule,
+//     since the episode is already published and it is the next request
+//     that tries again;
+//   - failed, queued for a late retry: a failure leaves it failed, and a
+//     withheld episode is tried again on the slow schedule.
+//
+// The error is for database problems.
 func (pipeline *Pipeline) prepare(ctx context.Context, feed models.Feed, episode models.Episode) error {
 	claimed := episode.State == models.EpisodeAcquiring
+	late := episode.State == models.EpisodeFailed
 	recipe, failedRecipe := pipeline.recipe(feed), pipeline.failedRecipe(feed)
 	processor := pipeline.options.Processor
 	processing := processor != nil && processor.Handles(feed)
@@ -313,7 +362,7 @@ func (pipeline *Pipeline) prepare(ctx context.Context, feed models.Feed, episode
 		episode.State = models.EpisodeReady
 		episode.CacheFile, episode.CacheSize, episode.CacheSeconds, episode.CachedAt = prepared.cacheFile, prepared.size, prepared.seconds, &now
 		episode.LastError, episode.NextAttemptAt, episode.Withheld, episode.ProcessNote = "", nil, false, prepared.note
-		episode.PreparedWith, episode.FailedAttempts = recipe, 0
+		episode.PreparedWith, episode.FailedAttempts, episode.LateRetries = recipe, 0, 0
 		message := fmt.Sprintf("Cached episode '%s' of '%s' (%.1f MB)", episode.Title, feed.Title, float64(prepared.size)/(1<<20))
 		if prepared.note != "" {
 			message += "; " + processor.Name() + ": " + prepared.note
@@ -329,14 +378,30 @@ func (pipeline *Pipeline) prepare(ctx context.Context, feed models.Feed, episode
 		action = "process"
 	}
 	switch {
+	case late:
+		episode.LateRetries++
+		episode.NextAttemptAt, episode.PreparedWith = nil, failedRecipe
+		outcome := "it stays as it was"
+		switch {
+		case episode.Withheld && episode.LateRetries < len(withheldRetryDelays):
+			next := now.Add(withheldRetryDelays[episode.LateRetries])
+			episode.NextAttemptAt = &next
+			outcome = "it stays out of the feed and is tried again " + formatAttemptTime(now, next)
+		case episode.Withheld:
+			outcome = "it stays out of the feed, and is not tried again on its own; " + retryHint(feed)
+		}
+		logger.Log.Warn(fmt.Sprintf("Failed again to %s episode '%s' of '%s' (late retry %d); %s. Error: %s", action, episode.Title, feed.Title, episode.LateRetries, outcome, err))
 	case errors.Is(err, ErrPermanent) || (claimed && episode.Attempts > len(retryDelays)) || (!claimed && episode.FailedAttempts >= maxRequestFailures):
 		episode.State, episode.NextAttemptAt, episode.PreparedWith = models.EpisodeFailed, nil, failedRecipe
+		episode.LateRetries = 0
 		fallback := "it will be streamed from the source instead"
 		if processing {
 			episode.Withheld = processor.HideOnFailure(feed)
 			fallback = "it is published unprocessed"
 			if episode.Withheld {
-				fallback = "it is kept out of the feed"
+				next := now.Add(withheldRetryDelays[0])
+				episode.NextAttemptAt = &next
+				fallback = "it is kept out of the feed, and tried again " + formatAttemptTime(now, next) + ", then less often for about a week; " + retryHint(feed)
 			}
 		}
 		logger.Log.Warn(fmt.Sprintf("Gave up trying to %s episode '%s' of '%s' after %d failed attempts; %s. Error: %s", action, episode.Title, feed.Title, episode.FailedAttempts, fallback, err))
@@ -345,9 +410,28 @@ func (pipeline *Pipeline) prepare(ctx context.Context, feed models.Feed, episode
 		episode.State, episode.NextAttemptAt = models.EpisodeDiscovered, &next
 		logger.Log.Warn(fmt.Sprintf("Failed to %s episode '%s' of '%s' (attempt %d), retrying at %s. Error: %s", action, episode.Title, feed.Title, episode.Attempts, next.Local().Format("15:04"), err))
 	default:
-		logger.Log.Warn(fmt.Sprintf("Failed to %s episode '%s' of '%s' on request (%d of %d attempts); the next request tries again. Error: %s", action, episode.Title, feed.Title, episode.FailedAttempts, maxRequestFailures, err))
+		when := "on request"
+		if episode.NextAttemptAt != nil {
+			when = "ahead of a request" // queued; not any more
+		}
+		episode.NextAttemptAt = nil
+		logger.Log.Warn(fmt.Sprintf("Failed to %s episode '%s' of '%s' %s (%d of %d attempts); the next request tries again. Error: %s", action, episode.Title, feed.Title, when, episode.FailedAttempts, maxRequestFailures, err))
 	}
 	return pipeline.store.UpdateEpisode(ctx, &episode)
+}
+
+// formatAttemptTime says when an attempt is due, for the log.
+func formatAttemptTime(now, next time.Time) string {
+	now, next = now.Local(), next.Local()
+	if next.YearDay() == now.YearDay() && next.Year() == now.Year() {
+		return "at " + next.Format("15:04")
+	}
+	return "on " + next.Format("Mon 2 Jan at 15:04")
+}
+
+// retryHint says how to try a feed's failed episodes again at once.
+func retryHint(feed models.Feed) string {
+	return "POST /api/v1/feeds/" + feed.ID.String() + "/retry tries it now"
 }
 
 // processedFeeds lists the feeds the processor handles, whose episodes are
