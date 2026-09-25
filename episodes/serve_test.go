@@ -21,7 +21,7 @@ func newTestServer(t *testing.T, setup *testSetup) *Server {
 		t.Fatal(err)
 	}
 	feedService := feeds.New(setup.store, exits, feeds.Options{DefaultDeliveryMode: "cache"})
-	return NewServer(setup.store, exits, setup.cache, feedService, Options{Now: setup.clock.Now})
+	return NewServer(setup.store, exits, setup.cache, feedService, setup.pipeline, Options{Now: setup.clock.Now})
 }
 
 // serve runs one request and returns the recorder and Serve's error.

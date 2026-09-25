@@ -21,8 +21,7 @@ var ErrNoWork = errors.New("no episode waiting")
 // are published strictly in order and a pending old one holds back newer
 // ones.
 //
-// An episode is waiting when it is discovered (not backlog), its retry time
-// has come, and its feed uses cache delivery — set on the feed, or inherited
+// An episode is waiting when it is discovered, its retry time has come, and its feed uses cache delivery — set on the feed, or inherited
 // from defaultMode when the feed has none — or is one of processedFeeds,
 // whose episodes a processor prepares whatever the delivery mode.
 func (store *Store) ClaimNextEpisode(ctx context.Context, now time.Time, defaultMode string, processedFeeds []uuid.UUID) (models.Episode, error) {
@@ -30,7 +29,7 @@ func (store *Store) ClaimNextEpisode(ctx context.Context, now time.Time, default
 	err := store.withContext(ctx).Transaction(func(tx *gorm.DB) error {
 		query := tx.Model(&models.Episode{}).
 			Joins("JOIN feeds ON feeds.id = episodes.feed_id").
-			Where("episodes.state = ? AND episodes.backlog = ?", models.EpisodeDiscovered, false).
+			Where("episodes.state = ?", models.EpisodeDiscovered).
 			Where("episodes.next_attempt_at IS NULL OR episodes.next_attempt_at <= ?", now)
 		cacheModes := []string{"cache"}
 		if defaultMode == "cache" {
@@ -61,6 +60,33 @@ func (store *Store) ClaimNextEpisode(ctx context.Context, now time.Time, default
 			return ErrNoWork // claimed by someone else in between
 		}
 		episode.State = models.EpisodeAcquiring
+		return nil
+	})
+	if err != nil {
+		return models.Episode{}, err
+	}
+	return episode, nil
+}
+
+// ClaimEpisode marks one discovered episode as acquiring, whatever its retry
+// time: a client has asked for it, so it is prepared now. It returns
+// ErrNoWork when the episode isn't discovered (a worker has it, or it is
+// done).
+func (store *Store) ClaimEpisode(ctx context.Context, episodeID uuid.UUID, now time.Time) (models.Episode, error) {
+	var episode models.Episode
+	err := store.withContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&models.Episode{}).
+			Where("id = ? AND state = ?", episodeID, models.EpisodeDiscovered).
+			Updates(map[string]any{"state": models.EpisodeAcquiring, "updated_at": now})
+		if result.Error != nil {
+			return fmt.Errorf("claim episode: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return ErrNoWork
+		}
+		if err := tx.Where("id = ?", episodeID).Take(&episode).Error; err != nil {
+			return fmt.Errorf("load claimed episode: %w", err)
+		}
 		return nil
 	})
 	if err != nil {

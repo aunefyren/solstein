@@ -18,7 +18,7 @@ import (
 // good (see docs/design.md, Client compatibility).
 //
 // Backlog episodes (there when the feed was added) are always published;
-// they are fetched on demand. Failed episodes are published too, and served
+// they are fetched (or processed) on demand. Failed episodes are published too, and served
 // by streaming from the source instead of from the cache, so one bad
 // download can't hold back a feed forever. A failed episode the processor's
 // failure policy withholds is left out, but doesn't hold newer ones back.
@@ -35,9 +35,9 @@ func publishedEpisodes(episodes []models.Episode, prepare bool) map[uuid.UUID]bo
 	holding := false
 	for _, episode := range episodes {
 		switch {
+		case episode.Withheld:
 		case !prepare, episode.Backlog:
 			published[episode.ID] = true
-		case episode.Withheld:
 		case holding:
 		case episode.State == models.EpisodeReady, episode.State == models.EpisodeFailed:
 			published[episode.ID] = true

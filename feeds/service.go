@@ -46,6 +46,11 @@ type Options struct {
 	// background and published once processed, whatever the delivery mode.
 	// Nil means no feed is processed.
 	Processed func(models.Feed) bool
+	// ProcessBacklog is how many of a processed feed's newest backlog
+	// episodes are queued for processing as soon as it is subscribed to, so
+	// the likeliest plays are ready at once. The rest are processed when
+	// first requested.
+	ProcessBacklog int
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 }
@@ -143,6 +148,9 @@ func (service *Service) Subscribe(ctx context.Context, rawSourceURL string, feed
 	feed.LastPolledAt, feed.LastSuccessAt = &now, &now
 
 	episodes := episodesFromItems(parsed.Items, models.EpisodeReady, true)
+	if service.Processed(feed) {
+		queueNewest(episodes, service.options.ProcessBacklog)
+	}
 	err = service.store.CreateSubscription(ctx, &feed, result.data, now, episodes)
 	if errors.Is(err, database.ErrFeedExists) {
 		// Another request subscribed to the same feed meanwhile.
@@ -326,6 +334,33 @@ func episodesFromItems(items []rss.Item, state models.EpisodeState, backlog bool
 		episodes = append(episodes, episode)
 	}
 	return episodes
+}
+
+// queueNewest marks the count newest backlog episodes as waiting for the
+// pipeline. Episodes without a date count as oldest.
+func queueNewest(episodes []models.Episode, count int) {
+	if count <= 0 {
+		return
+	}
+	order := make([]int, len(episodes))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortStableFunc(order, func(a, b int) int {
+		first, second := episodes[a].PublishedAt, episodes[b].PublishedAt
+		switch {
+		case first == nil && second == nil:
+			return 0
+		case first == nil:
+			return 1
+		case second == nil:
+			return -1
+		}
+		return second.Compare(*first)
+	})
+	for _, index := range order[:min(count, len(order))] {
+		episodes[index].State = models.EpisodeDiscovered
+	}
 }
 
 type fetchResult struct {

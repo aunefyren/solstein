@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,11 +18,26 @@ import (
 )
 
 // fakeProcessor fetches the source through "direct" and returns it
-// upper-cased, or fails with err.
+// upper-cased, or fails with err. With gate set, each job waits for a value
+// on it first.
 type fakeProcessor struct {
-	err  error
-	hide bool
-	jobs []Job
+	mutex sync.Mutex
+	err   error
+	hide  bool
+	gate  chan struct{}
+	jobs  []Job
+}
+
+func (processor *fakeProcessor) setErr(err error) {
+	processor.mutex.Lock()
+	defer processor.mutex.Unlock()
+	processor.err = err
+}
+
+func (processor *fakeProcessor) jobCount() int {
+	processor.mutex.Lock()
+	defer processor.mutex.Unlock()
+	return len(processor.jobs)
 }
 
 func (processor *fakeProcessor) Name() string                        { return "fake" }
@@ -29,9 +45,19 @@ func (processor *fakeProcessor) Handles(feed models.Feed) bool       { return fe
 func (processor *fakeProcessor) HideOnFailure(feed models.Feed) bool { return processor.hide }
 
 func (processor *fakeProcessor) Process(ctx context.Context, job Job) (Processed, error) {
+	processor.mutex.Lock()
 	processor.jobs = append(processor.jobs, job)
-	if processor.err != nil {
-		return Processed{}, processor.err
+	err, gate := processor.err, processor.gate
+	processor.mutex.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return Processed{}, ctx.Err()
+		}
+	}
+	if err != nil {
+		return Processed{}, err
 	}
 	download, err := job.Fetch(ctx, outbound.DirectExit)
 	if err != nil {
@@ -140,7 +166,7 @@ func TestProcessorTemporaryFailureRetries(t *testing.T) {
 	if stored.State != models.EpisodeDiscovered || stored.NextAttemptAt == nil || stored.Withheld {
 		t.Fatalf("episode = %+v, want a retry", stored)
 	}
-	processor.err = nil
+	processor.setErr(nil)
 	setup.clock.advance(retryDelays[0])
 	setup.processOne(t)
 	if stored = setup.reload(t, episode); stored.State != models.EpisodeReady || stored.LastError != "" {
@@ -162,7 +188,7 @@ func TestServeProcessedFeedDoesNotCacheUnprocessed(t *testing.T) {
 	}
 	processor := &fakeProcessor{}
 	feedService := feeds.New(setup.store, exits, feeds.Options{DefaultDeliveryMode: "cache", Processed: processor.Handles})
-	server := NewServer(setup.store, exits, setup.cache, feedService, Options{Now: setup.clock.Now})
+	server := NewServer(setup.store, exits, setup.cache, feedService, nil, Options{Now: setup.clock.Now})
 
 	backlog := setup.addBacklog(t, "/ok.mp3")
 	if recorder, err := serve(t, server, backlog, http.MethodGet, ""); err != nil || recorder.Body.String() != audio {
@@ -170,5 +196,215 @@ func TestServeProcessedFeedDoesNotCacheUnprocessed(t *testing.T) {
 	}
 	if stored := setup.reload(t, backlog); stored.CacheFile != "" {
 		t.Error("unprocessed backlog episode was cached")
+	}
+}
+
+// processedServer is a Server for the setup's feed, which processor
+// handles, preparing episodes on request through the setup's pipeline.
+func (setup *testSetup) processedServer(t *testing.T, processor *fakeProcessor, wait time.Duration) *Server {
+	t.Helper()
+	setup.withProcessor(t, processor)
+	exits, err := outbound.New(outbound.Options{AllowPrivateDestinations: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedService := feeds.New(setup.store, exits, feeds.Options{DefaultDeliveryMode: "cache", Processed: processor.Handles})
+	return NewServer(setup.store, exits, setup.cache, feedService, setup.pipeline, Options{ProcessingWait: wait, Now: setup.clock.Now})
+}
+
+func TestServeProcessesBacklogOnRequest(t *testing.T) {
+	setup := newTestSetup(t)
+	processor := &fakeProcessor{}
+	server := setup.processedServer(t, processor, 5*time.Second)
+	backlog := setup.addBacklog(t, "/ok.mp3")
+
+	recorder, err := serve(t, server, backlog, http.MethodGet, "")
+	if err != nil || recorder.Code != http.StatusOK || recorder.Body.String() != strings.ToUpper(audio) {
+		t.Fatalf("first play: %d %q, %v; want the processed file", recorder.Code, recorder.Body.String(), err)
+	}
+	stored := setup.reload(t, backlog)
+	if stored.CacheFile == "" || stored.State != models.EpisodeReady || !stored.Backlog || stored.ProcessNote != "shouted" {
+		t.Errorf("episode = %+v", stored)
+	}
+
+	// Later plays, including Range, come from the cache.
+	recorder, err = serve(t, server, stored, http.MethodGet, "bytes=0-2")
+	if err != nil || recorder.Code != http.StatusPartialContent || recorder.Body.String() != "ID3" {
+		t.Errorf("range: %d %q, %v", recorder.Code, recorder.Body.String(), err)
+	}
+	if processor.jobCount() != 1 {
+		t.Errorf("processed %d times, want once", processor.jobCount())
+	}
+
+	// Once the cached file expires, the next play processes it again rather
+	// than streaming the version with ads.
+	fullPath, _ := setup.cache.Path(stored.CacheFile)
+	os.Remove(fullPath)
+	if recorder, err = serve(t, server, stored, http.MethodGet, ""); err != nil || recorder.Body.String() != strings.ToUpper(audio) {
+		t.Errorf("after expiry: %q, %v", recorder.Body.String(), err)
+	}
+	if processor.jobCount() != 2 {
+		t.Errorf("processed %d times, want twice", processor.jobCount())
+	}
+}
+
+func TestServeSlowProcessingAnswersRetryAfter(t *testing.T) {
+	setup := newTestSetup(t)
+	processor := &fakeProcessor{gate: make(chan struct{})}
+	server := setup.processedServer(t, processor, 50*time.Millisecond)
+	backlog := setup.addBacklog(t, "/ok.mp3")
+
+	// Two clients at once: both are told to come back, and there is only
+	// one job.
+	var wait sync.WaitGroup
+	for range 2 {
+		wait.Go(func() {
+			recorder, err := serve(t, server, backlog, http.MethodGet, "")
+			if err != nil || recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") != "30" {
+				t.Errorf("slow processing: %d, Retry-After %q, %v", recorder.Code, recorder.Header().Get("Retry-After"), err)
+			}
+		})
+	}
+	wait.Wait()
+	if processor.jobCount() != 1 {
+		t.Fatalf("%d jobs, want 1", processor.jobCount())
+	}
+	if stored := setup.reload(t, backlog); stored.CacheFile != "" {
+		t.Fatal("cached before processing finished")
+	}
+
+	// Processing carries on without the clients and the next one gets it.
+	processor.gate <- struct{}{}
+	deadline := time.Now().Add(5 * time.Second)
+	for setup.reload(t, backlog).CacheFile == "" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if recorder, err := serve(t, server, backlog, http.MethodGet, ""); err != nil || recorder.Body.String() != strings.ToUpper(audio) {
+		t.Errorf("after processing: %d %q, %v", recorder.Code, recorder.Body.String(), err)
+	}
+}
+
+func TestServeOnRequestFailures(t *testing.T) {
+	permanent := fmt.Errorf("%w: not MP3", ErrPermanent)
+	cases := []struct {
+		name     string
+		err      error
+		hide     bool
+		wantCode int
+		wantBody string
+		wantErr  error
+		state    models.EpisodeState
+	}{
+		// Retryable: the client is asked to come back; the episode stays
+		// published and the next request tries again.
+		{"temporary", errors.New("tunnel down"), false, http.StatusServiceUnavailable, "", nil, models.EpisodeReady},
+		// Published unprocessed: streamed from the source (and cached).
+		{"permanent, publish", permanent, false, http.StatusOK, audio, nil, models.EpisodeReady},
+		{"permanent, hide", permanent, true, 0, "", database.ErrEpisodeNotFound, models.EpisodeFailed},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			setup := newTestSetup(t)
+			processor := &fakeProcessor{err: c.err, hide: c.hide}
+			server := setup.processedServer(t, processor, 5*time.Second)
+			// The feed is in stream mode; cache mode is where the tee applies.
+			setup.feed.DeliveryMode = "cache"
+			setup.store.UpdateFeed(context.Background(), &setup.feed)
+			backlog := setup.addBacklog(t, "/ok.mp3")
+
+			recorder, err := serve(t, server, backlog, http.MethodGet, "")
+			if !errors.Is(err, c.wantErr) || (c.wantCode != 0 && recorder.Code != c.wantCode) || (c.wantBody != "" && recorder.Body.String() != c.wantBody) {
+				t.Fatalf("got %d %q, %v", recorder.Code, recorder.Body.String(), err)
+			}
+			stored := setup.reload(t, backlog)
+			// Published unprocessed, the stream was cached and the episode is
+			// ready again; otherwise the failure is on record.
+			if cachedUnprocessed := c.name == "permanent, publish"; stored.State != c.state || (stored.CacheFile != "") != cachedUnprocessed || (stored.LastError == "") != cachedUnprocessed {
+				t.Errorf("episode = %+v", stored)
+			}
+			if c.name == "temporary" {
+				processor.setErr(nil)
+				if recorder, err := serve(t, server, backlog, http.MethodGet, ""); err != nil || recorder.Body.String() != strings.ToUpper(audio) {
+					t.Errorf("retry: %d %q, %v", recorder.Code, recorder.Body.String(), err)
+				}
+			}
+		})
+	}
+}
+
+func TestServeClaimsWaitingEpisodeOnRequest(t *testing.T) {
+	setup := newTestSetup(t)
+	processor := &fakeProcessor{}
+	server := setup.processedServer(t, processor, 5*time.Second)
+	// Waiting for a retry an hour away, e.g. published by the never-empty
+	// rule: a request doesn't wait for the retry.
+	later := setup.clock.Now().Add(time.Hour)
+	episode := setup.addEpisode(t, "/ok.mp3")
+	episode.NextAttemptAt, episode.Attempts = &later, 1
+	setup.store.UpdateEpisode(context.Background(), &episode)
+
+	if recorder, err := serve(t, server, episode, http.MethodGet, ""); err != nil || recorder.Body.String() != strings.ToUpper(audio) {
+		t.Fatalf("got %d %q, %v", recorder.Code, recorder.Body.String(), err)
+	}
+	if stored := setup.reload(t, episode); stored.State != models.EpisodeReady || stored.NextAttemptAt != nil || stored.Attempts != 2 {
+		t.Errorf("episode = %+v", stored)
+	}
+	if setup.processOne(t) {
+		t.Error("the pipeline found the episode again")
+	}
+}
+
+func TestPrepareJoinsWorkerAndStopsWithPipeline(t *testing.T) {
+	setup := newTestSetup(t)
+	processor := &fakeProcessor{gate: make(chan struct{})}
+	setup.withProcessor(t, processor)
+	episode := setup.addEpisode(t, "/ok.mp3")
+
+	// A worker has the episode: a request joins its job instead of
+	// starting another.
+	worked := make(chan bool)
+	go func() {
+		ok, _ := setup.pipeline.ProcessNext(context.Background())
+		worked <- ok
+	}()
+	for processor.jobCount() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	claimed := setup.reload(t, episode)
+	done, err := setup.pipeline.Prepare(setup.feed, claimed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processor.gate <- struct{}{}
+	<-done
+	if !<-worked || processor.jobCount() != 1 || setup.reload(t, episode).State != models.EpisodeReady {
+		t.Errorf("%d jobs, state %s", processor.jobCount(), setup.reload(t, episode).State)
+	}
+
+	// Run returns only after work started on request has stopped, and no
+	// more is started afterwards.
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() { setup.pipeline.Run(ctx); close(stopped) }()
+	backlog := setup.addBacklog(t, "/ok.mp3")
+	for {
+		setup.pipeline.mutex.Lock()
+		running := setup.pipeline.lifetime == ctx
+		setup.pipeline.mutex.Unlock()
+		if running {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := setup.pipeline.Prepare(setup.feed, backlog); err != nil {
+		t.Fatal(err)
+	}
+	cancel() // the gated job is cancelled with the pipeline
+	<-stopped
+	if _, err := setup.pipeline.Prepare(setup.feed, backlog); !errors.Is(err, ErrBusy) {
+		t.Errorf("after Run: err = %v, want ErrBusy", err)
+	}
+	if stored := setup.reload(t, backlog); stored.CacheFile != "" || stored.LastError != "" {
+		t.Errorf("abandoned job recorded: %+v", stored)
 	}
 }

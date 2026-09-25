@@ -511,3 +511,46 @@ func TestRenderProcessedFeed(t *testing.T) {
 		t.Errorf("after processing: items = %+v", parsed.Items)
 	}
 }
+
+func TestSubscribeQueuesNewestBacklogForProcessing(t *testing.T) {
+	host := newFakeHost(t) // ep-1, Monday
+	host.addItem("ep-3", "Wed, 23 Sep 2026 06:00:00 +0000")
+	host.addItem("ep-2", "Tue, 22 Sep 2026 06:00:00 +0000") // out of order in the document
+	host.set(func(host *fakeHost) {
+		host.items = append(host.items, `<item><title>undated</title><guid>undated</guid><enclosure url="https://media.example.com/undated.mp3" type="audio/mpeg"/></item>`)
+	})
+	service, store := newTestService(t, Options{Processed: func(models.Feed) bool { return true }, ProcessBacklog: 2})
+	ctx := context.Background()
+	feed, _, err := service.Subscribe(ctx, host.server.URL, Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	episodes, _ := store.ListEpisodes(ctx, feed.ID)
+	queued := map[string]bool{}
+	for _, episode := range episodes {
+		if !episode.Backlog {
+			t.Errorf("%s isn't backlog", episode.GUID)
+		}
+		if episode.State == models.EpisodeDiscovered {
+			queued[episode.GUID] = true
+		}
+	}
+	if len(queued) != 2 || !queued["ep-2"] || !queued["ep-3"] {
+		t.Errorf("queued %v, want the two newest", queued)
+	}
+	// Queued or not, backlog is published at once.
+	output, _ := service.Render(ctx, feed, testURLs)
+	if parsed, _ := rss.Parse(output); len(parsed.Items) != 4 {
+		t.Errorf("published %d items, want all 4", len(parsed.Items))
+	}
+
+	// Unprocessed feeds queue nothing.
+	plain, plainStore := newTestService(t, Options{ProcessBacklog: 2})
+	feed, _, _ = plain.Subscribe(ctx, host.server.URL, Settings{})
+	episodes, _ = plainStore.ListEpisodes(ctx, feed.ID)
+	for _, episode := range episodes {
+		if episode.State != models.EpisodeReady {
+			t.Errorf("unprocessed feed: %s is %s", episode.GUID, episode.State)
+		}
+	}
+}

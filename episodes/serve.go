@@ -30,13 +30,23 @@ var ErrSourceFailed = errors.New("fetching the episode from its source failed")
 // streaming. Anything else (cookies, caching, tracking headers) stays behind.
 var forwardedHeaders = []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Last-Modified"}
 
+// retryAfter is what a client is told to wait when its episode is still
+// being processed.
+const retryAfter = 30 * time.Second
+
+// defaultProcessingWait is how long a request waits for an episode processed
+// on demand: region diff takes about 5 s for a 40-minute episode, and ABS
+// gives up after 30 s.
+const defaultProcessingWait = 20 * time.Second
+
 // Server serves episode audio to clients.
 type Server struct {
-	store   *database.Store
-	exits   *outbound.Manager
-	cache   Cache
-	feeds   *feeds.Service
-	options Options
+	store    *database.Store
+	exits    *outbound.Manager
+	cache    Cache
+	feeds    *feeds.Service
+	pipeline *Pipeline
+	options  Options
 
 	mutex sync.Mutex
 	// teeing holds episodes currently being streamed into the cache, so a
@@ -45,15 +55,19 @@ type Server struct {
 }
 
 // NewServer builds a Server. It shares Options with the pipeline for the
-// clock and idle timeout.
-func NewServer(store *database.Store, exits *outbound.Manager, cache Cache, feedService *feeds.Service, options Options) *Server {
+// clock, idle timeout and processing wait. pipeline prepares episodes of
+// processed feeds on request; it may be nil when no processor is set.
+func NewServer(store *database.Store, exits *outbound.Manager, cache Cache, feedService *feeds.Service, pipeline *Pipeline, options Options) *Server {
 	if options.Now == nil {
 		options.Now = time.Now
 	}
 	if options.IdleTimeout <= 0 {
 		options.IdleTimeout = defaultIdleTimeout
 	}
-	return &Server{store: store, exits: exits, cache: cache, feeds: feedService, options: options, teeing: map[uuid.UUID]bool{}}
+	if options.ProcessingWait <= 0 {
+		options.ProcessingWait = defaultProcessingWait
+	}
+	return &Server{store: store, exits: exits, cache: cache, feeds: feedService, pipeline: pipeline, options: options, teeing: map[uuid.UUID]bool{}}
 }
 
 // Serve answers a request for an episode's audio:
@@ -63,7 +77,12 @@ func NewServer(store *database.Store, exits *outbound.Manager, cache Cache, feed
 //     cache mode, a full request for an episode the pipeline won't download
 //     (backlog, or given up on) is also written into the cache on the way.
 //
-// An episode withheld by its processor's failure policy is not served.
+// For a processed feed, an episode without its processed file (backlog,
+// expired from the cache, or not processed yet) is processed first while the
+// client waits, up to ProcessingWait; after that the client gets 503 with
+// Retry-After and processing carries on. The unprocessed version is only
+// streamed once processing has failed for good and the failure policy
+// publishes it. An episode withheld by that policy is not served.
 //
 // It returns database.ErrEpisodeNotFound / ErrFeedNotFound for unknown IDs
 // and ErrSourceFailed when the source can't be reached; in both cases the
@@ -97,6 +116,14 @@ func (server *Server) Serve(writer http.ResponseWriter, request *http.Request, f
 		}
 	}
 
+	if server.pipeline != nil && server.feeds.Processed(feed) && episode.State != models.EpisodeFailed {
+		episode, err = server.awaitProcessing(writer, request, feed, episode)
+		if err != nil || episode.ID == uuid.Nil {
+			return err // served, answered 503, or failed
+		}
+		// Failed for good and published unprocessed: stream it below.
+	}
+
 	mode := server.feeds.DeliveryMode(feed)
 	if mode == "original" {
 		http.Redirect(writer, request, episode.SourceURL, http.StatusFound)
@@ -114,6 +141,59 @@ func (server *Server) Serve(writer http.ResponseWriter, request *http.Request, f
 		defer server.endTee(episode.ID)
 	}
 	return server.stream(writer, request, feed, episode, tee)
+}
+
+// awaitProcessing has the pipeline prepare an episode of a processed feed
+// and waits for it. It serves the processed file, answers 503 with
+// Retry-After, or returns ErrEpisodeNotFound for a withheld episode;
+// then the returned episode is empty. It returns the episode itself when
+// processing has failed for good and the failure policy publishes it
+// unprocessed, for the caller to stream.
+func (server *Server) awaitProcessing(writer http.ResponseWriter, request *http.Request, feed models.Feed, episode models.Episode) (models.Episode, error) {
+	done, err := server.pipeline.Prepare(feed, episode)
+	if errors.Is(err, ErrBusy) {
+		return models.Episode{}, server.unavailable(writer, episode)
+	}
+	if err != nil {
+		return models.Episode{}, err
+	}
+	timer := time.NewTimer(server.options.ProcessingWait)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		return models.Episode{}, server.unavailable(writer, episode)
+	case <-request.Context().Done():
+		return models.Episode{}, request.Context().Err()
+	}
+
+	episode, err = server.store.GetEpisode(request.Context(), episode.FeedID, episode.ID)
+	if err != nil {
+		return models.Episode{}, err
+	}
+	switch {
+	case episode.CacheFile != "":
+		served, err := server.serveCached(writer, request, episode)
+		if err != nil || served {
+			return models.Episode{}, err
+		}
+		return models.Episode{}, server.unavailable(writer, episode) // removed meanwhile
+	case episode.Withheld:
+		return models.Episode{}, database.ErrEpisodeNotFound
+	case episode.State == models.EpisodeFailed:
+		return episode, nil
+	default:
+		// A failure the next attempt may not have.
+		return models.Episode{}, server.unavailable(writer, episode)
+	}
+}
+
+// unavailable answers 503 with Retry-After: the episode isn't processed yet.
+func (server *Server) unavailable(writer http.ResponseWriter, episode models.Episode) error {
+	logger.Log.Info("Episode '" + episode.Title + "' is still being processed; asked the client to retry.")
+	writer.Header().Set("Retry-After", strconv.Itoa(int(retryAfter/time.Second)))
+	http.Error(writer, "The episode is being processed; try again shortly.", http.StatusServiceUnavailable)
+	return nil
 }
 
 // serveCached serves the episode from the cache. It reports false, with no

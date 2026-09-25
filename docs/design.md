@@ -385,7 +385,7 @@ Each step testable on its own; the core already routes every request through `ou
 
 ## Module: Region diff
 
-**Status: designed from live data (2026-09-25).** All decisions below are agreed (2026-09-25). Built in the order under **Region diff build order**: the diff and the processor are done, not yet wired into `main.go`.
+**Status: designed from live data (2026-09-25).** All decisions below are agreed (2026-09-25). Built in the order under **Region diff build order**: the diff, the processor and on-request processing are done, not yet wired into `main.go`.
 
 ### What the live data showed
 
@@ -471,8 +471,14 @@ Decided 2026-09-25:
    - **No unprocessed file in the cache:** for a processed feed the tee only caches a failed (published-unprocessed) episode, never a backlog or ready one, so the ads version can't take the processed file's place.
    - **Region diff side** (`regiondiff.Processor`): both downloads start together; if one fails the other is cancelled. Identical audio moves on to each of `fallback_exits` in turn; identical everywhere keeps the home download as it is, noted "no dynamic ads found" (with a hint when the file is more than 5% longer than stated). Not MP3 / mismatched formats are permanent failures; an implausible result is retried, since the next downloads may carry other ads. Every exit must be named once only. The episode's `process_note` records the result, e.g. "removed 4m32s of ads in 4 breaks, comparing norway with sweden" for the live pair.
    - Downloads for a processor are held in memory, at most 512 MB each.
-   - **Left for later steps:** `Handles` is every feed and nothing constructs the processor yet (step 5). Backlog episodes of a processed feed are still streamed with their ads and not cached (step 4). After `cache_retention_days` a processed file is deleted like any cached one, and the next play streams the source with its ads; step 4's on-demand processing has to cover that case too, not just backlog.
-4. **Backlog on first request** with the bounded wait and `503` / `Retry-After`, plus `backlog: N` up front. The same on-demand path covers a processed episode whose cached file has expired.
+   - **Left for later steps:** `Handles` is every feed and nothing constructs the processor yet (step 5).
+4. ✅ **Backlog on first request** with the bounded wait and `503` / `Retry-After`, plus `backlog: N` up front. The same on-demand path covers a processed episode whose cached file has expired.
+   - **On request:** for a processed feed, a request for an episode without its file goes to `Pipeline.Prepare`. That covers backlog, an expired processed file, and an episode still waiting for its turn or retry (e.g. one published by the never-empty rule). Prepare processes the episode in the background, and the request waits up to 20 s (`ProcessingWait`), then serves the cleaned file from the cache (`Range` included). After 20 s the client gets `503` with `Retry-After: 30` while processing carries on.
+   - **One job per episode:** workers and on-request work register the episodes they are preparing; a request joins the running job instead of starting another. A waiting (discovered) episode is claimed in the database first (`ClaimEpisode`, ignoring its retry time), so a worker can't take it too. A worker that has just claimed it but not yet registered gives `503`.
+   - **Outcomes on request:** success caches the file. A permanent failure applies `on_failure`: `publish` streams the source (and, in cache mode, caches it: from then on the version with ads is served), `hide` withholds the episode (`404`, gone from the feed, even for backlog). A retryable failure answers `503` and leaves the episode published; the next request tries again. There is no retry schedule for episodes already published, since clients don't re-request on their own.
+   - **Lifetime:** on-request work runs under the pipeline's context. `Pipeline.Run` returns only after it has stopped, so the database isn't closed under it, and refuses new work (`ErrBusy`) once stopping. A cancelled job records nothing; a claimed one is reset by `Recover`.
+   - **`backlog: N`:** on subscribing, the N newest backlog episodes (by date; undated count as oldest) of a processed feed are stored as waiting, and the pipeline processes them like new episodes, oldest first. They stay published while they wait, as all backlog does. `feeds.Options.ProcessBacklog`; the setting itself comes with step 5.
+   - ABS treats `503` as a failed download and doesn't retry by itself; pressing download again gets the cleaned file. That only happens when processing takes over 20 s.
 5. **Wiring and settings:** the `region_diff` block, per-feed switches, start-up checks (two distinct exits, home side not `direct` when `disable_direct`).
 6. **Live check** against the Acast show with Norwegian ads, and with ABS.
 

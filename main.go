@@ -166,7 +166,7 @@ func run() int {
 	}
 	poller := feeds.NewPoller(feedService, time.Duration(cfg.PollIntervalMinutes)*time.Minute, pipeline.Wake)
 
-	episodeServer := episodes.NewServer(store, exitManager, cache, feedService, episodes.Options{})
+	episodeServer := episodes.NewServer(store, exitManager, cache, feedService, pipeline, episodes.Options{})
 
 	srv, err := server.New(server.Options{Config: cfg, Version: version, Feeds: feedService, Episodes: episodeServer})
 	if err != nil {

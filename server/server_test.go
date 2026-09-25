@@ -116,7 +116,7 @@ func newTestRouterWithDir(t *testing.T, modify func(cfg *settings.Config)) (*gin
 	if err != nil {
 		t.Fatal(err)
 	}
-	episodeServer := episodes.NewServer(store, exits, cache, service, episodes.Options{})
+	episodeServer := episodes.NewServer(store, exits, cache, service, nil, episodes.Options{})
 	router, err := newRouter(Options{Config: cfg, Version: "v1.2.3", Feeds: service, Episodes: episodeServer})
 	if err != nil {
 		t.Fatal(err)

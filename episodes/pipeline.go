@@ -42,8 +42,13 @@ const (
 // streaming from the source, so one bad download can't hold a feed back.
 var retryDelays = []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, time.Hour, 3 * time.Hour}
 
-// ErrPermanent marks failures a retry won't fix. Processors wrap it too.
-var ErrPermanent = errors.New("permanent failure")
+var (
+	// ErrPermanent marks failures a retry won't fix. Processors wrap it too.
+	ErrPermanent = errors.New("permanent failure")
+	// ErrBusy means an episode can't be prepared on request right now: a
+	// worker is just taking it, or the pipeline is shutting down.
+	ErrBusy = errors.New("episode is being prepared elsewhere")
+)
 
 // Options configures a Pipeline.
 type Options struct {
@@ -55,6 +60,10 @@ type Options struct {
 	// IdleTimeout abandons a download that sends nothing for this long;
 	// zero means two minutes.
 	IdleTimeout time.Duration
+	// ProcessingWait is how long a client waits for an episode processed on
+	// its request before it gets 503 and Retry-After; zero means 20 seconds.
+	// Only the Server uses it.
+	ProcessingWait time.Duration
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 }
@@ -66,6 +75,15 @@ type Pipeline struct {
 	cache   Cache
 	options Options
 	wake    chan struct{}
+
+	mutex sync.Mutex
+	// inFlight holds the episodes being prepared, by a worker or on request;
+	// each channel is closed when that work is done.
+	inFlight map[uuid.UUID]chan struct{}
+	// lifetime is Run's context, for work started on request.
+	lifetime context.Context
+	stopped  bool
+	onDemand sync.WaitGroup
 }
 
 // NewPipeline builds a Pipeline.
@@ -79,7 +97,12 @@ func NewPipeline(store *database.Store, exits *outbound.Manager, cache Cache, op
 	if options.IdleTimeout <= 0 {
 		options.IdleTimeout = defaultIdleTimeout
 	}
-	return &Pipeline{store: store, exits: exits, cache: cache, options: options, wake: make(chan struct{}, 1)}
+	return &Pipeline{
+		store: store, exits: exits, cache: cache, options: options,
+		wake:     make(chan struct{}, 1),
+		inFlight: map[uuid.UUID]chan struct{}{},
+		lifetime: context.Background(),
+	}
 }
 
 // Wake tells an idle worker to look for work now, e.g. after a poll found new
@@ -109,9 +132,21 @@ func (pipeline *Pipeline) Recover(ctx context.Context) error {
 	return nil
 }
 
-// Run runs the workers until ctx is cancelled. In-flight downloads are
-// abandoned on shutdown and picked up again by Recover on the next start.
+// Run runs the workers until ctx is cancelled, and gives work started on
+// request the same lifetime. In-flight downloads are abandoned on shutdown
+// and picked up again by Recover on the next start; Run returns once all of
+// them have stopped.
 func (pipeline *Pipeline) Run(ctx context.Context) {
+	pipeline.mutex.Lock()
+	pipeline.lifetime = ctx
+	pipeline.mutex.Unlock()
+	defer func() {
+		pipeline.mutex.Lock()
+		pipeline.stopped = true
+		pipeline.mutex.Unlock()
+		pipeline.onDemand.Wait()
+	}()
+
 	var wait sync.WaitGroup
 	for range pipeline.options.Workers {
 		wait.Add(1)
@@ -165,22 +200,103 @@ func (pipeline *Pipeline) ProcessNext(ctx context.Context) (bool, error) {
 	// Other idle workers can take the next one meanwhile.
 	pipeline.Wake()
 
+	done := pipeline.startFlight(episode.ID)
+	defer pipeline.endFlight(episode.ID, done)
+
 	feed, err := pipeline.store.GetFeed(ctx, episode.FeedID)
 	if err != nil {
 		return true, err
 	}
+	return true, pipeline.prepare(ctx, feed, episode)
+}
 
+// Prepare processes an episode now, because a client asked for it before
+// the pipeline had: a backlog episode, one whose processed file has expired
+// from the cache, or one still waiting for its turn or retry. The work runs
+// in the background, for as long as the pipeline runs, and the returned
+// channel is closed when it is done; the outcome is recorded on the episode
+// as for any other. A request for an episode already being prepared joins
+// that work. It returns ErrBusy when a worker is just taking the episode or
+// the pipeline is stopping.
+func (pipeline *Pipeline) Prepare(feed models.Feed, episode models.Episode) (<-chan struct{}, error) {
+	pipeline.mutex.Lock()
+	defer pipeline.mutex.Unlock()
+	if done, ok := pipeline.inFlight[episode.ID]; ok {
+		return done, nil
+	}
+	if pipeline.stopped || pipeline.lifetime.Err() != nil {
+		return nil, ErrBusy
+	}
+	ctx := pipeline.lifetime
+
+	switch episode.State {
+	case models.EpisodeReady:
+		// Published without its file: nothing else will prepare it.
+	case models.EpisodeDiscovered:
+		claimed, err := pipeline.store.ClaimEpisode(ctx, episode.ID, pipeline.options.Now().UTC())
+		if errors.Is(err, database.ErrNoWork) {
+			return nil, ErrBusy
+		}
+		if err != nil {
+			return nil, err
+		}
+		episode = claimed
+	default:
+		// Acquiring by a worker that hasn't registered yet, or failed (the
+		// caller serves those as they are).
+		return nil, ErrBusy
+	}
+
+	done := make(chan struct{})
+	pipeline.inFlight[episode.ID] = done
+	pipeline.onDemand.Add(1)
+	go func() {
+		defer pipeline.onDemand.Done()
+		defer pipeline.endFlight(episode.ID, done)
+		logger.Log.Info(fmt.Sprintf("Preparing episode '%s' of '%s' for a client that asked for it.", episode.Title, feed.Title))
+		if err := pipeline.prepare(ctx, feed, episode); err != nil && ctx.Err() == nil {
+			logger.Log.Error("Episode pipeline error. Error: " + err.Error())
+		}
+	}()
+	return done, nil
+}
+
+func (pipeline *Pipeline) startFlight(episodeID uuid.UUID) chan struct{} {
+	done := make(chan struct{})
+	pipeline.mutex.Lock()
+	pipeline.inFlight[episodeID] = done
+	pipeline.mutex.Unlock()
+	return done
+}
+
+func (pipeline *Pipeline) endFlight(episodeID uuid.UUID, done chan struct{}) {
+	pipeline.mutex.Lock()
+	if pipeline.inFlight[episodeID] == done {
+		delete(pipeline.inFlight, episodeID)
+	}
+	pipeline.mutex.Unlock()
+	close(done)
+}
+
+// prepare downloads or processes an episode into the cache and records the
+// outcome. The episode is either claimed (acquiring), or ready but without
+// its file (prepared on request); a failure of the latter is recorded
+// without the retry schedule, since the episode is already published and it
+// is the next request that tries again. The error is for database problems.
+func (pipeline *Pipeline) prepare(ctx context.Context, feed models.Feed, episode models.Episode) error {
+	claimed := episode.State == models.EpisodeAcquiring
 	processor := pipeline.options.Processor
 	processing := processor != nil && processor.Handles(feed)
 	var prepared preparedEpisode
+	var err error
 	if processing {
 		prepared, err = pipeline.process(ctx, feed, episode)
 	} else {
 		prepared, err = pipeline.download(ctx, feed, episode)
 	}
 	if ctx.Err() != nil {
-		// Shutting down: leave the episode acquiring for Recover.
-		return true, nil
+		// Shutting down: leave a claimed episode acquiring for Recover.
+		return nil
 	}
 	now := pipeline.options.Now().UTC()
 	episode.Attempts++
@@ -193,7 +309,7 @@ func (pipeline *Pipeline) ProcessNext(ctx context.Context) (bool, error) {
 			message += "; " + processor.Name() + ": " + prepared.note
 		}
 		logger.Log.Info(message + ".")
-		return true, pipeline.store.UpdateEpisode(ctx, &episode)
+		return pipeline.store.UpdateEpisode(ctx, &episode)
 	}
 
 	episode.LastError = err.Error()
@@ -201,7 +317,8 @@ func (pipeline *Pipeline) ProcessNext(ctx context.Context) (bool, error) {
 	if processing {
 		action = "process"
 	}
-	if errors.Is(err, ErrPermanent) || episode.Attempts > len(retryDelays) {
+	switch {
+	case errors.Is(err, ErrPermanent) || (claimed && episode.Attempts > len(retryDelays)):
 		episode.State, episode.NextAttemptAt = models.EpisodeFailed, nil
 		fallback := "it will be streamed from the source instead"
 		if processing {
@@ -212,12 +329,14 @@ func (pipeline *Pipeline) ProcessNext(ctx context.Context) (bool, error) {
 			}
 		}
 		logger.Log.Warn(fmt.Sprintf("Gave up trying to %s episode '%s' of '%s' after %d attempts; %s. Error: %s", action, episode.Title, feed.Title, episode.Attempts, fallback, err))
-	} else {
+	case claimed:
 		next := now.Add(retryDelays[episode.Attempts-1])
 		episode.State, episode.NextAttemptAt = models.EpisodeDiscovered, &next
 		logger.Log.Warn(fmt.Sprintf("Failed to %s episode '%s' of '%s' (attempt %d), retrying at %s. Error: %s", action, episode.Title, feed.Title, episode.Attempts, next.Local().Format("15:04"), err))
+	default:
+		logger.Log.Warn(fmt.Sprintf("Failed to %s episode '%s' of '%s' on request; the next request tries again. Error: %s", action, episode.Title, feed.Title, err))
 	}
-	return true, pipeline.store.UpdateEpisode(ctx, &episode)
+	return pipeline.store.UpdateEpisode(ctx, &episode)
 }
 
 // processedFeeds lists the feeds the processor handles, whose episodes are

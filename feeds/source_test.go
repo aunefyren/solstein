@@ -142,6 +142,12 @@ func TestPublishedEpisodes(t *testing.T) {
 	if withWithheld[withheld.ID] || !withWithheld[wednesday.ID] {
 		t.Errorf("withheld episode: published %v, want monday and wednesday only", withWithheld)
 	}
+	// Withheld beats backlog: the unprocessed version isn't served.
+	withheldBacklog := episode(models.EpisodeFailed, true)
+	withheldBacklog.Withheld = true
+	if publishedEpisodes([]models.Episode{withheldBacklog, monday}, true)[withheldBacklog.ID] {
+		t.Error("withheld backlog episode published")
+	}
 	// Never an empty feed, but a withheld episode is the last resort.
 	onlyWithheld := publishedEpisodes([]models.Episode{withheld, first}, true)
 	if len(onlyWithheld) != 1 || !onlyWithheld[first.ID] {

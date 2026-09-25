@@ -22,9 +22,14 @@ func TestClaimNextEpisode(t *testing.T) {
 	tuesday := now.Add(-24 * time.Hour)
 	createTestEpisode(t, store, feed.ID, "tuesday", &tuesday)
 	createTestEpisode(t, store, feed.ID, "monday", &monday)
-	backlog := models.Episode{FeedID: feed.ID, GUID: "backlog", SourceURL: "x", State: models.EpisodeDiscovered, Backlog: true}
-	if err := store.CreateEpisode(ctx, &backlog); err != nil {
-		t.Fatal(err)
+	// Backlog is fetched on demand (ready, uncached), unless queued for
+	// processing up front (discovered).
+	backlog := models.Episode{FeedID: feed.ID, GUID: "backlog", SourceURL: "x", State: models.EpisodeReady, Backlog: true}
+	queued := models.Episode{FeedID: feed.ID, GUID: "queued", SourceURL: "x", State: models.EpisodeDiscovered, Backlog: true}
+	for _, episode := range []*models.Episode{&backlog, &queued} {
+		if err := store.CreateEpisode(ctx, episode); err != nil {
+			t.Fatal(err)
+		}
 	}
 	later := now.Add(time.Hour)
 	retrying := models.Episode{FeedID: feed.ID, GUID: "retrying", SourceURL: "x", State: models.EpisodeDiscovered, NextAttemptAt: &later}
@@ -40,9 +45,12 @@ func TestClaimNextEpisode(t *testing.T) {
 	if err != nil || second.GUID != "tuesday" {
 		t.Fatalf("second claim = %+v, %v; want tuesday", second, err)
 	}
-	// Backlog is fetched on demand, and the retry isn't due yet.
+	if third, err := store.ClaimNextEpisode(ctx, now, "cache", nil); err != nil || third.GUID != "queued" {
+		t.Fatalf("third claim = %+v, %v; want the queued backlog episode", third, err)
+	}
+	// The ready backlog episode waits for a request, and the retry isn't due yet.
 	if _, err := store.ClaimNextEpisode(ctx, now, "cache", nil); !errors.Is(err, ErrNoWork) {
-		t.Errorf("third claim: err = %v, want ErrNoWork", err)
+		t.Errorf("fourth claim: err = %v, want ErrNoWork", err)
 	}
 	if claimed, err := store.ClaimNextEpisode(ctx, later, "cache", nil); err != nil || claimed.GUID != "retrying" {
 		t.Errorf("claim after retry time = %+v, %v", claimed, err)
@@ -154,5 +162,31 @@ func TestResetInterruptedEpisodes(t *testing.T) {
 	stored, _ := store.GetEpisode(ctx, feed.ID, episode.ID)
 	if stored.State != models.EpisodeDiscovered {
 		t.Errorf("state = %s, want discovered", stored.State)
+	}
+}
+
+func TestClaimEpisode(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	feed := createTestFeed(t, store, "https://example.com/feed")
+	later := now.Add(time.Hour)
+	retrying := models.Episode{FeedID: feed.ID, GUID: "retrying", SourceURL: "x", State: models.EpisodeDiscovered, NextAttemptAt: &later}
+	ready := models.Episode{FeedID: feed.ID, GUID: "ready", SourceURL: "x", State: models.EpisodeReady}
+	for _, episode := range []*models.Episode{&retrying, &ready} {
+		if err := store.CreateEpisode(ctx, episode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A client asked: claimed even though its retry isn't due.
+	claimed, err := store.ClaimEpisode(ctx, retrying.ID, now)
+	if err != nil || claimed.State != models.EpisodeAcquiring || claimed.GUID != "retrying" {
+		t.Fatalf("claim = %+v, %v", claimed, err)
+	}
+	if _, err := store.ClaimEpisode(ctx, retrying.ID, now); !errors.Is(err, ErrNoWork) {
+		t.Errorf("second claim: err = %v, want ErrNoWork", err)
+	}
+	if _, err := store.ClaimEpisode(ctx, ready.ID, now); !errors.Is(err, ErrNoWork) {
+		t.Errorf("ready episode: err = %v, want ErrNoWork", err)
 	}
 }
