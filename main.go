@@ -218,7 +218,20 @@ func run() int {
 	queueFeedsPreparedAhead(ctx, feedService, pipeline)
 	poller := feeds.NewPoller(feedService, time.Duration(cfg.PollIntervalMinutes)*time.Minute, pipeline.Wake)
 
-	episodeServer := episodes.NewServer(store, exitManager, cache, feedService, pipeline, episodes.Options{SkipTrackers: cfg.SkipTrackingRedirects})
+	processingWait := time.Duration(cfg.ProcessingWaitSeconds) * time.Second
+	episodeServer := episodes.NewServer(store, exitManager, cache, feedService, pipeline, episodes.Options{
+		SkipTrackers:   cfg.SkipTrackingRedirects,
+		ProcessingWait: processingWait,
+	})
+	if processor != nil {
+		logger.Log.Info(fmt.Sprintf("A client asking for an episode that still has to be prepared waits up to %s (processing_wait_seconds), then gets 503 and Retry-After while the work carries on.", processingWait))
+		// ABS's own download timeout is 30 s by default, and it gives each
+		// episode two attempts: held longer than that, the request fails on
+		// its side instead, which is worse than a 503 it can retry.
+		if cfg.ProcessingWaitSeconds > clientTimeoutHeadroomSeconds {
+			logger.Log.Warn(fmt.Sprintf("processing_wait_seconds is %d: longer than the 30 seconds Audiobookshelf allows a download by default, so raise its PODCAST_DOWNLOAD_TIMEOUT above %d (and any other client's timeout) — otherwise the request fails on the client's side before Solstein answers.", cfg.ProcessingWaitSeconds, cfg.ProcessingWaitSeconds))
+		}
+	}
 	if cfg.SkipTrackingRedirects {
 		logger.Log.Info("Tracking redirects in front of episode URLs are skipped: episodes are fetched from the audio host directly, and the shows' download counts don't see them.")
 	}
@@ -278,6 +291,12 @@ func warnAboutFeedSettings(ctx context.Context, feedService *feeds.Service, avai
 		}
 	}
 }
+
+// clientTimeoutHeadroomSeconds is the longest processing wait that fits in a
+// client's own download timeout without being told to raise it: ABS allows a
+// download 30 seconds by default (PODCAST_DOWNLOAD_TIMEOUT), and the wait has
+// to end before that with room for the response.
+const clientTimeoutHeadroomSeconds = 25
 
 // queueFeedsPreparedAhead queues the episodes without a file of every feed
 // that prepares ahead, so they are ready before a client asks. It runs at

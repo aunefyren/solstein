@@ -26,9 +26,15 @@ import (
 const (
 	configFileName = "config.json"
 
-	defaultPort               = 8080
-	defaultLogLevel           = "info"
-	defaultDeliveryMode       = "cache"
+	defaultPort         = 8080
+	defaultLogLevel     = "info"
+	defaultDeliveryMode = "cache"
+	// defaultProcessingWaitSeconds matches episodes' own default: long
+	// enough for a diff of a normal episode, inside ABS's 30-second timeout.
+	defaultProcessingWaitSeconds = 20
+	// maxProcessingWaitSeconds caps the wait at an hour: no client holds a
+	// request that long, so a larger value is a mistake.
+	maxProcessingWaitSeconds  = 3600
 	defaultPollInterval       = 15
 	defaultCacheRetentionDays = 14
 )
@@ -111,6 +117,15 @@ type Config struct {
 	// on demand is what a client streaming every play needs. Per feed:
 	// models.Feed.PrepareAhead.
 	PrepareAhead bool `json:"prepare_ahead"`
+
+	// ProcessingWaitSeconds is how long a client waiting for an episode that
+	// is being prepared on request is held before it gets 503 and
+	// Retry-After, while the work carries on. The default, 20, stays inside
+	// Audiobookshelf's own 30-second download timeout. Raise it only
+	// together with the client's timeout (ABS:
+	// PODCAST_DOWNLOAD_TIMEOUT) — held longer than the client allows, the
+	// request fails on its side instead.
+	ProcessingWaitSeconds int `json:"processing_wait_seconds"`
 
 	// VPN configures the exits module; validated by the module itself.
 	VPN VPN `json:"vpn"`
@@ -235,6 +250,9 @@ func (cfg *Config) applyDefaults() {
 	if cfg.AllowedSourceHosts == nil {
 		cfg.AllowedSourceHosts = []string{}
 	}
+	if cfg.ProcessingWaitSeconds == 0 {
+		cfg.ProcessingWaitSeconds = defaultProcessingWaitSeconds
+	}
 	if cfg.DeliveryMode == "" {
 		cfg.DeliveryMode = defaultDeliveryMode
 	}
@@ -324,6 +342,11 @@ func (cfg *Config) Validate() error {
 	}
 	if cfg.CacheRetentionDays < 1 {
 		return fmt.Errorf("cache retention must be at least 1 day, got %d", cfg.CacheRetentionDays)
+	}
+	// An hour is far more than any client allows; beyond it the setting is
+	// more likely a mistake (milliseconds, say) than an intention.
+	if cfg.ProcessingWaitSeconds < 1 || cfg.ProcessingWaitSeconds > maxProcessingWaitSeconds {
+		return fmt.Errorf("processing wait must be between 1 and %d seconds, got %d", maxProcessingWaitSeconds, cfg.ProcessingWaitSeconds)
 	}
 
 	if err := cfg.RegionDiff.validate(); err != nil {

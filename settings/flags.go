@@ -212,6 +212,12 @@ var settings = []setting{
 		apply: intSetting(func(cfg *Config) *int { return &cfg.CacheRetentionDays }),
 	},
 	{
+		flag:  "processingwait",
+		env:   "SOLSTEIN_PROCESSING_WAIT",
+		usage: "Seconds a client is held while an episode it asked for is prepared, before it gets 503. Raise the client's own download timeout to match.",
+		apply: intSetting(func(cfg *Config) *int { return &cfg.ProcessingWaitSeconds }),
+	},
+	{
 		flag:    "prepareahead",
 		env:     "SOLSTEIN_PREPARE_AHEAD",
 		usage:   "Prepare every episode before any client asks for it, and publish it only once ready.",

@@ -166,6 +166,18 @@ func TestValidate(t *testing.T) {
 		{name: "bad delivery mode", modify: func(cfg *Config) { cfg.DeliveryMode = "carrier-pigeon" }, wantErr: true},
 		{name: "bad poll interval", modify: func(cfg *Config) { cfg.PollIntervalMinutes = -1 }, wantErr: true},
 		{name: "bad retention", modify: func(cfg *Config) { cfg.CacheRetentionDays = -3 }, wantErr: true},
+		{name: "processing wait default", modify: func(cfg *Config) {}, check: func(t *testing.T, cfg Config) {
+			if cfg.ProcessingWaitSeconds != 20 {
+				t.Errorf("processing wait = %d, want 20", cfg.ProcessingWaitSeconds)
+			}
+		}},
+		{name: "processing wait raised", modify: func(cfg *Config) { cfg.ProcessingWaitSeconds = 600 }, check: func(t *testing.T, cfg Config) {
+			if cfg.ProcessingWaitSeconds != 600 {
+				t.Errorf("processing wait = %d, want it kept", cfg.ProcessingWaitSeconds)
+			}
+		}},
+		{name: "processing wait negative", modify: func(cfg *Config) { cfg.ProcessingWaitSeconds = -5 }, wantErr: true},
+		{name: "processing wait beyond an hour", modify: func(cfg *Config) { cfg.ProcessingWaitSeconds = 3601 }, wantErr: true},
 		{name: "direct exit off without default exit", modify: func(cfg *Config) { cfg.DirectExit = "off" }},
 		{name: "direct exit off with default exit direct", modify: func(cfg *Config) { cfg.DirectExit, cfg.DefaultExit = "off", "direct" }, wantErr: true},
 		{name: "direct exit auto with VPN exits and default exit direct", modify: func(cfg *Config) {

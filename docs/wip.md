@@ -21,13 +21,24 @@ Built: one tunnel per Proton key, key affinity, and resuming broken downloads ([
 
 Open question: should a tunnel DNS failure with a fresh handshake count against the server? The stalls turned out to be key conflicts, where switching servers moves the key and makes things worse, so probably not; left open until the above is settled.
 
-### Comparing by audio: not checked in production yet (2026-09-26)
+### Comparing by audio: what the RedCircle run left open (2026-09-26)
 
-Built and checked offline on the kept Safety Third downloads ([`region-diff.md`](region-diff.md), Hosts that re-encode), but not yet run on the server against RedCircle and ABS. Worth watching: the time per episode on the server (about 7 s per episode on the development machine, for two ~80-minute downloads measured at once; a slower CPU may push episodes processed on request past the 20 s wait), memory (570 MB peak for two 80-minute downloads here, 150 MB above just holding them; a small server running two workers at once needs about twice that), and whether any host re-encodes with ads in both markets, so that cuts at breaks are made in production.
+Run live against RedCircle and ABS on 15 "Safety Third" episodes ([`region-diff.md`](region-diff.md)): about a minute each, 805 MB peak for one pair of up to 220 MB downloads, no failure. Left:
+- **No cut has been made at a break in production yet.** Every episode's home download was ad-free, so the diff had nothing to remove — the cutting path for a re-encoded host is still only checked offline on the kept downloads. It needs a host that re-encodes *and* puts ads in the home market.
+- **Why RedCircle leaves Norway alone** is unknown: no advertiser for the market, or no ad server for it at all. If it holds for every RedCircle show, region diff has nothing to do on them and the pair's downloads cost twice the bandwidth for nothing — worth a way to notice a feed that never has ads at home and stop comparing it (and what would then make it start again).
+- **A slower server** may push an episode of this size past the 20 s wait more often than the 22 s best case here; with `prepare_ahead` that no longer matters.
 
 ### Why five backlog downloads were implausible (open question)
 
 Five of 115 "It Was A Sh*t Show" episodes failed as implausible in production within a minute (2026-09-25, [`region-diff.md`](region-diff.md)); downloaded again, they diff cleanly. Most likely one side got a partial or wrong file during the burst of downloads, but it is unconfirmed. Re-downloaded through ABS 25 minutes later (14:24–14:25, one at a time, both tunnels opened cold), all five were cleaned in 3–12 s each, 3 breaks and about 3 minutes removed per episode, and none of the downloads looked incomplete: consistent with a passing problem on the host's side. Solstein now re-fetches downloads that look cut off, asks for fresh copies after a failure, and applies the failure policy after three failed attempts on request. To settle it: run with `keep_failed_downloads` on, and look at the kept files and note the next time it happens. Then decide whether anything else is needed. Withheld episodes are now retried slowly, and a backlog can be cleaned ahead two at a time with `prepare` instead of through ABS's burst; ABS re-downloading a whole backlog still processes on request, as fast as it asks.
+
+### A raised `processing_wait_seconds` isn't checked live yet (2026-09-26)
+
+Built and documented ([`episodes.md`](episodes.md)): the wait before a client gets `503` is now a setting (default 20 s), with a start-up warning above 25 s that the client's own timeout has to be raised too. The log lines are verified both ways. What isn't measured:
+- **Whether ABS really sits through it.** With `PODCAST_DOWNLOAD_TIMEOUT=600` and `processing_wait_seconds: 300`, does a bulk download of a backlog arrive on the first pass? Its timeout is documented as covering feed fetches and episode downloads, but a request held for minutes may hit something else (a proxy, its own queue, the progress estimate).
+- **What it costs ABS** to have a download slot held for minutes: whether its queue simply waits, and whether the episode's progress display copes.
+- **Other clients:** the same question, and most have shorter patience than ABS.
+Worth a run on the RedCircle feed, where an episode takes about a minute — long enough to need the raised wait, short enough to watch.
 
 ### Background queue: the retry paths aren't checked live yet (2026-09-26)
 
@@ -76,6 +87,7 @@ Built after the live bulk download ran a three-key pool out of tunnels: the star
 - **Whether a minute is the right wait** (`tunnelWait`). It rides out one finishing download; a burst of long episodes may need longer, and an on-request episode waiting a minute has already answered the client `503`. No measurement yet of how often the wait is used, or how long it usually takes.
 - **Where the real ceiling is:** two episodes downloading through one exit share its tunnel and its bandwidth. Whether that, rather than the tunnel count, is what should limit concurrency is unmeasured — with a key per exit, nothing limits how many episodes share a tunnel.
 - **Production** runs four exits on three keys, so it prepares one episode at a time until a fourth key is added; the maintainer is adding one. Then watch that the warning is gone and two are prepared at once.
+- Checked live on 2026-09-26 under the load that first broke it (15 backlog episodes of a RedCircle show through ABS, three keys): the start-up warning named the missing key, attempts took turns, and there was **no `tunnel limit reached`, no key-move warning and no crash** — against 97 tunnel-limit failures and one panic in the run before the fixes.
 
 ### Open questions
 

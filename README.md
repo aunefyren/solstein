@@ -79,6 +79,8 @@ Audiobookshelf refuses to fetch from private addresses by default, so a Solstein
 ```yaml
     environment:
       SSRF_REQUEST_FILTER_WHITELIST: solstein
+      # Only needed with a raised processing_wait_seconds; see Operating styles.
+      PODCAST_DOWNLOAD_TIMEOUT: 600
 ```
 
 ## VPN exits
@@ -177,7 +179,9 @@ Solstein can be run in quite different ways, and what it needs — VPN keys, pat
 | **Region diff, prepared ahead** | `prepare_ahead: true` | one per exit in use at once | A client that downloads each episode once, such as Audiobookshelf |
 | **Region diff on one key** | `prepare_ahead: true`, and `region_diff.pair_downloads` left at `auto` (or set to `in_turn`) | one | The same, when you have one key and can wait |
 
-**On demand** (the default) prepares a new episode when the feed is polled and publishes it once ready, and prepares a backlog episode — or one whose cached copy expired — **when a client asks for it**, in about 5–20 s. Clients don't wait long: Solstein answers `503` with `Retry-After` after 20 s and carries on in the background, and Audiobookshelf gives each episode only two attempts before moving on. So selecting a whole backlog at once in Audiobookshelf can arrive empty on the first pass while Solstein cleans; `POST /api/v1/feeds/{id}/prepare` first, and the downloads then come from the cache in under a second.
+**On demand** (the default) prepares a new episode when the feed is polled and publishes it once ready, and prepares a backlog episode — or one whose cached copy expired — **when a client asks for it**, in about 5–20 s. Clients don't wait long: Solstein answers `503` with `Retry-After` after 20 s and carries on in the background, and Audiobookshelf gives each episode only two attempts before moving on. That is **40 seconds per episode**, whatever the episode costs: 15 backlog episodes of a RedCircle show took 22–95 s each to clean (about a minute on average), and **1 of 15** arrived on the first pass. The ways round it are below, in order of how little they ask of you: prepare ahead, `POST /api/v1/feeds/{id}/prepare` before selecting anything (the downloads then come from the cache in under a second), or raise the wait so the client sits through it.
+
+**Or let the client wait it out.** `processing_wait_seconds` (default 20) is how long Solstein holds a request before answering `503`; it is 20 because Audiobookshelf allows a download 30 seconds. Raise both — `processing_wait_seconds: 300` in Solstein and `PODCAST_DOWNLOAD_TIMEOUT=600` on the Audiobookshelf container — and the client waits while the episode is cleaned instead of being sent away, so a bulk download need not be prepared first. Audiobookshelf downloads one episode at a time anyway, so a held request costs it nothing. Raising Solstein's wait *without* the client's timeout makes things worse, not better: the client gives up on its own and never sees the `503` it could have retried, so Solstein warns at start-up when the wait is over 25 seconds.
 
 **Prepared ahead** (`prepare_ahead: true`) removes that race: every episode is downloaded and cleaned before any client asks, and **appears in its feed only once it is ready** — the backlog included, queued as soon as the feed is subscribed to (or at the next start-up for feeds you already have). Nothing then waits on a deadline, so it doesn't matter how long an episode takes. Per feed with the API's `prepare_ahead` (`on`, `off`, or empty to follow the global setting); `prepare_ahead_in_use` shows the result. Episodes are still prepared on request when one is asked for anyway — a copy that expired from the cache — so a streaming client keeps working.
 
@@ -211,6 +215,7 @@ On first run Solstein creates `config.json` in its config directory (`/app/confi
 | `delivery_mode` | `-deliverymode` | `SOLSTEIN_DELIVERY_MODE` | `cache` | Default for feeds: `cache` (download and serve from disk), `stream` (pass through live) or `original` (only proxy the feed). |
 | `poll_interval_minutes` | `-pollinterval` | `SOLSTEIN_POLL_INTERVAL` | `15` | Minutes between feed polls. |
 | `cache_retention_days` | `-cacheretention` | `SOLSTEIN_CACHE_RETENTION` | `14` | Days cached episodes are kept on disk. Expired episodes stay in the feed and are fetched from the source again if played. |
+| `processing_wait_seconds` | `-processingwait` | `SOLSTEIN_PROCESSING_WAIT` | `20` | Seconds a client is held while an episode it asked for is being prepared, before it gets `503` and `Retry-After` (the work carries on either way). The default fits inside Audiobookshelf's 30-second download timeout. Raise it to let a client wait out a whole diff — and raise the client's own timeout to match (`PODCAST_DOWNLOAD_TIMEOUT` on Audiobookshelf), or the request fails on its side instead. At most 3600. |
 | `prepare_ahead` | `-prepareahead` | `SOLSTEIN_PREPARE_AHEAD` | `false` | Prepare every episode — download, or clean — before any client asks for it, and let it appear in the feed only once ready. Off by default: episodes are prepared when a feed is polled, and a backlog episode when it is first played. See **Operating styles**. |
 | `region_diff` | — | — | off | Ad removal; see **Removing ads**. Set in `config.json` only. |
 | — | `-configdir` | `SOLSTEIN_CONFIG_DIR` | `config` (`/app/config` in Docker) | Directory for `config.json`, the database, logs and cache. |

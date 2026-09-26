@@ -84,6 +84,36 @@ func TestResolvePersistsOverrides(t *testing.T) {
 	}
 }
 
+// The wait a client is held for while an episode is prepared can be raised
+// from the environment, and is then saved like any other override.
+func TestResolveProcessingWait(t *testing.T) {
+	configDir := t.TempDir()
+	env := envFrom(map[string]string{"SOLSTEIN_PROCESSING_WAIT": "300"})
+	cfg, _, err := Resolve([]string{"-configdir", configDir}, env, io.Discard)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if cfg.ProcessingWaitSeconds != 300 {
+		t.Errorf("processing wait = %d, want 300", cfg.ProcessingWaitSeconds)
+	}
+	saved, err := Load(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.ProcessingWaitSeconds != 300 {
+		t.Errorf("saved processing wait = %d, want 300", saved.ProcessingWaitSeconds)
+	}
+
+	// The flag wins over the environment, as everywhere else.
+	cfg, _, err = Resolve([]string{"-configdir", configDir, "-processingwait", "45"}, env, io.Discard)
+	if err != nil {
+		t.Fatalf("Resolve with the flag: %v", err)
+	}
+	if cfg.ProcessingWaitSeconds != 45 {
+		t.Errorf("processing wait = %d, want the flag's 45", cfg.ProcessingWaitSeconds)
+	}
+}
+
 func TestResolveCreatesConfigFile(t *testing.T) {
 	configDir := t.TempDir()
 
@@ -162,6 +192,8 @@ func TestResolveErrors(t *testing.T) {
 		{name: "stray argument", args: []string{"serve"}, wantErr: "unexpected argument"},
 		{name: "bad bool env", env: map[string]string{"SOLSTEIN_ALLOW_PRIVATE_DESTINATIONS": "maybe"}, wantErr: "SOLSTEIN_ALLOW_PRIVATE_DESTINATIONS"},
 		{name: "bad poll interval", args: []string{"-pollinterval", "often"}, wantErr: "flag -pollinterval"},
+		{name: "bad processing wait", args: []string{"-processingwait", "ages"}, wantErr: "flag -processingwait"},
+		{name: "processing wait out of range", env: map[string]string{"SOLSTEIN_PROCESSING_WAIT": "99999"}, wantErr: "processing wait"},
 		{name: "bad network list", env: map[string]string{"SOLSTEIN_ALLOWED_CLIENT_NETWORKS": "10.0.0.0/8,lan"}, wantErr: "allowed client networks"},
 		{name: "bad delivery mode", args: []string{"-deliverymode", "fax"}, wantErr: "delivery mode"},
 	}
