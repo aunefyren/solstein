@@ -171,11 +171,6 @@ func concurrentTunnels(t *testing.T, keys []string) {
 	t.Logf("open tunnels: %d; key use: %v", module.pools["proton"].openCount(), module.pools["proton"].keyUse)
 }
 
-func TestLiveOneKeyTwoTunnels(t *testing.T) {
-	requireKeys(t, "PROTON_KEY_1")
-	concurrentTunnels(t, []string{"env:PROTON_KEY_1"})
-}
-
 func TestLiveTwoKeysTwoTunnels(t *testing.T) {
 	requireKeys(t, "PROTON_KEY_1", "PROTON_KEY_2")
 	concurrentTunnels(t, []string{"env:PROTON_KEY_1", "env:PROTON_KEY_2"})
@@ -188,11 +183,14 @@ func TestLiveAcastRegions(t *testing.T) {
 	// LIVE_HOME_COUNTRY downloads the home side through a Proton exit in
 	// that country instead of directly, as a disable_direct setup does.
 	exits := map[string]string{"sweden": "SE"}
-	home, tunnels := outbound.DirectExit, 0
+	home, keys := outbound.DirectExit, []string{"env:PROTON_KEY_1"}
 	if country := os.Getenv("LIVE_HOME_COUNTRY"); country != "" {
-		exits["home"], home, tunnels = country, "home", 2 // one key holds both
+		// A tunnel each needs a key each: a Proton key works on one server
+		// at a time.
+		requireKeys(t, "PROTON_KEY_2")
+		exits["home"], home, keys = country, "home", append(keys, "env:PROTON_KEY_2")
 	}
-	manager, _ := liveManager(t, []string{"env:PROTON_KEY_1"}, tunnels, exits)
+	manager, _ := liveManager(t, keys, 0, exits)
 	output := os.Getenv("LIVE_OUTPUT_DIR")
 	if output == "" {
 		output = t.TempDir()

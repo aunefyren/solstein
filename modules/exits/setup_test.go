@@ -165,3 +165,23 @@ func TestFeedThroughVPNExit(t *testing.T) {
 		t.Errorf("unknown exit: err = %v", err)
 	}
 }
+
+// TestSetupLimitsProtonTunnelsToKeys: a Proton key works on one server at a
+// time, so max_tunnels above the number of keys is cut to one per key.
+func TestSetupLimitsProtonTunnelsToKeys(t *testing.T) {
+	quietLogs(t)
+	vpn := settings.VPN{
+		Providers: map[string]settings.VPNProvider{"proton": {Type: "protonvpn", PrivateKeys: []string{testKeyA}, MaxTunnels: 3}},
+		Exits:     map[string]settings.VPNExit{"proton": {Provider: "proton"}},
+	}
+	module, warnings := Setup(vpn, t.TempDir(), testEnv(nil))
+	if module == nil {
+		t.Fatalf("module not built; warnings: %v", warnings)
+	}
+	if joined := strings.Join(warnings, "\n"); !strings.Contains(joined, "max_tunnels 3 is more than its 1 private keys; limited to 1") {
+		t.Errorf("warnings lack the limit:\n%s", joined)
+	}
+	if module.pools["proton"].max != 1 {
+		t.Errorf("pool max = %d, want 1", module.pools["proton"].max)
+	}
+}

@@ -11,16 +11,15 @@ Everything about Solstein that isn't finished: known issues, gaps, open question
 
 ## Region diff
 
-### Connections through Proton exits fail intermittently beyond DNS (open, 2026-09-26)
+### Proton keys and stalls: what's left (open, 2026-09-26)
 
-Found while checking fallback DNS live (`modules/exits/live_dns_probe_test.go`, temporary, `live` tag: `TestLiveDNSProbe` resolves NRK's hosts and fetches, `TestLiveHTTPProbe` makes 18 ranged requests for an NRK episode per exit, on new and reused connections). With fallback DNS on, the CDN host resolved in most lookups through US-AZ#108, where Proton's resolver alone had failed 9 of 9; the remaining failures are of other kinds:
-- **Whole-tunnel stalls:** for 10–15 s nothing gets through, not even the write of a DNS query ("write udp …: i/o timeout" from netstack), and the fallback resolvers time out too; lookups of cached names such as `feeds.acast.com` take 11 s meanwhile. Seen through US-AZ#108 (twice in about 10 minutes) and NO#23 (once). Unknown whether it is the servers, Proton's network, or our netstack/WireGuard device (a send path that blocks).
-- **`podkast.nrk.no` (Akamai) cutting requests:** `EOF`, `unexpected EOF` or `connection reset by peer` within 1–5 s, on new and reused connections: 4 of 18 through NO#23, 1 of 18 through US. Its CDN (`nrk-pod-pd.telenorcdn.net`, the redirect target) never did this. Possibly Akamai treating VPN addresses with suspicion.
-- **Reused connections after 20 s idle:** through US, one `http2: client connection lost` and one `timeout awaiting response headers` (30 s) out of 6.
+Built: one tunnel per Proton key, key affinity, and resuming broken downloads ([`exits.md`](exits.md), [`episodes.md`](episodes.md)). Left:
+- **How long a moved key stays disturbed:** `keyMoveSettle` (3 minutes) is a guess from WireGuard's 180 s session lifetime. Measure it: move one key from server A to B and watch B for stalls, for pauses on A of 30 s, 1, 2, 3 and 5 minutes.
+- **`podkast.nrk.no` (Akamai) cutting requests** (`EOF` within 1–5 s, 4 of 18 through NO#23): measured while production shared the probe's keys, so recheck with clean keys. If it remains, find out whether it's the VPN addresses or our client (User-Agent), and compare with direct. The existing one retry per request covers a single cut.
+- **Production** needs fresh keys, one per exit used at the same time (the maintainer is generating them); then watch the NRK feeds process.
+- **Probe files** `modules/exits/live_dns_probe_test.go` and `live_stall_probe_test.go` (temporary, `live` tag): delete once the above is settled.
 
-Production copes through retries, and a fallback exit that fails no longer fails the attempt ([`region-diff.md`](region-diff.md)), but a failed home or partner download still does. To look into: whether other US and NO servers stall the same way (the exit stays on one server unless its handshake fails), a packet capture of a stall inside the device, and retrying a request once on `EOF` from the redirecting host. Delete the probe file once this is settled.
-
-Open question: should a tunnel DNS failure with a fresh handshake count against the server? Today `through` treats it as the destination's problem, so the exit keeps the same server. Proton's resolver failed per name rather than per server (the same names through US and NO servers), and with fallback DNS the lookup mostly succeeds; the stalls above may argue for it.
+Open question: should a tunnel DNS failure with a fresh handshake count against the server? The stalls turned out to be key conflicts, where switching servers moves the key and makes things worse, so probably not; left open until the above is settled.
 
 ### Comparing by audio: not checked in production yet (2026-09-26)
 

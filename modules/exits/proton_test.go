@@ -347,3 +347,70 @@ func TestProtonListAgeWarning(t *testing.T) {
 		})
 	}
 }
+
+// TestPoolKeepsKeysOnTheirServers: a Proton key works on one server at a
+// time, so a key goes back to the server it was last used on, and one that
+// just left another server is only moved when no other key is free.
+func TestPoolKeepsKeysOnTheirServers(t *testing.T) {
+	quietLogs(t)
+	keys := []Key{generateKey(t), generateKey(t), generateKey(t)}
+	clock := &fakeClock{now: time.Now()}
+	pool := newPool("proton", 3, keys, nil, clock.Now)
+	opened := map[string]Key{}
+	pool.open = func(ctx context.Context, server Server) (*tunnel, error) {
+		opened[server.Name] = server.PrivateKey
+		return &tunnel{server: server, now: clock.Now, lastUsed: clock.Now(), keyIndex: -1}, nil
+	}
+	ctx := context.Background()
+	open := func(name string) Key {
+		t.Helper()
+		if _, err := pool.get(ctx, Server{Name: name}); err != nil {
+			t.Fatal(err)
+		}
+		return opened[name]
+	}
+
+	a, b := open("a"), open("b")
+	pool.forget("a")
+	pool.forget("b")
+	clock.advance(time.Minute)
+	// Back to their servers, the other way round: each gets its own key.
+	if open("b") != b || open("a") != a {
+		t.Error("keys didn't go back to the servers they were last used on")
+	}
+
+	// A new server gets the unused key, not one that just left a server.
+	pool.forget("a")
+	if c := open("c"); c == a || c == b {
+		t.Error("a new server got a key that was just used elsewhere, with one unused")
+	}
+
+	// With every other key busy, the one that left a server moves.
+	if d := open("d"); d != a {
+		t.Error("the only free key wasn't used")
+	}
+
+	// Once settled, a key used elsewhere long ago is as good as unused.
+	pool.closeAll()
+	clock.advance(keyMoveSettle)
+	if e := open("e"); e == (Key{}) {
+		t.Error("no key after they settled")
+	}
+}
+
+func TestPickKeyPrefersLongestSettled(t *testing.T) {
+	quietLogs(t)
+	keys := []Key{generateKey(t), generateKey(t)}
+	clock := &fakeClock{now: time.Now()}
+	pool := newPool("proton", 2, keys, nil, clock.Now)
+	pool.keyLast[0] = keyPlace{server: "x", at: clock.Now().Add(-time.Minute)}
+	pool.keyLast[1] = keyPlace{server: "y", at: clock.Now().Add(-2 * time.Minute)}
+	// Both left another server recently; the one that left longer ago moves.
+	if got := pool.pickKey("z"); got != 1 {
+		t.Errorf("pickKey = %d, want 1", got)
+	}
+	pool.keyUse[1] = 1
+	if got := pool.pickKey("z"); got != 0 {
+		t.Errorf("pickKey with key 2 in use = %d, want 0", got)
+	}
+}

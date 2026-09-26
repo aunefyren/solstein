@@ -45,6 +45,16 @@ func Setup(vpn settings.VPN, configDir string, getenv func(string) string) (*Mod
 			}
 			servers[name] = loaded
 		case TypeProtonVPN:
+			// Proton holds a key's session on one server at a time: a
+			// second tunnel on the same key knocks the first one's session
+			// out, and they take turns stalling (measured live, see
+			// docs/exits.md). So one tunnel per key.
+			if provider.MaxTunnels > len(provider.PrivateKeys) {
+				warnings = append(warnings, fmt.Sprintf("provider '%s': max_tunnels %d is more than its %d private keys; limited to %d, since a Proton key works on one server at a time. Add a key (generated in Proton's dashboard) for each tunnel wanted at once.",
+					name, provider.MaxTunnels, len(provider.PrivateKeys), len(provider.PrivateKeys)))
+				provider.MaxTunnels = len(provider.PrivateKeys)
+				config.Providers[name] = provider
+			}
 			if !listSetup {
 				list, cachedAt, source = loadProtonList(configDir)
 				listSetup = true

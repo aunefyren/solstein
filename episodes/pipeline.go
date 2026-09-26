@@ -567,20 +567,23 @@ func (pipeline *Pipeline) fetch(ctx context.Context, exit, sourceURL string, fre
 
 	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
 	defer cancel()
-	response, err := requestSource(ctx, client, http.MethodGet, sourceURL, pipeline.options.SkipTrackers, func(request *http.Request) {
+	prepare := func(request *http.Request) {
 		request.Header.Set("Accept", "*/*")
 		if fresh {
 			// After a failure: in case a CDN edge served a broken copy.
 			request.Header.Set("Cache-Control", "no-cache")
 			request.Header.Set("Pragma", "no-cache")
 		}
-	}, checkResponse)
+	}
+	response, err := requestSource(ctx, client, http.MethodGet, sourceURL, pipeline.options.SkipTrackers, prepare, checkResponse)
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	// A connection that breaks partway is resumed rather than started over.
+	source := newResumingBody(ctx, client, response, prepare)
+	defer source.Close()
 
-	body := newIdleReader(response.Body, pipeline.options.IdleTimeout, cancel)
+	body := newIdleReader(source, pipeline.options.IdleTimeout, cancel)
 	defer body.stop()
 	size, err := write(response.Header.Get("Content-Type"), io.LimitReader(body, limit+1))
 	switch {
