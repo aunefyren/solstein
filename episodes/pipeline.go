@@ -81,6 +81,12 @@ var (
 type Options struct {
 	DefaultDeliveryMode string
 	Workers             int
+	// RequestWorkers is how many episodes are prepared on request at once;
+	// further requests wait their turn. Zero means two. Without a limit, a
+	// client downloading a whole backlog at once would start a job for
+	// every episode, and comparing by audio takes seconds of CPU and a few
+	// hundred MB each.
+	RequestWorkers int
 	// Processor, when set, prepares the episodes of the feeds it handles
 	// instead of a plain download.
 	Processor Processor
@@ -115,6 +121,8 @@ type Pipeline struct {
 	lifetime context.Context
 	stopped  bool
 	onDemand sync.WaitGroup
+	// requestSlots holds one token per episode being prepared on request.
+	requestSlots chan struct{}
 }
 
 // NewPipeline builds a Pipeline.
@@ -128,11 +136,15 @@ func NewPipeline(store *database.Store, exits *outbound.Manager, cache Cache, op
 	if options.IdleTimeout <= 0 {
 		options.IdleTimeout = defaultIdleTimeout
 	}
+	if options.RequestWorkers < 1 {
+		options.RequestWorkers = 2
+	}
 	return &Pipeline{
 		store: store, exits: exits, cache: cache, options: options,
-		wake:     make(chan struct{}, 1),
-		inFlight: map[uuid.UUID]chan struct{}{},
-		lifetime: context.Background(),
+		wake:         make(chan struct{}, 1),
+		inFlight:     map[uuid.UUID]chan struct{}{},
+		lifetime:     context.Background(),
+		requestSlots: make(chan struct{}, options.RequestWorkers),
 	}
 }
 
@@ -294,6 +306,19 @@ func (pipeline *Pipeline) Prepare(feed models.Feed, episode models.Episode) (<-c
 	go func() {
 		defer pipeline.onDemand.Done()
 		defer pipeline.endFlight(episode.ID, done)
+		// Wait for a slot. Meanwhile the episode is registered, so further
+		// requests for it join this job instead of queueing another.
+		select {
+		case pipeline.requestSlots <- struct{}{}:
+		default:
+			logger.Log.Info(fmt.Sprintf("Episode '%s' of '%s' waits for one of the %d episodes being prepared on request.", episode.Title, feed.Title, cap(pipeline.requestSlots)))
+			select {
+			case pipeline.requestSlots <- struct{}{}:
+			case <-ctx.Done():
+				return // shutting down; a claimed episode is picked up by Recover
+			}
+		}
+		defer func() { <-pipeline.requestSlots }()
 		logger.Log.Info(fmt.Sprintf("Preparing episode '%s' of '%s' for a client that asked for it.", episode.Title, feed.Title))
 		if err := pipeline.prepare(ctx, feed, episode); err != nil && ctx.Err() == nil {
 			logger.Log.Error("Episode pipeline error. Error: " + err.Error())

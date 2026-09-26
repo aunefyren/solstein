@@ -72,10 +72,18 @@ type Config struct {
 	AllowedSourceHosts []string `json:"allowed_source_hosts"`
 
 	// DefaultExit is the exit for feeds (and other requests) that don't name
-	// one; empty means direct. DisableDirect refuses the direct exit
-	// altogether, so nothing leaves from the host's own address.
-	DefaultExit   string `json:"default_exit"`
-	DisableDirect bool   `json:"disable_direct"`
+	// one; empty means direct, or with the direct exit off, the first VPN
+	// exit by name.
+	DefaultExit string `json:"default_exit"`
+	// DirectExit is whether the direct exit (this host's own connection)
+	// exists: "on", "off", or "auto" (the default), which is off as soon as
+	// config.json sets up VPN exits, so nothing leaves from the host's own
+	// address once there is a VPN to use; see DirectExitOff.
+	DirectExit string `json:"direct_exit"`
+	// DisableDirect is the setting direct_exit replaced. Read from older
+	// config.json files and migrated (true becomes "off"; false, the old
+	// default, becomes "auto"), then dropped from the file.
+	DisableDirect *bool `json:"disable_direct,omitempty"`
 	// HomeCountry is the country (ISO 3166-1 alpha-2) this host's own
 	// connection comes out in, as the operator declares it; empty means
 	// unknown. Solstein can't find it out itself without an outside
@@ -98,6 +106,39 @@ type Config struct {
 	VPN VPN `json:"vpn"`
 	// RegionDiff configures the region-diff module.
 	RegionDiff RegionDiff `json:"region_diff"`
+}
+
+// DirectExitSettings are the valid values for direct_exit.
+var DirectExitSettings = []string{"auto", "on", "off"}
+
+// DirectExitOff reports whether the direct exit is off: set to "off", or
+// "auto" with VPN exits set up in config.json. Whether those exits load
+// doesn't matter: a VPN that fails must never mean traffic quietly going
+// out directly instead.
+func (cfg Config) DirectExitOff() bool {
+	return cfg.DirectExit == "off" || (cfg.DirectExit != "on" && len(cfg.VPN.Exits) > 0)
+}
+
+// directExitReason explains an "auto" that turned the direct exit off, for
+// messages; empty otherwise.
+func (cfg Config) directExitReason() string {
+	if cfg.DirectExit != "off" && cfg.DirectExitOff() {
+		return ", because config.json sets up VPN exits"
+	}
+	return ""
+}
+
+// DirectExitSummary says whether and why the direct exit is off, for the
+// start-up log.
+func (cfg Config) DirectExitSummary() string {
+	switch {
+	case !cfg.DirectExitOff():
+		return ""
+	case cfg.DirectExit == "off":
+		return "The direct exit is off (direct_exit: off): nothing goes out on this host's own connection except the VPN tunnels themselves."
+	default:
+		return "The direct exit is off (direct_exit: auto, because config.json sets up VPN exits): nothing goes out on this host's own connection except the VPN tunnels themselves. Set direct_exit to on to allow it."
+	}
 }
 
 // countryCode is an ISO 3166-1 alpha-2 code, upper-cased.
@@ -149,6 +190,18 @@ func Save(configDir string, cfg Config) error {
 func (cfg *Config) applyDefaults() {
 	if cfg.Port == 0 {
 		cfg.Port = defaultPort
+	}
+	if cfg.DisableDirect != nil {
+		if cfg.DirectExit == "" {
+			cfg.DirectExit = "auto"
+			if *cfg.DisableDirect {
+				cfg.DirectExit = "off"
+			}
+		}
+		cfg.DisableDirect = nil
+	}
+	if cfg.DirectExit == "" {
+		cfg.DirectExit = "auto"
 	}
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = defaultLogLevel
@@ -239,8 +292,12 @@ func (cfg *Config) Validate() error {
 	cfg.AllowedSourceHosts = hosts
 
 	cfg.DefaultExit = strings.TrimSpace(cfg.DefaultExit)
-	if cfg.DisableDirect && (cfg.DefaultExit == "" || cfg.DefaultExit == "direct") {
-		return errors.New("disable_direct needs a default_exit naming a VPN exit")
+	cfg.DirectExit = strings.ToLower(strings.TrimSpace(cfg.DirectExit))
+	if !slices.Contains(DirectExitSettings, cfg.DirectExit) {
+		return fmt.Errorf("direct_exit %q must be one of %s", cfg.DirectExit, strings.Join(DirectExitSettings, ", "))
+	}
+	if cfg.DirectExitOff() && cfg.DefaultExit == "direct" {
+		return fmt.Errorf("default_exit is direct, but the direct exit is off (direct_exit: %s%s); set direct_exit to on to use it", cfg.DirectExit, cfg.directExitReason())
 	}
 
 	cfg.HomeCountry = strings.ToUpper(strings.TrimSpace(cfg.HomeCountry))

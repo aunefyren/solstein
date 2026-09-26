@@ -148,11 +148,31 @@ var settings = []setting{
 		},
 	},
 	{
+		flag:  "directexit",
+		env:   "SOLSTEIN_DIRECT_EXIT",
+		usage: "Whether this host's own connection may be used: auto (off once VPN exits are set up), on or off.",
+		apply: func(cfg *Config, value string) error {
+			cfg.DirectExit = value
+			return nil
+		},
+	},
+	{
+		// Replaced by directexit; kept so existing setups keep working.
 		flag:    "disabledirect",
 		env:     "SOLSTEIN_DISABLE_DIRECT",
-		usage:   "Never use the host's own connection; needs a default exit.",
+		usage:   "Deprecated: use -directexit. true is off, false is on.",
 		boolean: true,
-		apply:   boolSetting(func(cfg *Config) *bool { return &cfg.DisableDirect }),
+		apply: func(cfg *Config, value string) error {
+			disable, err := strconv.ParseBool(value)
+			if err != nil {
+				return fmt.Errorf("not true or false: %q", value)
+			}
+			cfg.DirectExit = "on"
+			if disable {
+				cfg.DirectExit = "off"
+			}
+			return nil
+		},
 	},
 	{
 		flag:  "homecountry",

@@ -14,7 +14,7 @@ The proxy is the core. Features beyond it are modules that can be switched off i
 - The core builds, runs and is useful with every module off.
 - The core defines the interfaces; modules implement them. The core never imports a module package; `main.go` is the only place modules are wired in.
 - A disabled module costs nothing at runtime: no tunnels opened, no server list fetched, no double downloads.
-- A module that can't run logs a warning and stays off; it doesn't stop start-up. (The exception is a `default_exit` that doesn't exist: see [`security.md`](security.md).)
+- A module that can't run logs a warning and stays off; it doesn't stop start-up. (The exceptions are a `default_exit` that doesn't exist, and VPN exits in `config.json` that all fail to load while the direct exit is off: see [`security.md`](security.md).)
 - Modules can be enabled globally and overridden per feed.
 - Solstein should ideally run on a private network only, but must be safe when exposed to the internet (see [`security.md`](security.md)).
 

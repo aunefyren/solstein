@@ -27,10 +27,10 @@ var (
 	ErrUnknownExit        = errors.New("unknown exit")
 	ErrExitUnavailable    = errors.New("exit unavailable")
 	ErrDestinationBlocked = errors.New("destination address is not allowed")
-	// ErrDirectDisabled is returned for the direct exit when disable_direct
-	// is on. It wraps ErrUnknownExit, since to everything else the exit
+	// ErrDirectDisabled is returned for the direct exit when it is off
+	// (direct_exit). It wraps ErrUnknownExit, since to everything else the exit
 	// simply doesn't exist.
-	ErrDirectDisabled = fmt.Errorf("%w: the direct exit is disabled (disable_direct)", ErrUnknownExit)
+	ErrDirectDisabled = fmt.Errorf("%w: the direct exit is off (direct_exit)", ErrUnknownExit)
 )
 
 // Dialer is one route out: how to resolve names and open connections through
@@ -111,7 +111,7 @@ func New(options Options) (*Manager, error) {
 	if options.DisableDirect {
 		delete(manager.providers, DirectExit)
 		if options.DefaultExit == "" {
-			return nil, errors.New("disable_direct needs a default_exit: every request without an exit of its own has to go somewhere")
+			return nil, errors.New("with the direct exit off, a default exit is needed: every request without an exit of its own has to go somewhere")
 		}
 	}
 	if options.DefaultExit != "" {

@@ -1,6 +1,19 @@
 package feeds
 
-import "testing"
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	"aunefyren/solstein/models"
+)
 
 func TestEmbeddedURL(t *testing.T) {
 	cases := []struct {
@@ -43,5 +56,75 @@ func TestWithoutTrackers(t *testing.T) {
 	}
 	if plain := "https://sphinx.acast.com/p/open/s/1/e/2/media.mp3"; WithoutTrackers(plain) != plain {
 		t.Error("an audio host's own URL changed")
+	}
+}
+
+// feedChain serves a feed behind tracking prefixes, one TLS server for every
+// host name: tracker.example redirects to its path, dead.example is gone,
+// parked.example shows an HTML page, feeds.example has the feed.
+func feedChain(t *testing.T) (*http.Client, *[]string) {
+	t.Helper()
+	var mutex sync.Mutex
+	var hits []string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		mutex.Lock()
+		hits = append(hits, request.Host)
+		mutex.Unlock()
+		switch request.Host {
+		case "tracker.example":
+			http.Redirect(writer, request, "https://"+strings.TrimPrefix(request.URL.Path, "/t/"), http.StatusFound)
+		case "dead.example":
+			http.NotFound(writer, request)
+		case "parked.example":
+			writer.Header().Set("Content-Type", "text/html")
+			writer.Write([]byte("<html>for sale</html>"))
+		case "feeds.example":
+			if request.Header.Get("If-None-Match") == `"v1"` {
+				writer.WriteHeader(http.StatusNotModified)
+				return
+			}
+			writer.Header().Set("Content-Type", "application/rss+xml")
+			writer.Write([]byte("<rss/>"))
+		default:
+			http.Error(writer, "unknown host", http.StatusBadGateway)
+		}
+	}))
+	t.Cleanup(server.Close)
+	address := server.Listener.Addr().String()
+	client := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, address)
+		},
+	}}
+	return client, &hits
+}
+
+func TestRequestFeedSkipsFailedTracker(t *testing.T) {
+	for _, dead := range []string{"dead.example", "parked.example"} {
+		client, hits := feedChain(t)
+		feed := models.Feed{Title: "Show", SourceURL: "https://tracker.example/t/" + dead + "/ce1080/feeds.example/show.xml"}
+		response, err := requestFeed(context.Background(), client, feed)
+		if err != nil {
+			t.Fatalf("%s: %v", dead, err)
+		}
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		if string(body) != "<rss/>" || strings.Join(*hits, " ") != "tracker.example "+dead+" feeds.example" {
+			t.Errorf("%s: got %q via %v", dead, body, *hits)
+		}
+	}
+
+	// Conditional requests still work past the skipped tracker.
+	client, _ := feedChain(t)
+	feed := models.Feed{SourceURL: "https://dead.example/ce1080/feeds.example/show.xml", ETag: `"v1"`}
+	if response, err := requestFeed(context.Background(), client, feed); err != nil || response.StatusCode != http.StatusNotModified {
+		t.Errorf("conditional: %v, %v", response, err)
+	}
+
+	// The feed host's own failure is the feed's.
+	client, _ = feedChain(t)
+	if _, err := requestFeed(context.Background(), client, models.Feed{SourceURL: "https://dead.example/show.xml"}); !errors.Is(err, ErrFetchFailed) || !strings.Contains(err.Error(), "404") {
+		t.Errorf("gone: %v", err)
 	}
 }

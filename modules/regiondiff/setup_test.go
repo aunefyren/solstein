@@ -28,7 +28,7 @@ func TestSetupOff(t *testing.T) {
 		{"one exit", regionDiffConfig([]string{"sweden"}, nil), available, "exactly two"},
 		{"same exit twice", regionDiffConfig([]string{"sweden", "sweden"}, nil), available, "twice"},
 		{"unknown exit", regionDiffConfig([]string{"norway", "atlantis"}, nil), available, `"atlantis" doesn't exist (available: direct, norway, sweden)`},
-		{"direct disabled", regionDiffConfig([]string{"direct", "sweden"}, nil), []string{"norway", "sweden"}, "disable_direct"},
+		{"direct disabled", regionDiffConfig([]string{"direct", "sweden"}, nil), []string{"norway", "sweden"}, "direct_exit"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

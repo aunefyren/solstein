@@ -109,24 +109,34 @@ func run() int {
 		logger.Log.Info("VPN module on: " + vpnModule.Summary() + ".")
 	}
 
+	disableDirect, defaultExit := cfg.DirectExitOff(), cfg.DefaultExit
+	if disableDirect && defaultExit == "" {
+		if vpnModule == nil || len(vpnModule.Exits()) == 0 {
+			// Refusing to start is better than sending traffic out directly
+			// when config.json sets up a VPN that didn't come up.
+			logger.Log.Error("The direct exit is off (direct_exit: " + cfg.DirectExit + "), but no VPN exit is available to use instead; see the VPN warnings above. Fix the VPN setup, or set direct_exit to on to run without it.")
+			return 1
+		}
+		defaultExit = vpnModule.Exits()[0]
+		logger.Log.Info("No default_exit set: using '" + defaultExit + "', the first VPN exit by name. Set default_exit to choose another.")
+	}
 	exitManager, err := outbound.New(outbound.Options{
 		UserAgent:                "Solstein/" + version + " (+https://github.com/aunefyren/solstein)",
 		AllowPrivateDestinations: cfg.AllowPrivateDestinations,
 		Providers:                exitProviders,
-		DefaultExit:              cfg.DefaultExit,
-		DisableDirect:            cfg.DisableDirect,
+		DefaultExit:              defaultExit,
+		DisableDirect:            disableDirect,
 		HomeCountry:              cfg.HomeCountry,
 	})
 	if err != nil {
-		// default_exit and disable_direct problems end up here: refusing to
-		// start is better than sending traffic the operator said mustn't
-		// leave directly.
+		// default_exit problems end up here: refusing to start is better
+		// than sending traffic the operator said mustn't leave directly.
 		logger.Log.Error("Failed to set up exits. Error: " + err.Error())
 		return 1
 	}
 	logger.Log.Info("Exits available: " + strings.Join(exitManager.Exits(), ", ") + "; default: " + exitManager.DefaultExit() + ".")
-	if cfg.DisableDirect {
-		logger.Log.Info("The direct exit is disabled: nothing goes out on this host's own connection except the VPN tunnels themselves.")
+	if summary := cfg.DirectExitSummary(); summary != "" {
+		logger.Log.Info(summary)
 	}
 	if vpnModule != nil {
 		// Server-list refreshes take the default route like everything else,

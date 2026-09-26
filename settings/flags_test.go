@@ -247,3 +247,27 @@ func TestResolveListsAndNumbers(t *testing.T) {
 		t.Errorf("cfg = %+v", cfg)
 	}
 }
+
+func TestResolveDirectExit(t *testing.T) {
+	cases := []struct {
+		args []string
+		env  map[string]string
+		want string
+	}{
+		{nil, nil, "auto"},
+		{[]string{"-directexit", "off"}, nil, "off"},
+		{nil, map[string]string{"SOLSTEIN_DIRECT_EXIT": "on"}, "on"},
+		// The old switch still works: true is off, false is on.
+		{[]string{"-disabledirect"}, nil, "off"},
+		{nil, map[string]string{"SOLSTEIN_DISABLE_DIRECT": "false"}, "on"},
+	}
+	for _, c := range cases {
+		cfg, _, err := Resolve(append([]string{"-configdir", t.TempDir()}, c.args...), envFrom(c.env), io.Discard)
+		if err != nil || cfg.DirectExit != c.want {
+			t.Errorf("%v %v: direct_exit %q, %v; want %q", c.args, c.env, cfg.DirectExit, err, c.want)
+		}
+	}
+	if _, _, err := Resolve([]string{"-configdir", t.TempDir(), "-directexit", "maybe"}, envFrom(nil), io.Discard); err == nil {
+		t.Error("a bad direct_exit was accepted")
+	}
+}

@@ -495,3 +495,55 @@ func TestFreshFetchAsksCachesNotToAnswer(t *testing.T) {
 		t.Errorf("headers = %q", seen)
 	}
 }
+
+func TestPrepareOnRequestIsLimited(t *testing.T) {
+	setup := newTestSetup(t)
+	processor := &fakeProcessor{gate: make(chan struct{})}
+	setup.withProcessor(t, processor)
+	if cap(setup.pipeline.requestSlots) != 2 {
+		t.Fatalf("%d request slots, want the default of two", cap(setup.pipeline.requestSlots))
+	}
+	var dones []<-chan struct{}
+	var backlog []models.Episode
+	for i := range 3 {
+		episode := setup.addBacklog(t, fmt.Sprintf("/ok.mp3?%d", i))
+		backlog = append(backlog, episode)
+		done, err := setup.pipeline.Prepare(setup.feed, episode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dones = append(dones, done)
+	}
+	// A request for an episode already waiting joins it.
+	if again, err := setup.pipeline.Prepare(setup.feed, backlog[2]); err != nil || again != dones[2] {
+		t.Errorf("a second request for a waiting episode didn't join it: %v", err)
+	}
+
+	waitFor := func(jobs int) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for processor.jobCount() < jobs {
+			if time.Now().After(deadline) {
+				t.Fatalf("%d jobs started, want %d", processor.jobCount(), jobs)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	waitFor(2)
+	time.Sleep(50 * time.Millisecond)
+	if processor.jobCount() != 2 {
+		t.Fatalf("%d jobs running at once, want two", processor.jobCount())
+	}
+	processor.gate <- struct{}{} // one finishes: the third starts
+	waitFor(3)
+	processor.gate <- struct{}{}
+	processor.gate <- struct{}{}
+	for _, done := range dones {
+		<-done
+	}
+	for _, episode := range backlog {
+		if stored := setup.reload(t, episode); stored.CacheFile == "" {
+			t.Errorf("%s wasn't prepared", episode.GUID)
+		}
+	}
+}

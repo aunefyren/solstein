@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -165,8 +166,20 @@ func TestValidate(t *testing.T) {
 		{name: "bad delivery mode", modify: func(cfg *Config) { cfg.DeliveryMode = "carrier-pigeon" }, wantErr: true},
 		{name: "bad poll interval", modify: func(cfg *Config) { cfg.PollIntervalMinutes = -1 }, wantErr: true},
 		{name: "bad retention", modify: func(cfg *Config) { cfg.CacheRetentionDays = -3 }, wantErr: true},
-		{name: "disable direct without default exit", modify: func(cfg *Config) { cfg.DisableDirect = true }, wantErr: true},
-		{name: "disable direct with default exit direct", modify: func(cfg *Config) { cfg.DisableDirect, cfg.DefaultExit = true, "direct" }, wantErr: true},
+		{name: "direct exit off without default exit", modify: func(cfg *Config) { cfg.DirectExit = "off" }},
+		{name: "direct exit off with default exit direct", modify: func(cfg *Config) { cfg.DirectExit, cfg.DefaultExit = "off", "direct" }, wantErr: true},
+		{name: "direct exit auto with VPN exits and default exit direct", modify: func(cfg *Config) {
+			cfg.DefaultExit, cfg.VPN.Exits = "direct", map[string]VPNExit{"norway": {}}
+		}, wantErr: true},
+		{name: "direct exit on with VPN exits and default exit direct", modify: func(cfg *Config) {
+			cfg.DirectExit, cfg.DefaultExit, cfg.VPN.Exits = "on", "direct", map[string]VPNExit{"norway": {}}
+		}},
+		{name: "direct exit normalised", modify: func(cfg *Config) { cfg.DirectExit = " Off " }, check: func(t *testing.T, cfg Config) {
+			if cfg.DirectExit != "off" {
+				t.Errorf("direct exit = %q", cfg.DirectExit)
+			}
+		}},
+		{name: "bad direct exit", modify: func(cfg *Config) { cfg.DirectExit = "sometimes" }, wantErr: true},
 		{name: "region diff defaults", modify: func(cfg *Config) {}, check: func(t *testing.T, cfg Config) {
 			on := true
 			want := RegionDiff{Exits: []string{}, FallbackExits: []string{}, MinSharedSeconds: 2, MaxRemovedShare: 0.3, OnFailure: "publish", CompareByAudio: &on}
@@ -199,7 +212,7 @@ func TestValidate(t *testing.T) {
 		}},
 		{name: "home country not a code", modify: func(cfg *Config) { cfg.HomeCountry = "Norway" }, wantErr: true},
 		{name: "region diff negative backlog", modify: func(cfg *Config) { cfg.RegionDiff.Backlog = -1 }, wantErr: true},
-		{name: "disable direct with a VPN default", modify: func(cfg *Config) { cfg.DisableDirect, cfg.DefaultExit = true, " norway " }, check: func(t *testing.T, cfg Config) {
+		{name: "direct exit off with a VPN default", modify: func(cfg *Config) { cfg.DirectExit, cfg.DefaultExit = "off", " norway " }, check: func(t *testing.T, cfg Config) {
 			if cfg.DefaultExit != "norway" {
 				t.Errorf("default exit = %q", cfg.DefaultExit)
 			}
@@ -269,5 +282,49 @@ func TestCompareByAudioDefaultsOn(t *testing.T) {
 	}
 	if !(RegionDiff{}).ComparesByAudio() {
 		t.Error("unset should mean on")
+	}
+}
+
+func TestDirectExit(t *testing.T) {
+	vpn := VPN{Exits: map[string]VPNExit{"norway": {}}}
+	cases := []struct {
+		setting string
+		vpn     VPN
+		off     bool
+	}{
+		{"auto", VPN{}, false}, // a fresh install: nothing else to use
+		{"auto", vpn, true},    // once there is a VPN, nothing goes out directly
+		{"on", vpn, false},
+		{"off", VPN{}, true},
+	}
+	for _, c := range cases {
+		cfg := Config{DirectExit: c.setting, VPN: c.vpn}
+		if cfg.DirectExitOff() != c.off || (cfg.DirectExitSummary() != "") != c.off {
+			t.Errorf("%s with %d VPN exits: off %v, summary %q", c.setting, len(c.vpn.Exits), cfg.DirectExitOff(), cfg.DirectExitSummary())
+		}
+	}
+}
+
+func TestDisableDirectMigrates(t *testing.T) {
+	for _, c := range []struct {
+		json, want string
+	}{
+		{`{}`, "auto"},
+		{`{"disable_direct": false}`, "auto"}, // the old default, written into every file
+		{`{"disable_direct": true}`, "off"},
+		{`{"disable_direct": false, "direct_exit": "on"}`, "on"},
+	} {
+		var cfg Config
+		if err := json.Unmarshal([]byte(c.json), &cfg); err != nil {
+			t.Fatal(err)
+		}
+		cfg.applyDefaults()
+		if cfg.DirectExit != c.want || cfg.DisableDirect != nil {
+			t.Errorf("%s: direct_exit %q (want %q), disable_direct still %v", c.json, cfg.DirectExit, c.want, cfg.DisableDirect)
+		}
+		saved, _ := json.Marshal(cfg)
+		if strings.Contains(string(saved), "disable_direct") {
+			t.Errorf("%s: disable_direct written back", c.json)
+		}
 	}
 }

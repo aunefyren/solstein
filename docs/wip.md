@@ -60,10 +60,6 @@ Off by default because a show's own sting spliced in at breaks would go too. Rev
 
 ## Core
 
-- **`disable_direct` on by default (wanted, 2026-09-25).** The maintainer wants the direct exit off unless switched on. To work out before building:
-  - A fresh install has no VPN, so `disable_direct` with no `default_exit` can't simply stop start-up as it does today. Options: direct is disabled only once a VPN exit exists (and `default_exit` then defaults to the first, or must be named); or start-up refuses until either a VPN is set up or `disable_direct: false` is set explicitly (safe, but a harder first run).
-  - Existing `config.json` files have `"disable_direct": false` written out, so a new default wouldn't reach them; only a missing field would take it. Possibly a tri-state (unset = default) or a one-time notice.
-  - Region diff's `direct` home side and feeds with `exit: direct` then become invalid by default; the start-up warnings and the README would need to say how to opt back in.
 - **Cache size cap (question):** whether to add a size limit on top of the 14-day retention, and whether to evict an episode early once a client has fetched it completely.
 - **Publish immediately, swap later (idea, for clients other than ABS):** publish an episode of a processed feed at once with its ads, and swap in the processed file when ready. Useless for ABS, which downloads once and matches by GUID afterwards; only worth it for clients that re-download changed enclosures (unknown, see below).
 - **Chaining processors (idea):** the processor interface allows one processor per feed; chaining would let e.g. a loudness pass run after region diff.

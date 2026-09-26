@@ -128,7 +128,7 @@ func unavailable(exit string, available []string) string {
 	case slices.Contains(available, exit):
 		return ""
 	case exit == outbound.DirectExit:
-		return "the direct exit is disabled (disable_direct); use a VPN exit in the home country instead"
+		return "the direct exit is off (direct_exit); use a VPN exit in the home country instead, or set direct_exit to on"
 	default:
 		return fmt.Sprintf("exit %q doesn't exist (available: %s)", exit, strings.Join(available, ", "))
 	}

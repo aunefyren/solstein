@@ -38,7 +38,7 @@ What a new subscription does:
 | `region_diff_trim_break_markers` | `on`, `off` | `region_diff.trim_break_markers` |
 | `region_diff_compare_by_audio` | `on`, `off` | `region_diff.compare_by_audio` |
 
-- `feeds.ValidateSettings` refuses an exit that doesn't exist (including `direct` under `disable_direct`), an unknown delivery mode, a negative poll interval, `region_diff: on` while region diff isn't running, unknown region-diff values, and a `region_diff_exits` that isn't two different existing exits.
+- `feeds.ValidateSettings` refuses an exit that doesn't exist (including `direct` while the direct exit is off, `direct_exit`), an unknown delivery mode, a negative poll interval, `region_diff: on` while region diff isn't running, unknown region-diff values, and a `region_diff_exits` that isn't two different existing exits.
 - At start-up, `main.go` warns about feeds whose exit (or region-diff exit) no longer exists, and feeds with region diff switched on while it is off.
 
 ## Feed API
@@ -62,6 +62,7 @@ Responses carry the feed's settings plus `delivery_mode_in_use`, `region_diff_in
 
 - The poller checks every minute which feeds are due (per-feed interval, else `poll_interval_minutes`, default 15) and refreshes them one at a time, so requests aren't burst at hosts.
 - Polls go through the feed's exit and are conditional (`If-None-Match` / `If-Modified-Since`).
+- **A feed URL behind a tracking prefix** (Podtrac's `rss.pdrl.fm/ce1080/feeds.megaphone.fm/…`, as "Answer for It!" is subscribed): when the request fails at a tracker whose target is in its URL — an error status, an HTML parking page, no response — it goes to that URL directly, logged "Tracking redirect in front of feed '…' failed at pdrl.fm (…); asking feeds.megaphone.fm directly." The same unwrapping as for episodes ([`episodes.md`](episodes.md), Tracking redirects); `skip_tracking_redirects` doesn't apply to feeds, which keep their subscriber counts. An HTML page from the feed host itself (nothing embedded) is still refused as not RSS.
 - New episodes are stored as waiting for the pipeline when the feed is in `cache` mode or processed, and as ready otherwise (`stream`, `original`: nothing to prepare). They wake the pipeline at once.
 - A failed poll keeps the last good document (clients keep being served) and records the error on the feed. Clients count failed fetches: ABS disables auto-download after 24.
 

@@ -352,7 +352,7 @@ func TestDisableDirect(t *testing.T) {
 		t.Errorf("no exit named: %v", err)
 	}
 
-	if _, err := New(Options{DisableDirect: true}); err == nil || !strings.Contains(err.Error(), "needs a default_exit") {
+	if _, err := New(Options{DisableDirect: true}); err == nil || !strings.Contains(err.Error(), "a default exit is needed") {
 		t.Errorf("disable_direct without default_exit: err = %v", err)
 	}
 	if _, err := New(Options{DisableDirect: true, DefaultExit: DirectExit}); err == nil {

@@ -126,7 +126,7 @@ In `config.json` (paths are relative to the config directory, `/app/config` in D
 - Keys can stay out of `config.json`: `private_keys` accepts `env:NAME` (e.g. from Docker's `env_file`) and `file:PATH` (e.g. a Docker secret) as well as the key itself.
 - A mistake in one provider or exit only disables that one; Solstein logs why at start-up.
 
-**Keeping your own address out of it.** Set `default_exit` to a VPN exit (for example one in your own country) so every feed goes through it unless it names another, and `disable_direct: true` so nothing ever goes out on your own connection: the server-list refresh takes the default exit too, and a feed or setting naming `direct` is refused. Solstein never falls back to `direct` when the VPN is down; requests fail instead, and a `default_exit` that doesn't exist or failed to load stops start-up. Only the WireGuard connections to the VPN servers themselves leave from your address, as they must.
+**Keeping your own address out of it.** This is the default once you set up a VPN: `direct_exit` is `auto`, which switches the direct exit off as soon as `config.json` has VPN exits, so nothing goes out on your own connection. Feeds without an exit of their own, and the server-list refresh, take `default_exit`, or when that is empty, the first VPN exit by name. A feed or setting naming `direct` is refused. To use `direct` alongside a VPN anyway, set `direct_exit: on`; `off` keeps it off even without a VPN. Solstein never falls back to `direct` when the VPN is down; requests fail instead, and if the VPN exits in `config.json` fail to load (or `default_exit` names one that doesn't exist), Solstein doesn't start. Only the WireGuard connections to the VPN servers themselves leave from your address, as they must.
 
 ## Removing ads (region diff)
 
@@ -146,7 +146,7 @@ Hosts such as Acast insert ads per listener region. Region diff downloads each e
 }
 ```
 
-- `exits`: the pair, your home region first (its download is the one kept, with its tags). `direct` works as the home side (set `home_country` so Solstein can check it isn't paired with an exit in the same country), but shows the host your own address; with `disable_direct` use a VPN exit in your own country.
+- `exits`: the pair, your home region first (its download is the one kept, with its tags). `direct` works as the home side (set `home_country` so Solstein can check it isn't paired with an exit in the same country), but shows the host your own address, and needs `direct_exit: on` once you have VPN exits; otherwise use a VPN exit in your own country.
 - `fallback_exits`: tried in turn when the pair's downloads are identical (no dynamic ads, or the same campaign in both markets). If every one agrees, the episode is kept as it is.
 - `enabled`: region diff for every feed that doesn't set its own `region_diff`. With it `false`, feeds can still switch it on one by one.
 - `on_failure`: `publish` serves an episode that can't be cleaned (not MP3, implausible result) with its ads; `hide` keeps it out of the feed, and tries it again after 1 hour, after 6 hours, then daily for about a week (Solstein says so at start-up). After that it stays out until `POST /api/v1/feeds/{id}/retry` or a change of settings.
@@ -182,7 +182,7 @@ On first run Solstein creates `config.json` in its config directory (`/app/confi
 | `trusted_proxies` | `-trustedproxies` | `SOLSTEIN_TRUSTED_PROXIES` | `[]` (none) | Reverse proxies whose `X-Forwarded-For`/`-Proto`/`-Host` are believed. |
 | `allowed_source_hosts` | `-allowedsourcehosts` | `SOLSTEIN_ALLOWED_SOURCE_HOSTS` | `[]` (any) | Hosts feeds may be subscribed from; subdomains included, e.g. `acast.com`. |
 | `default_exit` | `-defaultexit` | `SOLSTEIN_DEFAULT_EXIT` | `""` (direct) | Exit for feeds that don't name one, e.g. a VPN exit. Must exist, or Solstein doesn't start. |
-| `disable_direct` | `-disabledirect` | `SOLSTEIN_DISABLE_DIRECT` | `false` | Never use this host's own connection; needs `default_exit`. |
+| `direct_exit` | `-directexit` | `SOLSTEIN_DIRECT_EXIT` | `auto` | Whether this host's own connection may be used: `auto` (off as soon as VPN exits are set up), `on` or `off`. Replaces `disable_direct`, which is migrated (`true` becomes `off`, `false` `auto`); `-disabledirect` and `SOLSTEIN_DISABLE_DIRECT` still work. |
 | `home_country` | `-homecountry` | `SOLSTEIN_HOME_COUNTRY` | `""` (unknown) | Country code this host's own connection comes out in, e.g. `NO`. Lets region diff notice when `direct` is paired with an exit in the same country. |
 | `skip_tracking_redirects` | `-skiptrackingredirects` | `SOLSTEIN_SKIP_TRACKING_REDIRECTS` | `false` | Fetch episodes from the audio host directly, skipping the tracking redirects (Podtrac, Chartable, …) chained in front of their URLs. Faster, and the trackers don't see your exits, but the shows' download counts don't see you either. A tracking redirect that fails is skipped either way. |
 | `delivery_mode` | `-deliverymode` | `SOLSTEIN_DELIVERY_MODE` | `cache` | Default for feeds: `cache` (download and serve from disk), `stream` (pass through live) or `original` (only proxy the feed). |

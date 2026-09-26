@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"aunefyren/solstein/database"
+	"aunefyren/solstein/logger"
 	"aunefyren/solstein/models"
 	"aunefyren/solstein/outbound"
 	"aunefyren/solstein/rss"
@@ -431,34 +434,98 @@ type fetchResult struct {
 
 // fetch downloads a feed's source through its exit, conditionally when the
 // feed has an ETag or Last-Modified from an earlier poll.
+// requestFeed requests a feed, conditionally, and returns a 2xx or 304
+// response. A feed URL can be a tracking prefix too (Podtrac's pdrl.fm in
+// front of feeds.megaphone.fm): when the request fails at a tracker whose
+// target is embedded in its URL — an error status, an HTML page, no
+// response — it asks that URL directly, as episode downloads do.
+func requestFeed(ctx context.Context, client *http.Client, feed models.Feed) (*http.Response, error) {
+	target := feed.SourceURL
+	for skipped := 0; ; skipped++ {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrFetchFailed, err)
+		}
+		request.Header.Set("Accept", "application/rss+xml, application/xml;q=0.9, text/xml;q=0.9, */*;q=0.8")
+		if feed.ETag != "" {
+			request.Header.Set("If-None-Match", feed.ETag)
+		}
+		if feed.LastModified != "" {
+			request.Header.Set("If-Modified-Since", feed.LastModified)
+		}
+
+		failedAt := target
+		response, err := client.Do(request)
+		switch {
+		case err != nil:
+			err = fmt.Errorf("%w: %w", ErrFetchFailed, err)
+			var urlErr *url.Error
+			if errors.As(err, &urlErr) && urlErr.URL != "" {
+				failedAt = urlErr.URL
+			}
+		case response.StatusCode == http.StatusNotModified || (response.StatusCode >= 200 && response.StatusCode <= 299 && !isHTML(response)):
+			return response, nil
+		case response.StatusCode >= 200 && response.StatusCode <= 299:
+			// An HTML page is a tracker's parking page when there is a URL to
+			// fall back to; otherwise it is the feed host's answer, and the
+			// parser says it isn't RSS.
+			if _, ok := EmbeddedURL(response.Request.URL.String()); !ok {
+				return response, nil
+			}
+			failedAt = response.Request.URL.String()
+			err = fmt.Errorf("%w: source sent an HTML page, not a feed", ErrFetchFailed)
+			response.Body.Close()
+		default:
+			failedAt = response.Request.URL.String()
+			err = fmt.Errorf("%w: source answered %s", ErrFetchFailed, response.Status)
+			response.Body.Close()
+		}
+		if errors.Is(err, outbound.ErrDestinationBlocked) || ctx.Err() != nil {
+			return nil, err
+		}
+		next, ok := EmbeddedURL(failedAt)
+		if !ok || skipped >= maxTrackers {
+			return nil, err
+		}
+		logger.Log.Info(fmt.Sprintf("Tracking redirect in front of feed '%s' failed at %s (%s); asking %s directly.", feed.Title, hostOf(failedAt), shortError(err), hostOf(next)))
+		target = next
+	}
+}
+
+func isHTML(response *http.Response) bool {
+	return strings.Contains(response.Header.Get("Content-Type"), "html")
+}
+
+func hostOf(raw string) string {
+	if parsed, err := url.Parse(raw); err == nil && parsed.Host != "" {
+		return parsed.Host
+	}
+	return "?"
+}
+
+// shortError drops the URL Go's HTTP errors quote: its query may carry an
+// access token.
+func shortError(err error) string {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Err.Error()
+	}
+	return err.Error()
+}
+
 func (service *Service) fetch(ctx context.Context, feed models.Feed) (fetchResult, error) {
 	client, err := service.exits.Client(feed.Exit)
 	if err != nil {
 		return fetchResult{}, fmt.Errorf("%w: %w", ErrFetchFailed, err)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, feed.SourceURL, nil)
+	response, err := requestFeed(ctx, client, feed)
 	if err != nil {
-		return fetchResult{}, fmt.Errorf("%w: %w", ErrFetchFailed, err)
-	}
-	request.Header.Set("Accept", "application/rss+xml, application/xml;q=0.9, text/xml;q=0.9, */*;q=0.8")
-	if feed.ETag != "" {
-		request.Header.Set("If-None-Match", feed.ETag)
-	}
-	if feed.LastModified != "" {
-		request.Header.Set("If-Modified-Since", feed.LastModified)
-	}
-
-	response, err := client.Do(request)
-	if err != nil {
-		return fetchResult{}, fmt.Errorf("%w: %w", ErrFetchFailed, err)
+		return fetchResult{}, err
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode == http.StatusNotModified {
 		return fetchResult{notModified: true, etag: feed.ETag, lastModified: feed.LastModified}, nil
-	}
-	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return fetchResult{}, fmt.Errorf("%w: source answered %s", ErrFetchFailed, response.Status)
 	}
 
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxFeedBytes+1))
