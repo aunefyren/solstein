@@ -59,6 +59,16 @@ type Locator interface {
 	ExitCountry(exit string) (country string, known bool)
 }
 
+// Budgeter is implemented by providers that hold only so many tunnels at
+// once. Region diff uses it to run one episode at a time when the exits one
+// attempt needs can't all have a tunnel: they would otherwise evict each
+// other's, which moves VPN keys between servers and can stall a tunnel.
+type Budgeter interface {
+	// ExitsFit reports whether every one of these exits can have a tunnel at
+	// the same time; reason says why not when they can't.
+	ExitsFit(exits []string) (fits bool, reason string)
+}
+
 // Options configures a Manager.
 type Options struct {
 	// UserAgent is sent on every request that doesn't set its own.
@@ -185,6 +195,32 @@ func (manager *Manager) ExitCountries(exit string) ([]string, bool) {
 		return locator.ExitCountries(exit)
 	}
 	return nil, false
+}
+
+// ExitsFit reports whether every one of these exits can have a tunnel at the
+// same time. Exits with no provider that limits tunnels (the direct exit, a
+// provider without a limit) never get in the way, so a set of only those
+// fits. reason says why not when they don't.
+func (manager *Manager) ExitsFit(exits []string) (bool, string) {
+	// Each provider decides for its own exits, so they are asked separately.
+	byProvider := map[Provider][]string{}
+	for _, exit := range exits {
+		provider, ok := manager.providers[exit]
+		if !ok || exit == DirectExit {
+			continue
+		}
+		byProvider[provider] = append(byProvider[provider], exit)
+	}
+	for provider, wanted := range byProvider {
+		budgeter, ok := provider.(Budgeter)
+		if !ok {
+			continue
+		}
+		if fits, reason := budgeter.ExitsFit(wanted); !fits {
+			return false, reason
+		}
+	}
+	return true, ""
 }
 
 // ExitCountry is the country an exit's next connection goes out in, when

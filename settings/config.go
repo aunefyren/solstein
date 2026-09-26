@@ -102,6 +102,16 @@ type Config struct {
 	PollIntervalMinutes int    `json:"poll_interval_minutes"`
 	CacheRetentionDays  int    `json:"cache_retention_days"`
 
+	// PrepareAhead keeps every episode that needs preparing — a download in
+	// cache mode, a processor's work — out of the feed until its file exists,
+	// and queues a new feed's whole backlog at once, instead of preparing
+	// episodes when a client asks for them. For a client that downloads each
+	// episode once (Audiobookshelf) nothing is then ever waited for, which is
+	// what makes region_diff.pair_downloads "in_turn" usable. Off by default:
+	// on demand is what a client streaming every play needs. Per feed:
+	// models.Feed.PrepareAhead.
+	PrepareAhead bool `json:"prepare_ahead"`
+
 	// VPN configures the exits module; validated by the module itself.
 	VPN VPN `json:"vpn"`
 	// RegionDiff configures the region-diff module.

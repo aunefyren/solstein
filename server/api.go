@@ -22,8 +22,11 @@ type feedResponse struct {
 	DeliveryModeInUse string `json:"delivery_mode_in_use"`
 	// RegionDiffInUse says whether the feed's episodes are region-diffed,
 	// after the global setting and the feed's own are combined.
-	RegionDiffInUse bool   `json:"region_diff_in_use"`
-	FeedURL         string `json:"feed_url"`
+	RegionDiffInUse bool `json:"region_diff_in_use"`
+	// PrepareAheadInUse says whether the feed's episodes are all prepared
+	// before a client asks, the global and the feed's settings combined.
+	PrepareAheadInUse bool   `json:"prepare_ahead_in_use"`
+	FeedURL           string `json:"feed_url"`
 }
 
 func (handlers *handlers) feedResponse(context *gin.Context, feed models.Feed) feedResponse {
@@ -31,6 +34,7 @@ func (handlers *handlers) feedResponse(context *gin.Context, feed models.Feed) f
 		Feed:              feed,
 		DeliveryModeInUse: handlers.feeds.DeliveryMode(feed),
 		RegionDiffInUse:   handlers.feeds.Processed(feed),
+		PrepareAheadInUse: handlers.feeds.PreparesAhead(feed),
 		FeedURL:           handlers.urls(context).Feed(feed.ID),
 	}
 }
@@ -99,6 +103,7 @@ type updateFeedRequest struct {
 	RegionDiffOnFailure        *string   `json:"region_diff_on_failure"`
 	RegionDiffTrimBreakMarkers *string   `json:"region_diff_trim_break_markers"`
 	RegionDiffCompareByAudio   *string   `json:"region_diff_compare_by_audio"`
+	PrepareAhead               *string   `json:"prepare_ahead"`
 }
 
 func (handlers *handlers) apiUpdateFeed(context *gin.Context) {
@@ -136,6 +141,9 @@ func (handlers *handlers) apiUpdateFeed(context *gin.Context) {
 	if request.RegionDiffCompareByAudio != nil {
 		feed.RegionDiffCompareByAudio = *request.RegionDiffCompareByAudio
 	}
+	if request.PrepareAhead != nil {
+		feed.PrepareAhead = *request.PrepareAhead
+	}
 
 	err := handlers.feeds.Update(context.Request.Context(), &feed)
 	if errors.Is(err, feeds.ErrInvalidSettings) {
@@ -154,6 +162,13 @@ func (handlers *handlers) apiUpdateFeed(context *gin.Context) {
 		// either way, and serving checks each episode again.
 		if err := handlers.episodes.FeedChanged(context.Request.Context(), feed.ID); err != nil {
 			logger.Log.Error("Failed to update the episodes of feed '" + feed.Title + "' to its new settings. Error: " + err.Error())
+		}
+		// Preparing ahead keeps episodes without a file out of the feed, so
+		// nothing would ask for them: they are queued instead.
+		if handlers.feeds.PreparesAhead(feed) {
+			if _, err := handlers.episodes.Queue(context.Request.Context(), feed.ID, 0); err != nil && !errors.Is(err, episodes.ErrNotPrepared) {
+				logger.Log.Error("Failed to queue the episodes of feed '" + feed.Title + "' to be prepared ahead. Error: " + err.Error())
+			}
 		}
 	}
 	context.JSON(http.StatusOK, handlers.feedResponse(context, feed))

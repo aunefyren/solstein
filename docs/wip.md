@@ -57,11 +57,25 @@ Off by default because a show's own sting spliced in at breaks would go too. Rev
 
 ## Exits
 
-### Tunnel budget is too small for two region-diff jobs (2026-09-26)
+### Batching a feed's downloads by exit (idea, 2026-09-26)
 
-In the same run, with three keys (so three tunnels), every second concurrent episode ran out of tunnels: two jobs at once need **four** (`norway` + `germany` each), and a fallback needs a fifth. The symptom is `exit unavailable: provider 'proton': tunnel limit reached; all tunnels are in use (max_tunnels 3)`, which arrives as a *download* failure, so the tracking-redirect unwrapping walks the whole Podtrac chain one host at a time (7 log lines per episode) before region diff gives up on `germany` and compares with `us` instead. Episodes still came out, but the ad comparison quietly used the fallback market, and the tunnel churn (open, evict, reopen) drove the key moves that warn about stalls — and triggered the crash that is now fixed ([`exits.md`](exits.md), "A tunnel is never written to after it is closed").
+Built: `region_diff.pair_downloads` (`auto`/`together`/`in_turn`) and `prepare_ahead`, so a setup with **one VPN key** works by downloading an episode's two copies one after the other and having nothing wait on a client ([`region-diff.md`](region-diff.md), [`episodes.md`](episodes.md), and the operating styles in [`README.md`](../README.md)). What is left is making it fast.
 
-Worth deciding: cap concurrent processing by the tunnels available (a region-diff job needs two, so with `n` usable keys at most `n/2` jobs), or let the module report its capacity to the pipeline; and refuse the second exit rather than fall back when the failure is "no tunnel free" (a fallback market can't help when the limit is the local one). Solstein already warns at start-up when `max_tunnels` exceeds the number of keys; it says nothing about region diff needing two per job.
+In turn, each episode moves the key between two servers twice, and a moved Proton key can leave the new tunnel stalling for `keyMoveSettle` (3 min, measured). Batching by exit would amortise that: download ten episodes through `norway`, move the key once, download the same ten through `germany`, then diff each pair — one key move per batch instead of two per episode, about a minute per episode at the sizes measured (45 MB, 10–20 s per download) instead of minutes.
+
+Not built, and the open questions:
+- **Spooling downloads to disk.** `Job.Fetch` holds each download in memory (512 MB cap each), so ten home downloads batched is ~450 MB resident. They would go to disk and be read back at diff time, two in memory at once. The processor's interface takes `[]byte`, so this reaches into `episodes.Job` as well.
+- **Grouping in the pipeline.** Workers claim the oldest waiting episode one at a time; batching needs them to take a feed's episodes by exit instead, while new episodes still go first. How large a batch, and what happens when a new episode arrives mid-batch, are open.
+- **Whether it is worth it at all with a key per exit.** Fewer tunnel opens and no contention, but the pair's downloads then no longer overlap, so each episode is slower — the opposite trade from today. Perhaps batching belongs only to `in_turn`.
+- **How much `keyMoveSettle` actually costs** hasn't been measured (see the Proton keys item above), and the whole case for batching rests on it.
+
+### Tunnel budget: what the exits need is now said, but not measured (2026-09-26)
+
+Built after the live bulk download ran a three-key pool out of tunnels: the start-up warning that adds up the exits in use and says how many keys are missing, the wait for a tunnel to free up, region diff preparing one episode at a time when the exits don't fit, and an unusable exit no longer unwrapping tracking redirects ([`exits.md`](exits.md), [`region-diff.md`](region-diff.md)). Left:
+
+- **Whether a minute is the right wait** (`tunnelWait`). It rides out one finishing download; a burst of long episodes may need longer, and an on-request episode waiting a minute has already answered the client `503`. No measurement yet of how often the wait is used, or how long it usually takes.
+- **Where the real ceiling is:** two episodes downloading through one exit share its tunnel and its bandwidth. Whether that, rather than the tunnel count, is what should limit concurrency is unmeasured — with a key per exit, nothing limits how many episodes share a tunnel.
+- **Production** runs four exits on three keys, so it prepares one episode at a time until a fourth key is added; the maintainer is adding one. Then watch that the warning is gone and two are prepared at once.
 
 ### Open questions
 

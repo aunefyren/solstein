@@ -11,10 +11,17 @@ import (
 // of the feed.
 var RegionDiffFailurePolicies = []string{"publish", "hide"}
 
+// RegionDiffPairDownloads are the valid values for region_diff.pair_downloads:
+// "together" downloads an episode through both exits at the same moment, which
+// needs a tunnel for each; "in_turn" downloads them one after the other, so
+// one VPN key is enough; "auto" is together when the keys allow it.
+var RegionDiffPairDownloads = []string{"auto", "together", "in_turn"}
+
 const (
 	defaultMinSharedSeconds = 2
 	defaultMaxRemovedShare  = 0.3
 	defaultOnFailure        = "publish"
+	defaultPairDownloads    = "auto"
 )
 
 // RegionDiff is the region-diff module's block in config.json. Like VPN it
@@ -39,6 +46,11 @@ type RegionDiff struct {
 	// Backlog is how many of a new feed's newest existing episodes are
 	// processed right away; the rest are processed when first requested.
 	Backlog int `json:"backlog"`
+	// PairDownloads is "auto", "together" or "in_turn"; see
+	// RegionDiffPairDownloads. "in_turn" trades speed for needing only one
+	// tunnel at a time, and with it an episode takes too long to be cleaned
+	// while a client waits (see prepare_ahead).
+	PairDownloads string `json:"pair_downloads"`
 	// TrimBreakMarkers also removes the short chimes or stings a host
 	// splices in around ad breaks, where they can be cut cleanly. Off by
 	// default: a show's own sting at breaks would go too.
@@ -82,6 +94,9 @@ func (regionDiff *RegionDiff) applyDefaults() {
 	if regionDiff.OnFailure == "" {
 		regionDiff.OnFailure = defaultOnFailure
 	}
+	if regionDiff.PairDownloads == "" {
+		regionDiff.PairDownloads = defaultPairDownloads
+	}
 	if regionDiff.CompareByAudio == nil {
 		on := true
 		regionDiff.CompareByAudio = &on
@@ -104,6 +119,10 @@ func (regionDiff *RegionDiff) validate() error {
 	regionDiff.OnFailure = strings.ToLower(strings.TrimSpace(regionDiff.OnFailure))
 	if !slices.Contains(RegionDiffFailurePolicies, regionDiff.OnFailure) {
 		return fmt.Errorf("region_diff.on_failure %q must be one of %s", regionDiff.OnFailure, strings.Join(RegionDiffFailurePolicies, ", "))
+	}
+	regionDiff.PairDownloads = strings.ToLower(strings.TrimSpace(regionDiff.PairDownloads))
+	if !slices.Contains(RegionDiffPairDownloads, regionDiff.PairDownloads) {
+		return fmt.Errorf("region_diff.pair_downloads %q must be one of %s", regionDiff.PairDownloads, strings.Join(RegionDiffPairDownloads, ", "))
 	}
 	if regionDiff.Backlog < 0 {
 		return fmt.Errorf("region_diff.backlog must not be negative, got %d", regionDiff.Backlog)

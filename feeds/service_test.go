@@ -555,6 +555,70 @@ func TestSubscribeQueuesNewestBacklogForProcessing(t *testing.T) {
 	}
 }
 
+// Preparing ahead, every backlog episode is queued — not just the newest —
+// and none is published until its file is there, so nothing is ever prepared
+// because a client asked.
+func TestSubscribePreparesWholeBacklogAhead(t *testing.T) {
+	host := newFakeHost(t) // ep-1, Monday
+	host.addItem("ep-3", "Wed, 23 Sep 2026 06:00:00 +0000")
+	host.addItem("ep-2", "Tue, 22 Sep 2026 06:00:00 +0000")
+	ctx := context.Background()
+
+	for _, test := range []struct {
+		name    string
+		options Options
+	}{
+		{"globally", Options{Processed: func(models.Feed) bool { return true }, ProcessBacklog: 1, PrepareAhead: true}},
+		{"for the feed", Options{Processed: func(models.Feed) bool { return true }, ProcessBacklog: 1}},
+		// Nothing processes these, but cache mode prepares a file all the same.
+		{"in cache mode", Options{DefaultDeliveryMode: "cache", PrepareAhead: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, store := newTestService(t, test.options)
+			feedSettings := Settings{}
+			if !test.options.PrepareAhead {
+				feedSettings.PrepareAhead = "on"
+			}
+			feed, _, err := service.Subscribe(ctx, host.server.URL, feedSettings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !service.PreparesAhead(feed) {
+				t.Fatal("the feed doesn't prepare ahead")
+			}
+			list, _ := store.ListEpisodes(ctx, feed.ID)
+			if len(list) != 3 {
+				t.Fatalf("stored %d episodes, want 3", len(list))
+			}
+			for _, episode := range list {
+				if episode.State != models.EpisodeDiscovered {
+					t.Errorf("%s is %s, want every backlog episode queued", episode.GUID, episode.State)
+				}
+			}
+			// None has a file yet, so only the never-empty rule publishes one.
+			output, _ := service.Render(ctx, feed, testURLs)
+			parsed, _ := rss.Parse(output)
+			if len(parsed.Items) != 1 {
+				t.Errorf("published %d items before anything was prepared, want just the oldest", len(parsed.Items))
+			}
+		})
+	}
+
+	// On demand (the default), the backlog is published and prepared when asked for.
+	service, store := newTestService(t, Options{DefaultDeliveryMode: "cache"})
+	feed, _, _ := service.Subscribe(ctx, host.server.URL, Settings{})
+	list, _ := store.ListEpisodes(ctx, feed.ID)
+	for _, episode := range list {
+		if episode.State != models.EpisodeReady {
+			t.Errorf("on demand: %s is %s, want it left for its first request", episode.GUID, episode.State)
+		}
+	}
+	output, _ := service.Render(ctx, feed, testURLs)
+	if parsed, _ := rss.Parse(output); len(parsed.Items) != 3 {
+		t.Errorf("on demand: published %d items, want all 3", len(parsed.Items))
+	}
+}
+
 func TestValidateRegionDiffSettings(t *testing.T) {
 	off, _ := newTestService(t, Options{})
 	on, _ := newTestService(t, Options{RegionDiffAvailable: true})

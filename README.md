@@ -139,6 +139,7 @@ Hosts such as Acast insert ads per listener region. Region diff downloads each e
   "fallback_exits": ["germany"],
   "on_failure": "publish",
   "backlog": 0,
+  "pair_downloads": "auto",
   "trim_break_markers": false,
   "compare_by_audio": true,
   "keep_failed_downloads": false,
@@ -151,6 +152,7 @@ Hosts such as Acast insert ads per listener region. Region diff downloads each e
 - `enabled`: region diff for every feed that doesn't set its own `region_diff`. With it `false`, feeds can still switch it on one by one.
 - `on_failure`: `publish` serves an episode that can't be cleaned (not MP3, implausible result) with its ads; `hide` keeps it out of the feed, and tries it again after 1 hour, after 6 hours, then daily for about a week (Solstein says so at start-up). After that it stays out until `POST /api/v1/feeds/{id}/retry` or a change of settings.
 - `backlog`: how many of a new feed's newest existing episodes are cleaned straight away. The rest are cleaned the first time they are played: the client waits a few seconds (about 5 for a 40-minute episode). If it takes over 20 seconds, it gets `503` and `Retry-After`, and the next attempt gets the clean file. To clean a feed's older episodes ahead instead, use `POST /api/v1/feeds/{id}/prepare`.
+- `pair_downloads`: whether an episode's two downloads are made `together` (a tunnel for each exit at the same moment) or `in_turn` (one after the other, so **one VPN key is enough**). `auto`, the default, downloads them together when the exits can have a tunnel each and in turn when they can't; Solstein says which at start-up. In turn takes about twice as long per episode, plus any time a VPN key needs to settle after moving to another server, so it belongs with `prepare_ahead` — on request such an episode rarely makes the 20 second wait. The diff doesn't mind the gap: it keeps what the two downloads share, and a show's audio doesn't change between them.
 - `trim_break_markers`: also remove the short chime or sting a host splices in around ad breaks, where it can be cut without a glitch (it has to repeat identically, be under 5 seconds and sit at a break). Off by default, since a show's own sting at breaks would go too.
 - `compare_by_audio`: on by default. Some hosts (RedCircle) re-encode the whole episode when they insert ads, so the two downloads share no MP3 frame; Solstein then compares their loudness over time instead, read from the compressed audio (a few seconds of CPU per episode, a couple of hundred MB of memory while it runs), and still cuts only the home download's own frames, without re-encoding. Off, such episodes fail as they did before (`on_failure` applies).
 - `min_shared_seconds` (default `2`) and `max_removed_share` (default `0.3`) tune the diff and its sanity check.
@@ -160,9 +162,30 @@ Hosts such as Acast insert ads per listener region. Region diff downloads each e
 - The two exits must come out in different countries: two in the same one get the same ads. Solstein checks this for VPN exits, and for `direct` when you set `home_country`: at start-up it stays off if both can only be in one and the same country, and before each download it skips an exit that has fallen back to the home exit's country.
 - Changing a setting that affects the result (exits, diff settings, `trim_break_markers`, switching region diff on or off, a feed's exit or delivery mode) clears the cached episodes made with the old settings; they are prepared again the next time they are played.
 - New episodes appear in the feed once cleaned, whatever the feed's `delivery_mode`, and the feed carries the cleaned file's size and duration.
-- Per feed (API): `region_diff` (`on`, `off`, or empty for the global setting), `region_diff_exits` (its own pair), `region_diff_on_failure`, `region_diff_trim_break_markers` and `region_diff_compare_by_audio`. The feed's `region_diff_in_use` shows the result.
+- Per feed (API): `region_diff` (`on`, `off`, or empty for the global setting), `region_diff_exits` (its own pair), `region_diff_on_failure`, `region_diff_trim_break_markers` and `region_diff_compare_by_audio`. The feed's `region_diff_in_use` shows the result. `pair_downloads` is global only: it follows the keys, not the feed.
 - If the exits don't exist, region diff stays off and Solstein logs why at start-up.
 - **Upgrading to this version:** region diff's algorithm changed (version 4: comparing by audio, silent frames at cuts), so at the first start every cleaned episode's cached file is cleared and the episode cleaned again the next time it is played or prepared, and episodes that failed before are tried again. Audiobookshelf keeps the copies it has already downloaded, so this is no mass re-download; `POST /api/v1/feeds/{id}/prepare` cleans a feed's episodes ahead if you want them cached again.
+
+## Operating styles
+
+Solstein can be run in quite different ways, and what it needs — VPN keys, patience, the kind of client — differs with them. Two settings pick the style:
+
+| Style | Settings | VPN keys | Suits |
+|---|---|---|---|
+| **Plain proxy** | region diff off | none | Any client, including ones that stream every play |
+| **Region diff, on demand** | the defaults | one per exit in use at once | Any client, if you have the keys |
+| **Region diff, prepared ahead** | `prepare_ahead: true` | one per exit in use at once | A client that downloads each episode once, such as Audiobookshelf |
+| **Region diff on one key** | `prepare_ahead: true`, and `region_diff.pair_downloads` left at `auto` (or set to `in_turn`) | one | The same, when you have one key and can wait |
+
+**On demand** (the default) prepares a new episode when the feed is polled and publishes it once ready, and prepares a backlog episode — or one whose cached copy expired — **when a client asks for it**, in about 5–20 s. Clients don't wait long: Solstein answers `503` with `Retry-After` after 20 s and carries on in the background, and Audiobookshelf gives each episode only two attempts before moving on. So selecting a whole backlog at once in Audiobookshelf can arrive empty on the first pass while Solstein cleans; `POST /api/v1/feeds/{id}/prepare` first, and the downloads then come from the cache in under a second.
+
+**Prepared ahead** (`prepare_ahead: true`) removes that race: every episode is downloaded and cleaned before any client asks, and **appears in its feed only once it is ready** — the backlog included, queued as soon as the feed is subscribed to (or at the next start-up for feeds you already have). Nothing then waits on a deadline, so it doesn't matter how long an episode takes. Per feed with the API's `prepare_ahead` (`on`, `off`, or empty to follow the global setting); `prepare_ahead_in_use` shows the result. Episodes are still prepared on request when one is asked for anyway — a copy that expired from the cache — so a streaming client keeps working.
+
+**How many keys:** one per exit that can be in use at the same moment — region diff's pair, each `fallback_exits` entry, `default_exit` (feed polls and the VPN server-list refresh), and any feed's own exit. A tunnel belongs to a server, so every episode going out through one exit shares its tunnel: the number doesn't grow with how many episodes are being prepared. Solstein adds this up at start-up and says how many keys are missing, and with too few it cleans one episode at a time rather than have attempts close each other's tunnels.
+
+**One key** works because `pair_downloads` can download the two copies one after the other instead of at the same moment (`auto` does it by itself when the keys are short). An episode then takes about twice as long, plus any time a VPN key needs to settle after moving between servers, which is why this style wants `prepare_ahead`: on demand, such an episode would pass the 20 s wait and the client would give up. With one key you also realistically run the pair only — each fallback market is another key move — so "no dynamic ads found" is a weaker statement than with a key per exit.
+
+**What the client does decides how much that matters.** Audiobookshelf downloads each episode once and plays from its own disk, so it never comes back for an expired copy: preparing ahead covers it completely. A client that streams from Solstein on every play asks again whenever the 14-day cache has let an episode go, so it wants enough keys to clean within the deadline.
 
 ## Configuration
 
@@ -188,6 +211,7 @@ On first run Solstein creates `config.json` in its config directory (`/app/confi
 | `delivery_mode` | `-deliverymode` | `SOLSTEIN_DELIVERY_MODE` | `cache` | Default for feeds: `cache` (download and serve from disk), `stream` (pass through live) or `original` (only proxy the feed). |
 | `poll_interval_minutes` | `-pollinterval` | `SOLSTEIN_POLL_INTERVAL` | `15` | Minutes between feed polls. |
 | `cache_retention_days` | `-cacheretention` | `SOLSTEIN_CACHE_RETENTION` | `14` | Days cached episodes are kept on disk. Expired episodes stay in the feed and are fetched from the source again if played. |
+| `prepare_ahead` | `-prepareahead` | `SOLSTEIN_PREPARE_AHEAD` | `false` | Prepare every episode — download, or clean — before any client asks for it, and let it appear in the feed only once ready. Off by default: episodes are prepared when a feed is polled, and a backlog episode when it is first played. See **Operating styles**. |
 | `region_diff` | — | — | off | Ad removal; see **Removing ads**. Set in `config.json` only. |
 | — | `-configdir` | `SOLSTEIN_CONFIG_DIR` | `config` (`/app/config` in Docker) | Directory for `config.json`, the database, logs and cache. |
 | — | `-version` | — | — | Print the version and exit. |

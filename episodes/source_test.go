@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"aunefyren/solstein/logger"
+	"aunefyren/solstein/outbound"
 
 	"github.com/sirupsen/logrus"
 )
@@ -125,6 +127,34 @@ func TestRequestSourceCanSkipAllTrackers(t *testing.T) {
 	if got := chain.visited(); len(got) != 1 || got[0] != "audio.example" {
 		t.Errorf("visited %v, want the audio host only", got)
 	}
+}
+
+// A short tunnel budget used to walk the whole chain: the exit can't be used
+// at all, so every host behind it would fail the same way (docs/wip.md).
+func TestRequestSourceKeepsTrackersWhenTheExitIsUnavailable(t *testing.T) {
+	logs := captureLogs(t)
+	chain := newTrackerChain(t)
+	client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("resolve audio.example: %w: provider 'proton': tunnel limit reached", outbound.ErrExitUnavailable)
+	})}
+	_, err := requestSource(context.Background(), client, http.MethodGet,
+		"https://tracker.example/t/dead.example/track/42/audio.example/ep.mp3?updated=1", false, func(*http.Request) {}, checkResponse)
+	if !errors.Is(err, outbound.ErrExitUnavailable) {
+		t.Fatalf("err = %v, want the exit's error", err)
+	}
+	if visited := chain.visited(); len(visited) != 0 {
+		t.Errorf("visited %v, want nothing: the exit was unusable", visited)
+	}
+	if strings.Contains(logs.String(), "Tracking redirect") {
+		t.Errorf("trackers skipped although the exit was unusable: %q", logs.String())
+	}
+}
+
+// roundTripperFunc is an http.RoundTripper made from a function.
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (round roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return round(request)
 }
 
 func TestRequestSourceFailsAtTheAudioHost(t *testing.T) {

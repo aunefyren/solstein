@@ -20,6 +20,23 @@ const (
 // ErrTunnelLimit means max_tunnels are open and all of them are in use.
 var ErrTunnelLimit = errors.New("tunnel limit reached; all tunnels are in use")
 
+// errNoRoom is get's internal "every tunnel is busy": it waits for room and
+// tries again, and only turns into ErrTunnelLimit when the wait runs out.
+var errNoRoom = errors.New("no room for another tunnel")
+
+const (
+	// tunnelWait is how long get waits for a tunnel to free up before
+	// failing with ErrTunnelLimit. The tunnels in use are serving downloads
+	// that end, and the caller is often one half of a region-diff pair,
+	// where failing at once compares another market or fails the episode.
+	// A minute rides out one finishing download without hiding a setup
+	// that is short of keys for good (docs/exits.md, the tunnel budget).
+	tunnelWait = time.Minute
+	// tunnelWaitPoll is how often the wait looks for room again. Downloads
+	// last seconds at least, so this need not be fine-grained.
+	tunnelWaitPoll = 100 * time.Millisecond
+)
+
 // pool keeps one provider's tunnels: opened on first use, closed when idle,
 // at most max open at once.
 type pool struct {
@@ -35,8 +52,11 @@ type pool struct {
 	// (see pickKey).
 	keyLast []keyPlace
 	idle    time.Duration
-	now     func() time.Time
-	open    func(ctx context.Context, server Server) (*tunnel, error)
+	// waitLimit is how long get waits for a tunnel to free up (tunnelWait);
+	// zero fails at once.
+	waitLimit time.Duration
+	now       func() time.Time
+	open      func(ctx context.Context, server Server) (*tunnel, error)
 
 	mutex   sync.Mutex
 	tunnels map[string]*tunnel // by server name
@@ -47,13 +67,14 @@ func newPool(provider string, max int, keys []Key, fallbackDNS []netip.Addr, now
 		now = time.Now
 	}
 	return &pool{
-		provider: provider,
-		max:      max,
-		keys:     keys,
-		keyUse:   make([]int, len(keys)),
-		keyLast:  make([]keyPlace, len(keys)),
-		idle:     idleTimeout,
-		now:      now,
+		provider:  provider,
+		max:       max,
+		keys:      keys,
+		keyUse:    make([]int, len(keys)),
+		keyLast:   make([]keyPlace, len(keys)),
+		idle:      idleTimeout,
+		waitLimit: tunnelWait,
+		now:       now,
 		open: func(ctx context.Context, server Server) (*tunnel, error) {
 			opened, err := openTunnel(ctx, server, now)
 			if err == nil {
@@ -67,15 +88,45 @@ func newPool(provider string, max int, keys []Key, fallbackDNS []netip.Addr, now
 
 // get returns the tunnel to a server, opening it if needed. At the limit it
 // first closes the least recently used idle tunnel; if every tunnel is busy
-// it returns ErrTunnelLimit rather than cut someone's download.
+// it waits up to tunnelWait for one to free up rather than cut someone's
+// download, and only then fails with ErrTunnelLimit.
 //
 // The tunnel is handed over **in use**, so it can't be closed to make room
 // between here and the caller's first packet; the caller releases it when it
 // is done with it (exitDialer.through does).
 func (pool *pool) get(ctx context.Context, server Server) (*tunnel, error) {
-	pool.mutex.Lock()
-	defer pool.mutex.Unlock()
+	deadline := pool.now().Add(pool.waitLimit)
+	for {
+		pool.mutex.Lock()
+		opened, err := pool.tryGet(ctx, server)
+		pool.mutex.Unlock()
+		if !errors.Is(err, errNoRoom) {
+			return opened, err
+		}
+		if waitErr := pool.waitForRoom(ctx, deadline); waitErr != nil {
+			return nil, waitErr
+		}
+	}
+}
 
+// waitForRoom waits for a tunnel to free up, and reports ErrTunnelLimit once
+// tunnelWait has passed. It holds no lock, so releases and removals get
+// through while it waits.
+func (pool *pool) waitForRoom(ctx context.Context, deadline time.Time) error {
+	if !pool.now().Before(deadline) {
+		return fmt.Errorf("provider '%s': %w (max_tunnels %d, waited %s)", pool.provider, ErrTunnelLimit, pool.max, pool.waitLimit)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(tunnelWaitPoll):
+		return nil
+	}
+}
+
+// tryGet is one attempt at get, with the mutex held. It returns errNoRoom
+// when the limit is reached and every tunnel is in use.
+func (pool *pool) tryGet(ctx context.Context, server Server) (*tunnel, error) {
 	if existing, ok := pool.tunnels[server.Name]; ok {
 		if err := existing.use(); err == nil {
 			return existing, nil
@@ -96,7 +147,7 @@ func (pool *pool) get(ctx context.Context, server Server) (*tunnel, error) {
 			}
 		}
 		if victim == "" {
-			return nil, fmt.Errorf("provider '%s': %w (max_tunnels %d)", pool.provider, ErrTunnelLimit, pool.max)
+			return nil, errNoRoom
 		}
 		logger.Log.Debug("Closing idle tunnel to " + victim + " to make room for " + server.Name + ".")
 		pool.remove(victim)

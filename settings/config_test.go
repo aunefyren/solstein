@@ -180,18 +180,24 @@ func TestValidate(t *testing.T) {
 			}
 		}},
 		{name: "bad direct exit", modify: func(cfg *Config) { cfg.DirectExit = "sometimes" }, wantErr: true},
+		{name: "bad pair downloads", modify: func(cfg *Config) { cfg.RegionDiff.PairDownloads = "sometimes" }, wantErr: true},
 		{name: "region diff defaults", modify: func(cfg *Config) {}, check: func(t *testing.T, cfg Config) {
 			on := true
-			want := RegionDiff{Exits: []string{}, FallbackExits: []string{}, MinSharedSeconds: 2, MaxRemovedShare: 0.3, OnFailure: "publish", CompareByAudio: &on}
+			want := RegionDiff{Exits: []string{}, FallbackExits: []string{}, MinSharedSeconds: 2, MaxRemovedShare: 0.3,
+				OnFailure: "publish", PairDownloads: "auto", CompareByAudio: &on}
 			if !reflect.DeepEqual(cfg.RegionDiff, want) {
 				t.Errorf("region diff = %+v", cfg.RegionDiff)
 			}
 		}},
 		{name: "region diff normalised", modify: func(cfg *Config) {
 			cfg.RegionDiff.Exits, cfg.RegionDiff.OnFailure = []string{" norway ", "sweden"}, " Hide "
+			cfg.RegionDiff.PairDownloads = " In_Turn "
 		}, check: func(t *testing.T, cfg Config) {
 			if !reflect.DeepEqual(cfg.RegionDiff.Exits, []string{"norway", "sweden"}) || cfg.RegionDiff.OnFailure != "hide" {
 				t.Errorf("region diff = %+v", cfg.RegionDiff)
+			}
+			if cfg.RegionDiff.PairDownloads != "in_turn" {
+				t.Errorf("pair downloads = %q", cfg.RegionDiff.PairDownloads)
 			}
 		}},
 		{name: "region diff compare by audio switched off stays off", modify: func(cfg *Config) {

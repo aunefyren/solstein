@@ -45,6 +45,8 @@ type Settings struct {
 	RegionDiffTrimBreakMarkers string `json:"region_diff_trim_break_markers"`
 	// RegionDiffCompareByAudio is "on", "off" or empty.
 	RegionDiffCompareByAudio string `json:"region_diff_compare_by_audio"`
+	// PrepareAhead is "on", "off" or empty.
+	PrepareAhead string `json:"prepare_ahead"`
 }
 
 // SettingsOf returns a feed's per-feed settings.
@@ -58,6 +60,7 @@ func SettingsOf(feed models.Feed) Settings {
 		RegionDiffOnFailure:        feed.RegionDiffOnFailure,
 		RegionDiffTrimBreakMarkers: feed.RegionDiffTrimBreakMarkers,
 		RegionDiffCompareByAudio:   feed.RegionDiffCompareByAudio,
+		PrepareAhead:               feed.PrepareAhead,
 	}
 }
 
@@ -81,6 +84,11 @@ type Options struct {
 	// the likeliest plays are ready at once. The rest are processed when
 	// first requested.
 	ProcessBacklog int
+	// PrepareAhead is the default for feeds that don't set their own: no
+	// episode appears in the feed before its file is ready, and a new feed's
+	// whole backlog is queued at once instead of being prepared when a client
+	// asks for it (settings.Config.PrepareAhead).
+	PrepareAhead bool
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 }
@@ -125,6 +133,9 @@ func (service *Service) ValidateSettings(feedSettings Settings) error {
 	if !slices.Contains(regionDiffSwitches, feedSettings.RegionDiffCompareByAudio) {
 		return fmt.Errorf("%w: region_diff_compare_by_audio must be \"on\", \"off\" or empty (follow the global setting)", ErrInvalidSettings)
 	}
+	if !slices.Contains(regionDiffSwitches, feedSettings.PrepareAhead) {
+		return fmt.Errorf("%w: prepare_ahead must be \"on\", \"off\" or empty (follow the global setting)", ErrInvalidSettings)
+	}
 	if feedSettings.RegionDiff == "on" && !service.options.RegionDiffAvailable {
 		return fmt.Errorf("%w: region diff isn't running; set up region_diff in config.json first", ErrInvalidSettings)
 	}
@@ -150,6 +161,20 @@ func (service *Service) DeliveryMode(feed models.Feed) string {
 		return feed.DeliveryMode
 	}
 	return service.options.DefaultDeliveryMode
+}
+
+// PreparesAhead reports whether a feed's episodes are all prepared before any
+// client asks for them, and kept out of the feed until they are: the feed's
+// own setting, else prepare_ahead. It only means anything for a feed whose
+// episodes are prepared at all (cache mode, or a processor handles it).
+func (service *Service) PreparesAhead(feed models.Feed) bool {
+	switch feed.PrepareAhead {
+	case "on":
+		return true
+	case "off":
+		return false
+	}
+	return service.options.PrepareAhead
 }
 
 // Processed reports whether an episode processor handles the feed.
@@ -193,6 +218,7 @@ func (service *Service) Subscribe(ctx context.Context, rawSourceURL string, feed
 		RegionDiffOnFailure:        feedSettings.RegionDiffOnFailure,
 		RegionDiffTrimBreakMarkers: feedSettings.RegionDiffTrimBreakMarkers,
 		RegionDiffCompareByAudio:   feedSettings.RegionDiffCompareByAudio,
+		PrepareAhead:               feedSettings.PrepareAhead,
 	}
 
 	result, err := service.fetch(ctx, feed)
@@ -210,7 +236,13 @@ func (service *Service) Subscribe(ctx context.Context, rawSourceURL string, feed
 	feed.LastPolledAt, feed.LastSuccessAt = &now, &now
 
 	episodes := episodesFromItems(parsed.Items, models.EpisodeReady, true)
-	if service.Processed(feed) {
+	switch {
+	case service.PreparesAhead(feed) && (service.DeliveryMode(feed) == "cache" || service.Processed(feed)):
+		// Nothing is published before it is ready, so everything is queued:
+		// left for a client to ask for, a backlog episode would be hidden
+		// and never prepared.
+		queueNewest(episodes, len(episodes))
+	case service.Processed(feed):
 		queueNewest(episodes, service.options.ProcessBacklog)
 	}
 	err = service.store.CreateSubscription(ctx, &feed, result.data, now, episodes)
@@ -281,7 +313,7 @@ func (service *Service) Render(ctx context.Context, feed models.Feed, urls URLs)
 	}
 
 	mode := service.DeliveryMode(feed)
-	published := publishedEpisodes(episodes, mode == "cache" || service.Processed(feed))
+	published := publishedEpisodes(episodes, mode == "cache" || service.Processed(feed), service.PreparesAhead(feed))
 
 	// An episode's served pubDate is never earlier than the first time
 	// Solstein served it. ABS only auto-downloads episodes dated after a
@@ -481,6 +513,11 @@ func requestFeed(ctx context.Context, client *http.Client, feed models.Feed) (*h
 			response.Body.Close()
 		}
 		if errors.Is(err, outbound.ErrDestinationBlocked) || ctx.Err() != nil {
+			return nil, err
+		}
+		// The exit couldn't be used at all, so the next host in the chain
+		// would fail the same way through it: nothing to skip.
+		if errors.Is(err, outbound.ErrExitUnavailable) {
 			return nil, err
 		}
 		next, ok := EmbeddedURL(failedAt)

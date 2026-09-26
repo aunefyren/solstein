@@ -19,6 +19,7 @@ import (
 // docs/architecture.md): the warnings say why it is off, or which fallback exits
 // were dropped.
 func Setup(config settings.RegionDiff, available []string, locator Locator, configDir string) (*Processor, []string) {
+	budgeter, _ := locator.(Budgeter)
 	if len(config.Exits) == 0 {
 		if config.Enabled {
 			return nil, []string{"region_diff.enabled is on but region_diff.exits is empty; region diff stays off. Name two exits, the home region first, e.g. [\"norway\", \"sweden\"]."}
@@ -73,12 +74,21 @@ func Setup(config settings.RegionDiff, available []string, locator Locator, conf
 		FallbackExits: fallbacks,
 		Diff:          diff,
 		HideOnFailure: config.OnFailure == "hide",
+		PairDownloads: config.PairDownloads,
 		Locator:       locator,
+		Budgeter:      budgeter,
 		FailureDir:    keptDir(config.KeepFailedDownloads, configDir, "regiondiff-failures"),
 		SuccessDir:    keptDir(config.KeepSuccessfulDownloads, configDir, "regiondiff-successes"),
 	})
 	if err != nil {
 		return off(err.Error())
+	}
+	if processor.oneAtATime != nil {
+		_, reason := budgeter.ExitsFit(append([]string{config.Exits[0], config.Exits[1]}, fallbacks...))
+		warnings = append(warnings, "one episode is prepared at a time: "+reason+", so two at once would close and reopen each other's tunnels, which moves VPN keys between servers and can stall a tunnel for a few minutes. Add a key (or a tunnel) for each exit to prepare two at a time.")
+	}
+	if processor.downloadsInTurn(processor.options.Exits) {
+		warnings = append(warnings, "the two downloads of each episode are made in turn, not at the same moment, so one tunnel is enough — but an episode takes about twice as long, plus any time a VPN key needs to settle after moving to another server. Set prepare_ahead so no client waits for one; on request an episode may well take longer than the 20 s wait. Set region_diff.pair_downloads to \"together\" to download them at the same moment instead (a tunnel for each exit).")
 	}
 	return processor, warnings
 }
@@ -140,6 +150,14 @@ func (processor *Processor) Summary() string {
 	summary := fmt.Sprintf("comparing %s (home) with %s", options.Exits[0], options.Exits[1])
 	if len(options.FallbackExits) > 0 {
 		summary += ", then " + strings.Join(options.FallbackExits, ", ") + " if they agree"
+	}
+	if processor.downloadsInTurn(options.Exits) {
+		summary += "; the two downloads are made in turn, one tunnel at a time"
+		if options.PairDownloads == "auto" {
+			summary += " (pair_downloads auto, and the exits can't have a tunnel each)"
+		}
+	} else {
+		summary += "; the two downloads are made at the same moment"
 	}
 	if options.Enabled {
 		summary += "; on for every feed that doesn't switch it off"

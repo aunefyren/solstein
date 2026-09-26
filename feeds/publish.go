@@ -18,7 +18,10 @@ import (
 // good (see docs/clients.md).
 //
 // Backlog episodes (there when the feed was added) are always published;
-// they are fetched (or processed) on demand. Failed episodes are published too, and served
+// they are fetched (or processed) on demand — unless prepareAhead is set,
+// where they wait their turn like any other episode, because with it nothing
+// is prepared on demand and a hidden backlog episode would never be asked
+// for (see docs/episodes.md). Failed episodes are published too, and served
 // by streaming from the source instead of from the cache, so one bad
 // download can't hold back a feed forever. A failed episode the processor's
 // failure policy withholds is left out, but doesn't hold newer ones back.
@@ -30,13 +33,13 @@ import (
 // a failed check and turns auto-download off after 24 of them. If nothing
 // else would be published, the oldest episode is (the oldest not withheld,
 // if there is one), and is streamed from the source until it is cached.
-func publishedEpisodes(episodes []models.Episode, prepare bool) map[uuid.UUID]bool {
+func publishedEpisodes(episodes []models.Episode, prepare, prepareAhead bool) map[uuid.UUID]bool {
 	published := make(map[uuid.UUID]bool, len(episodes))
 	holding := false
 	for _, episode := range episodes {
 		switch {
 		case episode.Withheld:
-		case !prepare, episode.Backlog:
+		case !prepare, episode.Backlog && !prepareAhead:
 			published[episode.ID] = true
 		case holding:
 		case episode.State == models.EpisodeReady, episode.State == models.EpisodeFailed:

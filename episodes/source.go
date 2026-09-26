@@ -48,6 +48,17 @@ func requestSource(ctx context.Context, client *http.Client, method, sourceURL s
 		if errors.Is(err, outbound.ErrDestinationBlocked) || ctx.Err() != nil {
 			return nil, err
 		}
+		// The exit itself couldn't be used (no tunnel free, no server, an
+		// unknown exit): the next host in the chain would be asked through
+		// the same exit and fail the same way, so there is nothing to skip.
+		// Without this, one short tunnel budget walks the whole chain, a
+		// request and a log line per tracker (seen live, docs/wip.md).
+		if errors.Is(err, outbound.ErrExitUnavailable) {
+			if len(skipped) > 0 {
+				err = fmt.Errorf("%w (after skipping the tracking redirects at %s)", err, strings.Join(skipped, ", "))
+			}
+			return nil, err
+		}
 		next, ok := feeds.EmbeddedURL(failedAt)
 		if !ok || len(skipped) >= maxSkippedTrackers {
 			if len(skipped) > 0 {
@@ -67,7 +78,7 @@ func requestSource(ctx context.Context, client *http.Client, method, sourceURL s
 //
 // A request that gets no response — a connection dropped (seen through a
 // VPN tunnel as a bare EOF), no headers in time — is tried once more after
-// fetchRetryDelay. Nothing has been written anywhere yet, so this is safe.
+// fetchRetryDelay, unless the exit itself was unusable. Nothing has been written anywhere yet, so this is safe.
 // The retry must not go out on the connection that just failed (an HTTP/2
 // connection to a host is shared by every request to it), so idle
 // connections are closed first.
@@ -81,7 +92,9 @@ func requestOnce(ctx context.Context, client *http.Client, method, target string
 		return client.Do(request)
 	}
 	response, err := send()
-	if err != nil && !errors.Is(err, outbound.ErrDestinationBlocked) && !errors.Is(err, ErrPermanent) && ctx.Err() == nil {
+	// An unusable exit (no tunnel free after waiting, no server) isn't a
+	// dropped connection: a new one would go the same way.
+	if err != nil && !errors.Is(err, outbound.ErrDestinationBlocked) && !errors.Is(err, outbound.ErrExitUnavailable) && !errors.Is(err, ErrPermanent) && ctx.Err() == nil {
 		client.CloseIdleConnections()
 		select {
 		case <-time.After(fetchRetryDelay):

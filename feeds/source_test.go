@@ -109,7 +109,7 @@ func TestPublishedEpisodes(t *testing.T) {
 	failed := episode(models.EpisodeFailed, false)
 	episodes := []models.Episode{backlog, monday, tuesday, wednesday}
 
-	cache := publishedEpisodes(episodes, true)
+	cache := publishedEpisodes(episodes, true, false)
 	if !cache[backlog.ID] || !cache[monday.ID] {
 		t.Error("backlog and ready episodes should be published")
 	}
@@ -120,42 +120,76 @@ func TestPublishedEpisodes(t *testing.T) {
 		t.Error("ready episode newer than a pending one published; ABS would skip the pending one")
 	}
 
-	withFailure := publishedEpisodes([]models.Episode{monday, failed, wednesday}, true)
+	withFailure := publishedEpisodes([]models.Episode{monday, failed, wednesday}, true, false)
 	if !withFailure[failed.ID] || !withFailure[wednesday.ID] {
 		t.Error("a failed episode must not hold back newer ones")
 	}
 
 	// Nothing ready and no backlog: the oldest is published anyway.
 	first, second := episode(models.EpisodeDiscovered, false), episode(models.EpisodeAcquiring, false)
-	onlyPending := publishedEpisodes([]models.Episode{first, second}, true)
+	onlyPending := publishedEpisodes([]models.Episode{first, second}, true, false)
 	if len(onlyPending) != 1 || !onlyPending[first.ID] {
 		t.Errorf("feed with only pending episodes published %v, want just the oldest", onlyPending)
 	}
-	if empty := publishedEpisodes(nil, true); len(empty) != 0 {
+	if empty := publishedEpisodes(nil, true, false); len(empty) != 0 {
 		t.Errorf("no episodes: published %v", empty)
 	}
 
 	// A withheld failure is left out without holding newer episodes back.
 	withheld := episode(models.EpisodeFailed, false)
 	withheld.Withheld = true
-	withWithheld := publishedEpisodes([]models.Episode{monday, withheld, wednesday}, true)
+	withWithheld := publishedEpisodes([]models.Episode{monday, withheld, wednesday}, true, false)
 	if withWithheld[withheld.ID] || !withWithheld[wednesday.ID] {
 		t.Errorf("withheld episode: published %v, want monday and wednesday only", withWithheld)
 	}
 	// Withheld beats backlog: the unprocessed version isn't served.
 	withheldBacklog := episode(models.EpisodeFailed, true)
 	withheldBacklog.Withheld = true
-	if publishedEpisodes([]models.Episode{withheldBacklog, monday}, true)[withheldBacklog.ID] {
+	if publishedEpisodes([]models.Episode{withheldBacklog, monday}, true, false)[withheldBacklog.ID] {
 		t.Error("withheld backlog episode published")
 	}
 	// Never an empty feed, but a withheld episode is the last resort.
-	onlyWithheld := publishedEpisodes([]models.Episode{withheld, first}, true)
+	onlyWithheld := publishedEpisodes([]models.Episode{withheld, first}, true, false)
 	if len(onlyWithheld) != 1 || !onlyWithheld[first.ID] {
 		t.Errorf("feed with a withheld and a pending episode published %v, want the pending one", onlyWithheld)
 	}
 
-	all := publishedEpisodes(episodes, false)
+	all := publishedEpisodes(episodes, false, false)
 	if len(all) != len(episodes) {
 		t.Errorf("without preparing, published %d of %d", len(all), len(episodes))
+	}
+}
+
+// Preparing ahead, a backlog episode waits its turn like any other: nothing
+// is prepared on demand, so publishing it unprepared would serve the ads.
+func TestPublishedEpisodesPreparedAhead(t *testing.T) {
+	episode := func(state models.EpisodeState, backlog bool) models.Episode {
+		return models.Episode{Base: models.Base{ID: uuid.New()}, State: state, Backlog: backlog}
+	}
+	ready := episode(models.EpisodeReady, true)
+	waiting := episode(models.EpisodeDiscovered, true)
+	newer := episode(models.EpisodeReady, true)
+
+	ahead := publishedEpisodes([]models.Episode{ready, waiting, newer}, true, true)
+	if !ahead[ready.ID] {
+		t.Error("a prepared backlog episode should be published")
+	}
+	if ahead[waiting.ID] {
+		t.Error("a backlog episode without its file published although everything is prepared ahead")
+	}
+	if ahead[newer.ID] {
+		t.Error("a backlog episode newer than an unprepared one published; ABS would skip the unprepared one")
+	}
+
+	// On demand, the same episodes are all published and prepared when asked for.
+	onDemand := publishedEpisodes([]models.Episode{ready, waiting, newer}, true, false)
+	if len(onDemand) != 3 {
+		t.Errorf("on demand: published %d of 3 backlog episodes", len(onDemand))
+	}
+
+	// Never an empty feed, whichever way.
+	only := episode(models.EpisodeDiscovered, true)
+	if published := publishedEpisodes([]models.Episode{only}, true, true); len(published) != 1 || !published[only.ID] {
+		t.Errorf("a feed of one unprepared backlog episode published %v, want it anyway", published)
 	}
 }

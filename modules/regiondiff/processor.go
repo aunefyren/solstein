@@ -34,6 +34,12 @@ type ProcessorOptions struct {
 	// Locator says which country each exit comes out in, so two exits in
 	// the same country are never compared; nil skips the check.
 	Locator Locator
+	// Budgeter says whether the exits can all have a tunnel at once; when
+	// they can't, one episode is prepared at a time. nil skips the check.
+	Budgeter Budgeter
+	// PairDownloads is "auto" (the default), "together" or "in_turn": see
+	// settings.RegionDiffPairDownloads and downloadsInTurn.
+	PairDownloads string
 	// FailureDir, when set, keeps the downloads of attempts whose diff
 	// failed, for a look at what the host sent (see keepFailed).
 	FailureDir string
@@ -49,9 +55,20 @@ type Locator interface {
 	ExitCountry(exit string) (country string, known bool)
 }
 
+// Budgeter tells whether a set of exits can all have a tunnel at once (see
+// outbound.Budgeter). Short of tunnels, region diff prepares one episode at a
+// time: two attempts would evict each other's tunnels, which moves VPN keys
+// between servers and can leave a tunnel stalling for minutes.
+type Budgeter interface {
+	ExitsFit(exits []string) (fits bool, reason string)
+}
+
 // Processor is region diff as an episode processor for the pipeline.
 type Processor struct {
 	options ProcessorOptions
+	// oneAtATime holds attempts to one at a time when the exits they need
+	// can't all have a tunnel; nil when there is room for them all.
+	oneAtATime chan struct{}
 }
 
 // NewProcessor checks the options and builds a Processor. Every exit must be
@@ -67,7 +84,46 @@ func NewProcessor(options ProcessorOptions) (*Processor, error) {
 			return nil, fmt.Errorf("region diff: exit %q is listed more than once; each download must come from a different exit", exit)
 		}
 	}
-	return &Processor{options: options}, nil
+	processor := &Processor{options: options}
+	if options.Budgeter != nil {
+		if fits, _ := options.Budgeter.ExitsFit(all); !fits {
+			processor.oneAtATime = make(chan struct{}, 1)
+		}
+	}
+	return processor, nil
+}
+
+// downloadsInTurn reports whether an episode's two downloads are made one
+// after the other instead of at the same moment. In turn, only one tunnel is
+// needed at a time, so one VPN key is enough; together is faster and is what
+// a client waiting for an episode needs. "auto" downloads together when the
+// pair's exits can both have a tunnel at once, and in turn when they can't.
+func (processor *Processor) downloadsInTurn(pair [2]string) bool {
+	switch processor.options.PairDownloads {
+	case "in_turn":
+		return true
+	case "together":
+		return false
+	}
+	if processor.options.Budgeter == nil {
+		return false // nothing says the tunnels are short
+	}
+	fits, _ := processor.options.Budgeter.ExitsFit([]string{pair[0], pair[1]})
+	return !fits
+}
+
+// waitForTurn holds the attempt until it may run, when the exits are short of
+// tunnels. The turn is given back by the returned function.
+func (processor *Processor) waitForTurn(ctx context.Context) (func(), error) {
+	if processor.oneAtATime == nil {
+		return func() {}, nil
+	}
+	select {
+	case processor.oneAtATime <- struct{}{}:
+		return func() { <-processor.oneAtATime }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (processor *Processor) Name() string { return "region diff" }
@@ -148,6 +204,11 @@ func (processor *Processor) Process(ctx context.Context, job episodes.Job) (epis
 	if err != nil {
 		return episodes.Processed{}, err
 	}
+	done, err := processor.waitForTurn(ctx)
+	if err != nil {
+		return episodes.Processed{}, err
+	}
+	defer done()
 	home, other, compared, fallbacks, err := processor.fetchPair(ctx, job, pair, fallbacks)
 	if err != nil {
 		return episodes.Processed{}, err
@@ -377,6 +438,9 @@ func (processor *Processor) inDifferentCountries(pair [2]string, fallbacks []str
 // left for the identical-audio case. When the home download fails there is
 // nothing to compare with, and the attempt fails.
 func (processor *Processor) fetchPair(ctx context.Context, job episodes.Job, pair [2]string, fallbacks []string) (home, other checkedDownload, partner string, left []string, err error) {
+	if processor.downloadsInTurn(pair) {
+		return processor.fetchPairInTurn(ctx, job, pair, fallbacks)
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -393,22 +457,7 @@ func (processor *Processor) fetchPair(ctx context.Context, job episodes.Job, pai
 		home = checkedDownload{Download: download}
 	}()
 
-	candidates := append([]string{pair[1]}, fallbacks...)
-	var partnerErr error
-	for i, exit := range candidates {
-		download, fetchErr := job.Fetch(ctx, exit, job.Fresh)
-		if fetchErr == nil {
-			other, partner, left = checkedDownload{Download: download}, exit, candidates[i+1:]
-			break
-		}
-		if ctx.Err() != nil {
-			break // the home download failed
-		}
-		partnerErr = errors.Join(partnerErr, fmt.Errorf("download through exit %q: %w", exit, fetchErr))
-		if i+1 < len(candidates) {
-			logger.Log.Warn(fmt.Sprintf("Region diff: downloading '%s' through %s failed; comparing with %s instead. Error: %s", job.Episode.Title, exit, candidates[i+1], fetchErr))
-		}
-	}
+	other, partner, left, partnerErr := processor.fetchPartner(ctx, job, pair, fallbacks)
 	<-homeDone
 
 	switch {
@@ -418,6 +467,51 @@ func (processor *Processor) fetchPair(ctx context.Context, job episodes.Job, pai
 		return checkedDownload{}, checkedDownload{}, "", nil, partnerErr
 	}
 	return home, other, partner, left, nil
+}
+
+// fetchPairInTurn downloads through the home exit first and the partner after
+// it, so only one tunnel is needed at a time and one VPN key is enough. The
+// two downloads are then made at different moments as well as in different
+// regions, which the diff doesn't mind: it keeps what they share, and a
+// host's show audio doesn't change between them — downloads hours apart
+// diffed to byte-identical audio (docs/region-diff.md). It is slower, since
+// the downloads don't overlap and a VPN key moved to another server may need
+// to settle, so an episode cleaned this way is rarely ready inside a client's
+// wait: it suits prepare_ahead (docs/episodes.md).
+func (processor *Processor) fetchPairInTurn(ctx context.Context, job episodes.Job, pair [2]string, fallbacks []string) (home, other checkedDownload, partner string, left []string, err error) {
+	download, homeErr := job.Fetch(ctx, pair[0], job.Fresh)
+	if homeErr != nil {
+		return checkedDownload{}, checkedDownload{}, "", nil, fmt.Errorf("download through exit %q: %w", pair[0], homeErr)
+	}
+	home = checkedDownload{Download: download}
+
+	other, partner, left, partnerErr := processor.fetchPartner(ctx, job, pair, fallbacks)
+	if partner == "" {
+		return checkedDownload{}, checkedDownload{}, "", nil, partnerErr
+	}
+	return home, other, partner, left, nil
+}
+
+// fetchPartner downloads through the exit to compare the home download with:
+// the pair's other exit, or the first fallback that answers. It reports the
+// exit used and the fallbacks left for the identical-audio case; with none
+// left, partner is empty and err says what each exit did.
+func (processor *Processor) fetchPartner(ctx context.Context, job episodes.Job, pair [2]string, fallbacks []string) (other checkedDownload, partner string, left []string, err error) {
+	candidates := append([]string{pair[1]}, fallbacks...)
+	for i, exit := range candidates {
+		download, fetchErr := job.Fetch(ctx, exit, job.Fresh)
+		if fetchErr == nil {
+			return checkedDownload{Download: download}, exit, candidates[i+1:], nil
+		}
+		if ctx.Err() != nil {
+			return checkedDownload{}, "", nil, err // the home download failed, or the caller gave up
+		}
+		err = errors.Join(err, fmt.Errorf("download through exit %q: %w", exit, fetchErr))
+		if i+1 < len(candidates) {
+			logger.Log.Warn(fmt.Sprintf("Region diff: downloading '%s' through %s failed; comparing with %s instead. Error: %s", job.Episode.Title, exit, candidates[i+1], fetchErr))
+		}
+	}
+	return checkedDownload{}, "", nil, err
 }
 
 // identicalNote describes an episode every region gave the same audio. A

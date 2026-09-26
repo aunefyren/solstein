@@ -28,6 +28,10 @@ type Feed struct {
 	// RegionDiffCompareByAudio is "on" or "off", or empty to follow
 	// region_diff.compare_by_audio.
 	RegionDiffCompareByAudio string `json:"region_diff_compare_by_audio"`
+	// PrepareAhead is "on" or "off", or empty to follow prepare_ahead: keep
+	// every episode out of the feed until its file is ready, and prepare the
+	// backlog up front instead of when a client asks.
+	PrepareAhead string `json:"prepare_ahead"`
 
 	LastPolledAt  *time.Time `json:"last_polled_at"`
 	LastSuccessAt *time.Time `json:"last_success_at"`

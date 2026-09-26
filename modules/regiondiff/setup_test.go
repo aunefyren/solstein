@@ -56,7 +56,7 @@ func TestSetupOn(t *testing.T) {
 		options.Diff.MinShared != 3*time.Second || options.Diff.MaxRemovedShare != 0.4 || options.Diff.DurationTolerance != 0.05 {
 		t.Errorf("options = %+v", options)
 	}
-	if summary := processor.Summary(); summary != "comparing norway (home) with sweden, then germany, denmark if they agree; on for every feed that doesn't switch it off; episodes that can't be processed are kept out of the feed" {
+	if summary := processor.Summary(); summary != "comparing norway (home) with sweden, then germany, denmark if they agree; the two downloads are made at the same moment; on for every feed that doesn't switch it off; episodes that can't be processed are kept out of the feed" {
 		t.Errorf("summary = %q", summary)
 	}
 }

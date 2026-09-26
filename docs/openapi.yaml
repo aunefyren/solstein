@@ -666,13 +666,19 @@ components:
           type: string
           enum: ["", "on", "off"]
           description: Compare downloads that share no MP3 frame (the host re-encodes around its ads) by their loudness over time; empty follows `region_diff.compare_by_audio` (on by default).
+        prepare_ahead:
+          type: string
+          enum: ["", "on", "off"]
+          description: >-
+            Prepare every episode before any client asks for it, and keep it out of the feed until its
+            file is ready (the backlog included); empty follows `prepare_ahead`.
 
     Feed:
       description: A subscribed feed, its settings and its state.
       allOf:
         - $ref: "#/components/schemas/FeedSettings"
         - type: object
-          required: [id, source_url, feed_url, delivery_mode_in_use, region_diff_in_use]
+          required: [id, source_url, feed_url, delivery_mode_in_use, region_diff_in_use, prepare_ahead_in_use]
           properties:
             id:
               type: string
@@ -705,6 +711,9 @@ components:
             region_diff_in_use:
               type: boolean
               description: Whether region diff processes the feed's episodes, after the global and per-feed settings are combined.
+            prepare_ahead_in_use:
+              type: boolean
+              description: Whether the feed's episodes are all prepared before a client asks, after the global and per-feed settings are combined.
             feed_url:
               type: string
               format: uri

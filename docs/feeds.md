@@ -21,6 +21,7 @@ What a new subscription does:
 - Fetches the source at once, with a 20 s limit (ABS gives up after 30 s), and stores the feed only if it parses as RSS — together with its document and episodes, in one transaction — so a mistyped URL leaves nothing behind.
 - Every episode already in the feed is stored as **backlog**: published at once and fetched (or processed) when first requested. Clients don't auto-download old episodes anyway.
 - For a feed region diff handles, the newest `region_diff.backlog` backlog episodes (by date; undated count as oldest) are stored as waiting instead, so the pipeline processes them straight away. They stay published while they wait.
+- **Preparing ahead** (`prepare_ahead`, or the feed's own setting) stores the **whole** backlog as waiting instead, for a feed in `cache` mode as well as a processed one, and publishes none of it until its file is there (below). Nothing is then prepared because a client asked for it; left published and unprepared, a backlog episode would be hidden and so never asked for. Feeds subscribed before the setting was switched on are queued at the next start-up, and when it is switched on through the API ([`episodes.md`](episodes.md), Background queue).
 
 ## Feed records and settings
 
@@ -37,8 +38,9 @@ What a new subscription does:
 | `region_diff_on_failure` | `publish`, `hide` | `region_diff.on_failure` |
 | `region_diff_trim_break_markers` | `on`, `off` | `region_diff.trim_break_markers` |
 | `region_diff_compare_by_audio` | `on`, `off` | `region_diff.compare_by_audio` |
+| `prepare_ahead` | `on`, `off` | `prepare_ahead` |
 
-- `feeds.ValidateSettings` refuses an exit that doesn't exist (including `direct` while the direct exit is off, `direct_exit`), an unknown delivery mode, a negative poll interval, `region_diff: on` while region diff isn't running, unknown region-diff values, and a `region_diff_exits` that isn't two different existing exits.
+- `feeds.ValidateSettings` refuses an unknown `prepare_ahead` value, an exit that doesn't exist (including `direct` while the direct exit is off, `direct_exit`), an unknown delivery mode, a negative poll interval, `region_diff: on` while region diff isn't running, unknown region-diff values, and a `region_diff_exits` that isn't two different existing exits.
 - At start-up, `main.go` warns about feeds whose exit (or region-diff exit) no longer exists, and feeds with region diff switched on while it is off.
 
 ## Feed API
@@ -50,13 +52,13 @@ A small JSON API behind the subscribe token (`Authorization: Bearer` or `?token=
 | `GET /api/v1/feeds` | List feeds |
 | `POST /api/v1/feeds` | Subscribe: `source_url` plus any per-feed settings. `201` when new, `200` (unchanged) when already subscribed |
 | `GET /api/v1/feeds/{id}` | One feed |
-| `PATCH /api/v1/feeds/{id}` | Change settings; an omitted field is left alone, an empty one clears the override. Cached episodes made with the old settings are cleared at once ([`episodes.md`](episodes.md)) |
+| `PATCH /api/v1/feeds/{id}` | Change settings; an omitted field is left alone, an empty one clears the override. Cached episodes made with the old settings are cleared at once ([`episodes.md`](episodes.md)), and a feed that now prepares ahead has its episodes without a file queued |
 | `DELETE /api/v1/feeds/{id}` | Remove the feed, its episodes and its cached audio |
 | `POST /api/v1/feeds/{id}/retry` | Queue the feed's failed episodes for another attempt ([`episodes.md`](episodes.md), Background queue); `{"queued": n}` |
 | `POST /api/v1/retry` | The same for every feed whose episodes are prepared; `{"queued": n}` in total |
 | `POST /api/v1/feeds/{id}/prepare` | Queue the feed's newest episodes without their file to be prepared ahead; optional body `{"newest": n}`, all when omitted; `{"queued": n}`. `400` for a feed nothing is prepared for (stream or original mode, not processed) |
 
-Responses carry the feed's settings plus `delivery_mode_in_use`, `region_diff_in_use` (the global and per-feed settings combined) and `feed_url` (signed). Invalid settings are `400`; internal error text goes to the log, never to the client.
+Responses carry the feed's settings plus `delivery_mode_in_use`, `region_diff_in_use`, `prepare_ahead_in_use` (the global and per-feed settings combined) and `feed_url` (signed). Invalid settings are `400`; internal error text goes to the log, never to the client.
 
 ## Polling
 
@@ -86,7 +88,7 @@ Checked against real feeds (NPR, 355 items; Acast, 27 items): only the enclosure
 `publishedEpisodes` decides which episodes appear. When episodes need preparing — `cache` mode, or a processor handles the feed:
 - An episode appears once it is **ready** (cached or processed).
 - **In order:** episodes are published in `pubDate` order, and a pending episode holds back every newer one. ABS only picks up episodes newer than the newest it has, so publishing Tuesday's before Monday's would make it skip Monday's for good.
-- **Backlog** episodes are always published; they are fetched or processed on demand.
+- **Backlog** episodes are always published; they are fetched or processed on demand. **Preparing ahead** they are not: they wait their turn like any other episode, and hold back newer ones in the same way, since nothing is prepared on demand.
 - **Failed** episodes (retries exhausted, or a permanent error) are published and served unprocessed, so one bad episode can't hold a feed back forever.
 - **Withheld** episodes (a processor's failure policy `hide`) are left out, backlog included, without holding newer ones back.
 - **Never an empty feed:** if nothing else would be published, the oldest episode is (the oldest not withheld, if any), because ABS treats a feed without items as a failed check.

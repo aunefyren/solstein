@@ -66,11 +66,23 @@ An episode of a processed feed can be requested before it has its processed file
 - **Outcomes:** success caches the file (the episode stays ready, or becomes ready). A permanent failure applies the failure policy: publish (stream the source; in cache mode the stream is cached, and from then on that version is served) or withhold (`404`). A retryable failure answers `503` and leaves a published episode as it is; the next request tries again, asking for fresh copies. Published episodes get no retry schedule, since clients don't re-request on their own — so after **three failed attempts in a row** the failure policy applies, as if the failure were permanent. Without that limit, an episode that fails the same way every time would never be served. A settings change resets the count.
 - **Lifetime:** `Pipeline.Run` returns only after on-request work has stopped, so the database is never closed under it, and refuses new work (`ErrBusy`) once stopping. A cancelled job records nothing.
 
+## Preparing ahead
+
+`prepare_ahead` (per feed: `models.Feed.PrepareAhead`, `on`/`off`/empty) turns the pipeline from "prepare what a client asks for" into "prepare everything first":
+- **Nothing is published before its file exists**, the backlog included ([`feeds.md`](feeds.md), Publish rules), so a client never asks for an episode that isn't ready and never gets a `503`.
+- **The whole backlog is queued** when a feed is subscribed to, instead of the newest `region_diff.backlog` of it. For feeds that already exist, `main.go` queues their episodes without a file at start-up (so switching the setting on takes effect), and the API does it when the setting is switched on for one feed. Both go through the background queue (below): two at a time, after any new episode, so a large backlog doesn't burst downloads at the host.
+- **On-request preparation stays** (below). An episode whose cached copy expired is still published, so a client can ask for it, and then it is prepared while it waits — that is what keeps a streaming client working. What changes is that nothing *has* to be prepared that way.
+
+It applies to any feed whose episodes are prepared at all: a processed feed, and a `cache`-mode feed, whose backlog would otherwise be downloaded on first play.
+
+Why it exists: with `region_diff.pair_downloads` in turn an episode takes about twice as long to clean, plus any time a VPN key needs to settle after moving between servers ([`region-diff.md`](region-diff.md)), which no client would wait for. Preparing ahead is what makes that trade — one VPN key instead of one per exit — usable. It is off by default, since preparing on demand is what a client that streams every play needs, and it costs nothing when every episode is prepared at poll time anyway.
+
 ## Background queue
 
 Episodes that are already published (or withheld) can be queued for an attempt in the background, without changing their state: they stay in the feed as they are meanwhile, and nothing holds newer episodes back. What queues them:
 - **Withheld episodes are retried slowly:** after **1 hour**, **6 hours**, then **daily for about a week** (8 attempts), with fresh downloads. Without it, a passing problem at the host could hide an episode for good: a backlog episode requested by ABS is withheld after three failures that can all fall within a minute. After the last attempt it stays withheld until a retry through the API or a change of settings. Episodes withheld before this existed get their first retry at the next start-up.
 - **`POST /api/v1/feeds/{id}/retry`** queues every failed episode of the feed, withheld or published unprocessed, e.g. after a fix; `POST /api/v1/retry` does it for every feed. A withheld one that fails again starts the slow retries afresh; one published unprocessed stays as it was.
+- **Preparing ahead** (`prepare_ahead`, above) queues a feed's episodes without a file at start-up, and when the setting is switched on for a feed through the API.
 - **`POST /api/v1/feeds/{id}/prepare`** (optionally `{"newest": n}`) queues the feed's newest episodes that are published without their file — backlog, or expired from the cache — to be downloaded or processed before any client asks. One that fails is left for its next request, counting as one of its three attempts. `region_diff.backlog` does this once, at subscription; this does it for a feed already added, or after its files were cleared.
 
 How it runs:

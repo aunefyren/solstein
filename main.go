@@ -166,6 +166,7 @@ func run() int {
 		AllowedSourceHosts:  cfg.AllowedSourceHosts,
 	}
 	var processor episodes.Processor
+	feedOptions.PrepareAhead = cfg.PrepareAhead
 	if regionDiff != nil {
 		processor = regionDiff
 		feedOptions.RegionDiffAvailable = true
@@ -174,8 +175,17 @@ func run() int {
 		logger.Log.Info("Region diff on: " + regionDiff.Summary() + ".")
 	}
 
+	if cfg.PrepareAhead {
+		logger.Log.Info("Preparing ahead: every episode is downloaded (and cleaned) before any client asks for it, and appears in its feed only once ready. Feeds can switch it off one by one.")
+	} else {
+		logger.Log.Info("Preparing on demand: new episodes are prepared when a feed is polled, and a backlog episode when a client first asks for it. Set prepare_ahead to prepare everything in advance instead.")
+	}
+
 	feedService := feeds.New(store, exitManager, feedOptions)
 	warnAboutFeedSettings(ctx, feedService, exitManager.Exits(), regionDiff != nil)
+	if vpnModule != nil {
+		warnAboutTunnelBudget(ctx, feedService, vpnModule, cfg, exitManager.DefaultExit(), regionDiff != nil)
+	}
 	if regionDiff != nil {
 		warnAboutWithholding(ctx, feedService, cfg.RegionDiff.OnFailure == "hide", regionDiff.HideOnFailure)
 	}
@@ -205,6 +215,7 @@ func run() int {
 		logger.Log.Error("Failed to bring episodes in line with the settings. Error: " + err.Error())
 		return 1
 	}
+	queueFeedsPreparedAhead(ctx, feedService, pipeline)
 	poller := feeds.NewPoller(feedService, time.Duration(cfg.PollIntervalMinutes)*time.Minute, pipeline.Wake)
 
 	episodeServer := episodes.NewServer(store, exitManager, cache, feedService, pipeline, episodes.Options{SkipTrackers: cfg.SkipTrackingRedirects})
@@ -265,6 +276,87 @@ func warnAboutFeedSettings(ctx context.Context, feedService *feeds.Service, avai
 				logger.Log.Warn("Feed '" + feed.Title + "' compares through exit '" + exit + "', which isn't available; its episodes can't be processed until the exit is back or the feed's region_diff_exits is changed.")
 			}
 		}
+	}
+}
+
+// queueFeedsPreparedAhead queues the episodes without a file of every feed
+// that prepares ahead, so they are ready before a client asks. It runs at
+// start-up, because prepare_ahead may have been switched on since the last
+// run — and with it an episode without a file is kept out of the feed, so
+// nothing would ever ask for it. The queue takes them two at a time, after
+// any new episode, so this doesn't burst downloads at the hosts.
+func queueFeedsPreparedAhead(ctx context.Context, feedService *feeds.Service, pipeline *episodes.Pipeline) {
+	list, err := feedService.List(ctx)
+	if err != nil {
+		logger.Log.Error("Failed to check which feeds prepare their episodes ahead. Error: " + err.Error())
+		return
+	}
+	queued := 0
+	for _, feed := range list {
+		if !feedService.PreparesAhead(feed) {
+			continue
+		}
+		count, err := pipeline.Queue(ctx, feed.ID, 0)
+		if errors.Is(err, episodes.ErrNotPrepared) {
+			continue // stream or original mode, and not processed: nothing to prepare
+		}
+		if err != nil {
+			logger.Log.Error("Failed to queue the episodes of feed '" + feed.Title + "' to be prepared ahead. Error: " + err.Error())
+			continue
+		}
+		queued += count
+	}
+	if queued > 0 {
+		logger.Log.Info(fmt.Sprintf("Preparing ahead: %d episodes without a file are queued, two at a time, and appear in their feeds once ready.", queued))
+	}
+}
+
+// warnAboutTunnelBudget says when more exits can be in use at the same moment
+// than their provider can hold tunnels for, and how many keys that is short.
+// Everything that can want a tunnel at once counts: region diff's pair and
+// its fallbacks (each tried in turn while the pair's tunnels are still open),
+// the default exit (feed polls, the server-list refresh) and every feed's own
+// exit. Several episodes through one exit share its tunnel, so the count
+// doesn't grow with the number of episodes being prepared.
+func warnAboutTunnelBudget(ctx context.Context, feedService *feeds.Service, vpnModule *exits.Module, cfg settings.Config, defaultExit string, regionDiffRunning bool) {
+	var uses []exits.ExitUse
+	if defaultExit != "" {
+		uses = append(uses, exits.ExitUse{Exit: defaultExit, Reason: "the default exit for polls and the server-list refresh"})
+	}
+	if regionDiffRunning {
+		for i, exit := range cfg.RegionDiff.Exits {
+			reason := "region diff's home exit"
+			if i > 0 {
+				reason = "region diff's partner exit"
+			}
+			uses = append(uses, exits.ExitUse{Exit: exit, Reason: reason})
+		}
+		for _, exit := range cfg.RegionDiff.FallbackExits {
+			uses = append(uses, exits.ExitUse{Exit: exit, Reason: "a fallback exit"})
+		}
+	}
+	list, err := feedService.List(ctx)
+	if err != nil {
+		// Already reported by warnAboutFeedSettings; warn on what is known.
+		list = nil
+	}
+	for _, feed := range list {
+		if feed.Exit != "" {
+			uses = append(uses, exits.ExitUse{Exit: feed.Exit, Reason: "feed '" + feed.Title + "'"})
+		}
+		if !regionDiffRunning {
+			continue
+		}
+		for i, exit := range feed.RegionDiffExits {
+			reason := "feed '" + feed.Title + "' compares through it"
+			if i > 0 {
+				reason = "feed '" + feed.Title + "' compares with it"
+			}
+			uses = append(uses, exits.ExitUse{Exit: exit, Reason: reason})
+		}
+	}
+	for _, warning := range vpnModule.TunnelBudget(uses) {
+		logger.Log.Warn("VPN: " + warning)
 	}
 }
 

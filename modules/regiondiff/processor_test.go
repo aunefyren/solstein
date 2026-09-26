@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -548,5 +549,227 @@ func TestProcessorComparesReencodedDownloadsByAudio(t *testing.T) {
 	}
 	if !strings.Contains(processed.Note, "in 1 break, comparing norway with sweden by audio") || processed.Duration < 39*time.Second || processed.Duration > 41*time.Second {
 		t.Errorf("note %q, duration %s", processed.Note, processed.Duration)
+	}
+}
+
+// fakeBudgeter answers ExitsFit with what the test wants.
+type fakeBudgeter struct {
+	fits bool
+	why  string
+}
+
+func (budgeter fakeBudgeter) ExitsFit([]string) (bool, string) {
+	return budgeter.fits, budgeter.why
+}
+
+// Short of tunnels, attempts are prepared one at a time: two at once would
+// close and reopen each other's tunnels (docs/exits.md).
+func TestProcessorOneAtATimeWhenTunnelsAreShort(t *testing.T) {
+	// One attempt downloads through both exits at once, so only the home
+	// exit's download marks an attempt having started.
+	inFetch := make(chan struct{})
+	release := make(chan struct{})
+	job := episodes.Job{Fetch: func(ctx context.Context, exit string, fresh bool) (episodes.Download, error) {
+		if exit != "norway" {
+			return episodes.Download{}, errors.New("the partner is not what this test measures")
+		}
+		inFetch <- struct{}{}
+		<-release
+		return episodes.Download{}, errors.New("that is all this test needs")
+	}}
+
+	processor, err := NewProcessor(ProcessorOptions{
+		Exits: [2]string{"norway", "sweden"}, Diff: DefaultOptions(),
+		Budgeter: fakeBudgeter{fits: false, why: "provider 'proton' can hold 1 tunnel at once"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if processor.oneAtATime == nil {
+		t.Fatal("attempts are not held to one at a time although the exits don't fit")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	for range 2 {
+		go func() { processor.Process(ctx, job) }()
+	}
+	// The first attempt is downloading; the second must not have started.
+	<-inFetch
+	select {
+	case <-inFetch:
+		t.Fatal("a second attempt started while the first held the turn")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Once the first is done, the second gets its turn.
+	close(release)
+	select {
+	case <-inFetch:
+	case <-time.After(5 * time.Second):
+		t.Error("the second attempt never got its turn")
+	}
+}
+
+func TestProcessorRunsTogetherWhenTunnelsFit(t *testing.T) {
+	inFetch := make(chan struct{}, 4)
+	release := make(chan struct{})
+	job := episodes.Job{Fetch: func(ctx context.Context, exit string, fresh bool) (episodes.Download, error) {
+		if exit != "norway" {
+			return episodes.Download{}, errors.New("the partner is not what this test measures")
+		}
+		inFetch <- struct{}{}
+		<-release
+		return episodes.Download{}, errors.New("that is all this test needs")
+	}}
+	defer close(release)
+
+	for _, budgeter := range []Budgeter{fakeBudgeter{fits: true}, nil} {
+		processor, err := NewProcessor(ProcessorOptions{
+			Exits: [2]string{"norway", "sweden"}, Diff: DefaultOptions(), Budgeter: budgeter,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if processor.oneAtATime != nil {
+			t.Fatalf("attempts held to one at a time with budgeter %v", budgeter)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		for range 2 {
+			go func() { processor.Process(ctx, job) }()
+		}
+		for range 2 {
+			select {
+			case <-inFetch:
+			case <-time.After(5 * time.Second):
+				t.Error("both attempts didn't run together")
+			}
+		}
+		cancel()
+	}
+}
+
+// In turn, the two downloads never overlap, so one tunnel is enough — and the
+// result is the same as downloading them together.
+func TestProcessorDownloadsInTurn(t *testing.T) {
+	var live, most int32
+	data := map[string][]byte{"norway": join(tag("home"), show1, audio(200, 10), show2), "sweden": join(show1, audio(250, 11), show2)}
+	job := episodes.Job{Fetch: func(ctx context.Context, exit string, fresh bool) (episodes.Download, error) {
+		now := atomic.AddInt32(&live, 1)
+		defer atomic.AddInt32(&live, -1)
+		if now > atomic.LoadInt32(&most) {
+			atomic.StoreInt32(&most, now)
+		}
+		time.Sleep(20 * time.Millisecond) // long enough to overlap if they were together
+		body, ok := data[exit]
+		if !ok {
+			return episodes.Download{}, errors.New("no such exit in this test")
+		}
+		return episodes.Download{Data: body, ContentType: "audio/mpeg"}, nil
+	}}
+
+	processor, err := NewProcessor(ProcessorOptions{
+		Exits: [2]string{"norway", "sweden"}, Diff: DefaultOptions(), PairDownloads: "in_turn",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	processed, err := processor.Process(context.Background(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&most); got != 1 {
+		t.Errorf("%d downloads ran at once, want one at a time", got)
+	}
+	if want := join(tag("home"), show1, show2); !bytes.Equal(processed.Audio, want) {
+		t.Errorf("output is %d bytes, want the home tag and the show's %d", len(processed.Audio), len(want))
+	}
+	if processed.Note != "removed 5s of ads in 1 break, comparing norway with sweden" {
+		t.Errorf("note = %q", processed.Note)
+	}
+}
+
+// In turn, a home download that fails ends the attempt, and a partner that
+// fails hands over to the fallback exits as usual.
+func TestProcessorInTurnFailures(t *testing.T) {
+	data := map[string][]byte{"germany": join(show1, audio(250, 11), show2)}
+	home := join(tag("home"), show1, audio(200, 10), show2)
+	inTurn := func(t *testing.T) *Processor {
+		t.Helper()
+		processor, err := NewProcessor(ProcessorOptions{
+			Exits: [2]string{"norway", "sweden"}, FallbackExits: []string{"germany"},
+			Diff: DefaultOptions(), PairDownloads: "in_turn",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return processor
+	}
+
+	t.Run("the home download fails", func(t *testing.T) {
+		var fetched []string
+		job := episodes.Job{Fetch: func(ctx context.Context, exit string, fresh bool) (episodes.Download, error) {
+			fetched = append(fetched, exit)
+			return episodes.Download{}, errors.New("no answer")
+		}}
+		if _, err := inTurn(t).Process(context.Background(), job); err == nil {
+			t.Error("the attempt went on without the home download")
+		}
+		if len(fetched) != 1 || fetched[0] != "norway" {
+			t.Errorf("fetched %v, want the home exit only: there is nothing to compare with", fetched)
+		}
+	})
+
+	t.Run("the partner fails and a fallback takes over", func(t *testing.T) {
+		job := episodes.Job{Fetch: func(ctx context.Context, exit string, fresh bool) (episodes.Download, error) {
+			switch exit {
+			case "norway":
+				return episodes.Download{Data: home, ContentType: "audio/mpeg"}, nil
+			case "sweden":
+				return episodes.Download{}, errors.New("no answer through sweden")
+			}
+			return episodes.Download{Data: data[exit], ContentType: "audio/mpeg"}, nil
+		}}
+		processed, err := inTurn(t).Process(context.Background(), job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if processed.Note != "removed 5s of ads in 1 break, comparing norway with germany" {
+			t.Errorf("note = %q", processed.Note)
+		}
+	})
+}
+
+// auto downloads together when the pair's exits fit, and in turn when they
+// don't; together and in_turn ignore what the keys allow.
+func TestProcessorPairDownloadsAuto(t *testing.T) {
+	cases := []struct {
+		setting string
+		fits    bool
+		inTurn  bool
+	}{
+		{"auto", true, false},
+		{"auto", false, true},
+		{"together", false, false},
+		{"in_turn", true, true},
+		{"", true, false}, // unset behaves as auto
+	}
+	for _, test := range cases {
+		processor, err := NewProcessor(ProcessorOptions{
+			Exits: [2]string{"norway", "sweden"}, Diff: DefaultOptions(),
+			PairDownloads: test.setting, Budgeter: fakeBudgeter{fits: test.fits, why: "one key"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := processor.downloadsInTurn(processor.options.Exits); got != test.inTurn {
+			t.Errorf("pair_downloads %q with fits=%v: in turn = %v, want %v", test.setting, test.fits, got, test.inTurn)
+		}
+	}
+
+	// Without a Budgeter nothing says the tunnels are short.
+	processor, _ := NewProcessor(ProcessorOptions{Exits: [2]string{"norway", "sweden"}, Diff: DefaultOptions(), PairDownloads: "auto"})
+	if processor.downloadsInTurn(processor.options.Exits) {
+		t.Error("auto chose in turn with nothing to say the tunnels are short")
 	}
 }

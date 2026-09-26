@@ -3,6 +3,7 @@ package exits
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -32,6 +33,7 @@ func newFakePool(t *testing.T, max int) (*pool, *fakeClock, *int) {
 	quietLogs(t)
 	clock := &fakeClock{now: time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)}
 	pool := newPool("test", max, nil, nil, clock.Now)
+	pool.waitLimit = 0 // fail at once; TestPoolWaitsForRoom covers waiting
 	opened := 0
 	pool.open = func(ctx context.Context, server Server) (*tunnel, error) {
 		if server.Name == "unreachable" {
@@ -172,6 +174,74 @@ func TestPoolLimitWithEverythingBusy(t *testing.T) {
 		t.Errorf("after release: %v", err)
 	} else {
 		next.release()
+	}
+}
+
+// At the limit with every tunnel busy, get waits for one to free up instead
+// of failing: the tunnels in use are serving downloads that end, and the
+// caller may be one half of a region-diff pair.
+func TestPoolWaitsForRoom(t *testing.T) {
+	pool, _, _ := newFakePool(t, 1)
+	pool.waitLimit = time.Minute // the clock is frozen, so only room ends the wait
+	ctx := context.Background()
+	busy, err := pool.get(ctx, Server{Name: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		busy.release()
+	}()
+
+	next, err := pool.get(ctx, Server{Name: "b"})
+	if err != nil {
+		t.Fatalf("get waiting for room: %v", err)
+	}
+	next.release()
+	if closed, _ := busy.shut(); !closed {
+		t.Error("the freed tunnel wasn't the one evicted")
+	}
+}
+
+func TestPoolWaitEndsWithTheContext(t *testing.T) {
+	pool, _, _ := newFakePool(t, 1)
+	pool.waitLimit = time.Minute
+	ctx, cancel := context.WithCancel(context.Background())
+	held, err := pool.get(ctx, Server{Name: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.release()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	if _, err := pool.get(ctx, Server{Name: "b"}); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+}
+
+func TestPoolWaitRunsOut(t *testing.T) {
+	pool, clock, _ := newFakePool(t, 1)
+	pool.waitLimit = time.Minute
+	ctx := context.Background()
+	held, err := pool.get(ctx, Server{Name: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.release()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		clock.advance(2 * time.Minute) // the wait's minute passes
+	}()
+
+	_, err = pool.get(ctx, Server{Name: "b"})
+	if !errors.Is(err, ErrTunnelLimit) {
+		t.Errorf("err = %v, want ErrTunnelLimit", err)
+	}
+	if !strings.Contains(err.Error(), "waited 1m0s") {
+		t.Errorf("error doesn't say how long it waited: %v", err)
 	}
 }
 

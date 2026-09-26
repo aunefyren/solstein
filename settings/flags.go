@@ -212,6 +212,13 @@ var settings = []setting{
 		apply: intSetting(func(cfg *Config) *int { return &cfg.CacheRetentionDays }),
 	},
 	{
+		flag:    "prepareahead",
+		env:     "SOLSTEIN_PREPARE_AHEAD",
+		usage:   "Prepare every episode before any client asks for it, and publish it only once ready.",
+		boolean: true,
+		apply:   boolSetting(func(cfg *Config) *bool { return &cfg.PrepareAhead }),
+	},
+	{
 		flag:  "timezone",
 		env:   "SOLSTEIN_TIMEZONE",
 		usage: "IANA time zone, e.g. Europe/Oslo. Empty uses the system time zone (TZ).",
