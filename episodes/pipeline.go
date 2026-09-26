@@ -84,6 +84,10 @@ type Options struct {
 	// Processor, when set, prepares the episodes of the feeds it handles
 	// instead of a plain download.
 	Processor Processor
+	// SkipTrackers requests episodes from the audio host directly, skipping
+	// the tracking redirects in front of their URLs (feeds.WithoutTrackers).
+	// Off, a tracking redirect is only skipped when it fails.
+	SkipTrackers bool
 	// IdleTimeout abandons a download that sends nothing for this long;
 	// zero means two minutes.
 	IdleTimeout time.Duration
@@ -538,44 +542,18 @@ func (pipeline *Pipeline) fetch(ctx context.Context, exit, sourceURL string, fre
 
 	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
-	if err != nil {
-		return fmt.Errorf("%w: %w", ErrPermanent, err)
-	}
-	request.Header.Set("Accept", "*/*")
-	if fresh {
-		// After a failure: in case a CDN edge served a broken copy.
-		request.Header.Set("Cache-Control", "no-cache")
-		request.Header.Set("Pragma", "no-cache")
-	}
-
-	response, err := client.Do(request)
-	if err != nil && !errors.Is(err, outbound.ErrDestinationBlocked) && ctx.Err() == nil {
-		// A connection dropped before any response (seen live through a VPN
-		// tunnel as a bare EOF) is tried once more at once, rather than
-		// failing the attempt and, for a request waiting on processing,
-		// answering 503. Nothing has been written yet, so this is safe.
-		// The retry must not go out on the connection that just failed
-		// (an HTTP/2 connection to the host is shared by every request), so
-		// idle connections are closed first.
-		client.CloseIdleConnections()
-		select {
-		case <-time.After(fetchRetryDelay):
-			response, err = client.Do(request)
-		case <-ctx.Done():
+	response, err := requestSource(ctx, client, http.MethodGet, sourceURL, pipeline.options.SkipTrackers, func(request *http.Request) {
+		request.Header.Set("Accept", "*/*")
+		if fresh {
+			// After a failure: in case a CDN edge served a broken copy.
+			request.Header.Set("Cache-Control", "no-cache")
+			request.Header.Set("Pragma", "no-cache")
 		}
-	}
+	}, checkResponse)
 	if err != nil {
-		if errors.Is(err, outbound.ErrDestinationBlocked) {
-			return fmt.Errorf("%w: %w", ErrPermanent, err)
-		}
 		return err
 	}
 	defer response.Body.Close()
-
-	if err := checkResponse(response); err != nil {
-		return err
-	}
 
 	body := newIdleReader(response.Body, pipeline.options.IdleTimeout, cancel)
 	defer body.stop()

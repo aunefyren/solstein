@@ -184,6 +184,7 @@ On first run Solstein creates `config.json` in its config directory (`/app/confi
 | `default_exit` | `-defaultexit` | `SOLSTEIN_DEFAULT_EXIT` | `""` (direct) | Exit for feeds that don't name one, e.g. a VPN exit. Must exist, or Solstein doesn't start. |
 | `disable_direct` | `-disabledirect` | `SOLSTEIN_DISABLE_DIRECT` | `false` | Never use this host's own connection; needs `default_exit`. |
 | `home_country` | `-homecountry` | `SOLSTEIN_HOME_COUNTRY` | `""` (unknown) | Country code this host's own connection comes out in, e.g. `NO`. Lets region diff notice when `direct` is paired with an exit in the same country. |
+| `skip_tracking_redirects` | `-skiptrackingredirects` | `SOLSTEIN_SKIP_TRACKING_REDIRECTS` | `false` | Fetch episodes from the audio host directly, skipping the tracking redirects (Podtrac, Chartable, …) chained in front of their URLs. Faster, and the trackers don't see your exits, but the shows' download counts don't see you either. A tracking redirect that fails is skipped either way. |
 | `delivery_mode` | `-deliverymode` | `SOLSTEIN_DELIVERY_MODE` | `cache` | Default for feeds: `cache` (download and serve from disk), `stream` (pass through live) or `original` (only proxy the feed). |
 | `poll_interval_minutes` | `-pollinterval` | `SOLSTEIN_POLL_INTERVAL` | `15` | Minutes between feed polls. |
 | `cache_retention_days` | `-cacheretention` | `SOLSTEIN_CACHE_RETENTION` | `14` | Days cached episodes are kept on disk. Expired episodes stay in the feed and are fetched from the source again if played. |

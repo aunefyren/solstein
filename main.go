@@ -184,6 +184,7 @@ func run() int {
 		DefaultDeliveryMode: cfg.DeliveryMode,
 		Workers:             downloadWorkers,
 		Processor:           processor,
+		SkipTrackers:        cfg.SkipTrackingRedirects,
 	})
 	if err := pipeline.Recover(ctx); err != nil {
 		logger.Log.Error("Failed to recover interrupted downloads. Error: " + err.Error())
@@ -196,7 +197,10 @@ func run() int {
 	}
 	poller := feeds.NewPoller(feedService, time.Duration(cfg.PollIntervalMinutes)*time.Minute, pipeline.Wake)
 
-	episodeServer := episodes.NewServer(store, exitManager, cache, feedService, pipeline, episodes.Options{})
+	episodeServer := episodes.NewServer(store, exitManager, cache, feedService, pipeline, episodes.Options{SkipTrackers: cfg.SkipTrackingRedirects})
+	if cfg.SkipTrackingRedirects {
+		logger.Log.Info("Tracking redirects in front of episode URLs are skipped: episodes are fetched from the audio host directly, and the shows' download counts don't see them.")
+	}
 
 	srv, err := server.New(server.Options{Config: cfg, Version: version, Feeds: feedService, Episodes: episodeServer})
 	if err != nil {

@@ -132,7 +132,11 @@ func (server *Server) Serve(writer http.ResponseWriter, request *http.Request, f
 
 	mode := server.feeds.DeliveryMode(feed)
 	if mode == "original" {
-		http.Redirect(writer, request, episode.SourceURL, http.StatusFound)
+		target := episode.SourceURL
+		if server.options.SkipTrackers {
+			target = feeds.WithoutTrackers(target)
+		}
+		http.Redirect(writer, request, target, http.StatusFound)
 		return nil
 	}
 
@@ -318,23 +322,22 @@ func (server *Server) stream(writer http.ResponseWriter, request *http.Request, 
 	if request.Method == http.MethodHead {
 		method = http.MethodHead
 	}
-	upstream, err := http.NewRequestWithContext(ctx, method, episode.SourceURL, nil)
-	if err != nil {
-		return fmt.Errorf("%w: %w", ErrSourceFailed, err)
-	}
-	upstream.Header.Set("Accept", "*/*")
-	if value := request.Header.Get("Range"); value != "" {
-		upstream.Header.Set("Range", value)
-	}
-
-	response, err := client.Do(upstream)
+	response, err := requestSource(ctx, client, method, episode.SourceURL, server.options.SkipTrackers, func(upstream *http.Request) {
+		upstream.Header.Set("Accept", "*/*")
+		if value := request.Header.Get("Range"); value != "" {
+			upstream.Header.Set("Range", value)
+		}
+	}, func(response *http.Response) error {
+		// A range past the end is the client's answer, not a failure.
+		if response.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+			return nil
+		}
+		return checkResponse(response)
+	})
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrSourceFailed, err)
 	}
 	defer response.Body.Close()
-	if err := checkResponse(response); err != nil && response.StatusCode != http.StatusRequestedRangeNotSatisfiable {
-		return fmt.Errorf("%w: %w", ErrSourceFailed, err)
-	}
 
 	for _, name := range forwardedHeaders {
 		if value := response.Header.Get(name); value != "" {

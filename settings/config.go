@@ -83,6 +83,12 @@ type Config struct {
 	// treat the direct exit as coming out there.
 	HomeCountry string `json:"home_country"`
 
+	// SkipTrackingRedirects fetches episodes from the audio host directly,
+	// skipping the tracking redirects (Podtrac, Chartable, …) chained in
+	// front of their URLs. Off by default: shows count their downloads
+	// through them. A tracking redirect that fails is skipped either way.
+	SkipTrackingRedirects bool `json:"skip_tracking_redirects"`
+
 	// DeliveryMode is the default for feeds that don't set their own.
 	DeliveryMode        string `json:"delivery_mode"`
 	PollIntervalMinutes int    `json:"poll_interval_minutes"`

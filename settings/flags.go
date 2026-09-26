@@ -164,6 +164,13 @@ var settings = []setting{
 		},
 	},
 	{
+		flag:    "skiptrackingredirects",
+		env:     "SOLSTEIN_SKIP_TRACKING_REDIRECTS",
+		usage:   "Fetch episodes from the audio host directly, skipping the tracking redirects in front of their URLs.",
+		boolean: true,
+		apply:   boolSetting(func(cfg *Config) *bool { return &cfg.SkipTrackingRedirects }),
+	},
+	{
 		flag:  "deliverymode",
 		env:   "SOLSTEIN_DELIVERY_MODE",
 		usage: "Default episode delivery: cache, stream or original.",
