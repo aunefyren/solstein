@@ -124,6 +124,56 @@ func TestProcessorIdenticalTriesFallbacks(t *testing.T) {
 	}
 }
 
+// TestProcessorSkipsUnreachableFallbacks covers a fallback exit that can't
+// be downloaded through (seen live: its VPN's resolver failing on the
+// host's name). The next fallback is tried, and with none left the pair's
+// agreement stands.
+func TestProcessorSkipsUnreachableFallbacks(t *testing.T) {
+	home := join(show1, audio(200, 10), show2)
+	unavailable := errors.New("lookup timed out")
+
+	source := &fakeSource{
+		downloads: map[string][]byte{"norway": home, "sweden": home, "denmark": join(show1, audio(200, 12), show2)},
+		failures:  map[string]error{"germany": unavailable},
+	}
+	processed, err := newTestProcessor(t, "germany", "denmark").Process(context.Background(), source.job())
+	if err != nil {
+		t.Fatalf("with a later fallback working: %v", err)
+	}
+	if !bytes.Equal(processed.Audio, join(show1, show2)) {
+		t.Error("the ad wasn't removed by comparing with the fallback after the failed one")
+	}
+
+	source = &fakeSource{downloads: map[string][]byte{"norway": home, "sweden": home}, failures: map[string]error{"germany": unavailable, "denmark": unavailable}}
+	processed, err = newTestProcessor(t, "germany", "denmark").Process(context.Background(), source.job())
+	if err != nil {
+		t.Fatalf("with every fallback failing: %v", err)
+	}
+	if !bytes.Equal(processed.Audio, home) || processed.Note != "no dynamic ads found (not compared through germany, denmark: the download failed)" {
+		t.Errorf("got %d bytes, note %q; want the home download kept, noting the failed fallbacks", len(processed.Audio), processed.Note)
+	}
+}
+
+// TestProcessorFallbackStopsWhenCancelled makes sure a shutdown during a
+// fallback download fails the attempt instead of keeping the episode.
+func TestProcessorFallbackStopsWhenCancelled(t *testing.T) {
+	home := join(show1, audio(200, 10), show2)
+	ctx, cancel := context.WithCancel(context.Background())
+	source := &fakeSource{downloads: map[string][]byte{"norway": home, "sweden": home}}
+	job := source.job()
+	fetch := job.Fetch
+	job.Fetch = func(ctx context.Context, exit string, fresh bool) (episodes.Download, error) {
+		if exit == "germany" {
+			cancel()
+			return episodes.Download{}, ctx.Err()
+		}
+		return fetch(ctx, exit, fresh)
+	}
+	if _, err := newTestProcessor(t, "germany").Process(ctx, job); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+}
+
 func TestProcessorIdenticalEverywhereKeepsEpisode(t *testing.T) {
 	home := join(show1, show2)
 	source := &fakeSource{downloads: map[string][]byte{"norway": home, "sweden": home, "germany": home}}
@@ -163,7 +213,6 @@ func TestProcessorFailures(t *testing.T) {
 		{"home download fails", &fakeSource{downloads: map[string][]byte{"sweden": good, "germany": good}, failures: map[string]error{"norway": unavailable}}, 0, false, `exit "norway": tunnel down`},
 		{"not MP3", &fakeSource{downloads: map[string][]byte{"norway": []byte("not audio at all"), "sweden": []byte("other bytes, not audio")}}, 0, true, "frame by frame"},
 		{"implausible", &fakeSource{downloads: map[string][]byte{"norway": good, "sweden": join(show1, audio(200, 11), show2)}}, time.Hour, false, "implausible"},
-		{"fallback fails", &fakeSource{downloads: map[string][]byte{"norway": good, "sweden": good}, failures: map[string]error{"germany": unavailable}}, 0, false, `fallback exit "germany"`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

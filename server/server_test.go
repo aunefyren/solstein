@@ -96,6 +96,13 @@ func newTestRouter(t *testing.T, modify func(cfg *settings.Config)) *gin.Engine 
 // look at the cache.
 func newTestRouterWithDir(t *testing.T, modify func(cfg *settings.Config)) (*gin.Engine, string) {
 	t.Helper()
+	router, configDir, _ := newTestRouterWithStore(t, modify)
+	return router, configDir
+}
+
+// newTestRouterWithStore also returns the store, for tests that make it fail.
+func newTestRouterWithStore(t *testing.T, modify func(cfg *settings.Config)) (*gin.Engine, string, *database.Store) {
+	t.Helper()
 	captureLog(t, logrus.DebugLevel)
 	cfg := testConfig()
 	if modify != nil {
@@ -122,7 +129,7 @@ func newTestRouterWithDir(t *testing.T, modify func(cfg *settings.Config)) (*gin
 	if err != nil {
 		t.Fatal(err)
 	}
-	return router, configDir
+	return router, configDir, store
 }
 
 func do(router http.Handler, method, target, body string, headers map[string]string) *httptest.ResponseRecorder {
@@ -698,6 +705,121 @@ func TestOpenAPICoversEveryRoute(t *testing.T) {
 		}
 		if !strings.Contains(block(specPath), "\n    "+strings.ToLower(route.Method)+":\n") {
 			t.Errorf("docs/openapi.yaml has no %s under %s", route.Method, specPath)
+		}
+	}
+}
+
+// createFeed subscribes to source through the API and returns the feed's ID.
+func createFeed(t *testing.T, router http.Handler, source string) string {
+	t.Helper()
+	bearer := map[string]string{"Authorization": "Bearer " + testToken, "Content-Type": "application/json"}
+	recorder := do(router, http.MethodPost, "/api/v1/feeds", `{"source_url": "`+source+`"}`, bearer)
+	var feed struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &feed); err != nil || feed.ID == "" {
+		t.Fatalf("create: %d %s", recorder.Code, recorder.Body)
+	}
+	return feed.ID
+}
+
+func TestFeedAPIPatchFields(t *testing.T) {
+	host := startPodcastHost(t)
+	router := newTestRouter(t, nil)
+	bearer := map[string]string{"Authorization": "Bearer " + testToken, "Content-Type": "application/json"}
+	feedPath := "/api/v1/feeds/" + createFeed(t, router, host.URL+"/feed")
+
+	recorder := do(router, http.MethodPatch, feedPath, `{"exit": "", "poll_interval_minutes": 30, "region_diff_trim_break_markers": ""}`, bearer)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"poll_interval_minutes":30`) {
+		t.Errorf("patch: %d %s", recorder.Code, recorder.Body)
+	}
+	if recorder := do(router, http.MethodPatch, feedPath, `[`, bearer); recorder.Code != http.StatusBadRequest {
+		t.Errorf("bad body: %d", recorder.Code)
+	}
+	if recorder := do(router, http.MethodPatch, "/api/v1/feeds/not-a-uuid", `{}`, bearer); recorder.Code != http.StatusNotFound {
+		t.Errorf("patch unknown feed: %d", recorder.Code)
+	}
+	if recorder := do(router, http.MethodDelete, "/api/v1/feeds/not-a-uuid", "", bearer); recorder.Code != http.StatusNotFound {
+		t.Errorf("delete unknown feed: %d", recorder.Code)
+	}
+	if recorder := do(router, http.MethodPost, "/api/v1/feeds/not-a-uuid/prepare", "", bearer); recorder.Code != http.StatusNotFound {
+		t.Errorf("prepare unknown feed: %d", recorder.Code)
+	}
+
+	// Stream mode prepares nothing, so retrying every feed skips it.
+	do(router, http.MethodPatch, feedPath, `{"delivery_mode": "stream"}`, bearer)
+	if recorder := do(router, http.MethodPost, "/api/v1/retry", "", bearer); recorder.Code != http.StatusOK || recorder.Body.String() != `{"queued":0}` {
+		t.Errorf("retry every feed: %d %s", recorder.Code, recorder.Body)
+	}
+}
+
+// TestAPIWithoutEpisodes covers a router with no episode server: nothing is
+// prepared, so nothing can be queued.
+func TestAPIWithoutEpisodes(t *testing.T) {
+	host := startPodcastHost(t)
+	captureLog(t, logrus.DebugLevel)
+	store, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	exits, err := outbound.New(outbound.Options{AllowPrivateDestinations: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	service := feeds.New(store, exits, feeds.Options{DefaultDeliveryMode: cfg.DeliveryMode})
+	router, err := newRouter(Options{Config: cfg, Feeds: service})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bearer := map[string]string{"Authorization": "Bearer " + testToken, "Content-Type": "application/json"}
+	feedPath := "/api/v1/feeds/" + createFeed(t, router, host.URL+"/feed")
+
+	cases := []struct {
+		method, target string
+		status         int
+	}{
+		{http.MethodPost, feedPath + "/retry", http.StatusBadRequest},
+		{http.MethodPost, feedPath + "/prepare", http.StatusBadRequest},
+		{http.MethodPost, "/api/v1/retry", http.StatusOK},
+		{http.MethodPatch, feedPath, http.StatusOK},
+		{http.MethodDelete, feedPath, http.StatusNoContent},
+	}
+	for _, c := range cases {
+		body := ""
+		if c.method == http.MethodPatch {
+			body = `{"poll_interval_minutes": 20}`
+		}
+		if recorder := do(router, c.method, c.target, body, bearer); recorder.Code != c.status {
+			t.Errorf("%s %s: %d %s, want %d", c.method, c.target, recorder.Code, recorder.Body, c.status)
+		}
+	}
+}
+
+// TestStoreFailures checks that a failing database gives 500 rather than a
+// wrong answer.
+func TestStoreFailures(t *testing.T) {
+	host := startPodcastHost(t)
+	router, _, store := newTestRouterWithStore(t, nil)
+	bearer := map[string]string{"Authorization": "Bearer " + testToken, "Content-Type": "application/json"}
+	feedSignedPath := signedFeedPath(t, router, host.URL+"/feed")
+	episodeSignedPath := enclosurePath(t, router, host.URL+"/feed")
+	feedID := strings.Split(episodeSignedPath, "/")[3]
+	store.Close()
+
+	cases := []struct {
+		method, target string
+	}{
+		{http.MethodGet, "/api/v1/feeds"},
+		{http.MethodGet, "/api/v1/feeds/" + feedID},
+		{http.MethodPost, "/api/v1/retry"},
+		{http.MethodGet, feedSignedPath},
+		{http.MethodGet, episodeSignedPath},
+	}
+	for _, c := range cases {
+		if recorder := do(router, c.method, c.target, "", bearer); recorder.Code != http.StatusInternalServerError {
+			t.Errorf("%s %s: %d %s, want 500", c.method, c.target, recorder.Code, recorder.Body)
 		}
 	}
 }

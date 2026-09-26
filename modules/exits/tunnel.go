@@ -30,6 +30,9 @@ type tunnel struct {
 	server Server
 	device *device.Device // nil only in tests of the pool
 	net    *netstack.Net
+	// fallbackDNS are asked, over TCP through the tunnel, when the server's
+	// own DNS fails on a name (the provider's fallback_dns).
+	fallbackDNS []netip.Addr
 
 	mutex    sync.Mutex
 	active   int       // connections open through the tunnel
@@ -142,34 +145,116 @@ func (tunnel *tunnel) LookupIP(ctx context.Context, host string) ([]netip.Addr, 
 	return addresses, nil
 }
 
-// dnsAttempts are the time limits of successive lookup attempts; the last
-// attempt gets whatever the caller's context allows. Live tests against
-// Proton showed the first DNS packet through a new tunnel sometimes going
-// unanswered, which cost the resolver's full 5-second timeout. Retrying after
-// a second makes that cost a second. TCP needs nothing like it: it
-// retransmits after about a second on its own.
+// dnsAttempts are the time limits of successive lookup attempts at the
+// tunnel's DNS server; without fallback resolvers, a last attempt gets
+// whatever the caller's context allows. Live tests against Proton showed the
+// first DNS packet through a new tunnel sometimes going unanswered, which
+// cost the resolver's full 5-second timeout. Retrying after a second makes
+// that cost a second. TCP needs nothing like it: it retransmits after about
+// a second on its own.
 var dnsAttempts = []time.Duration{time.Second, 2 * time.Second}
 
+// fallbackAttempt is the time limit of each fallback resolver. Through
+// Proton tunnels in the US, public resolvers took at most 5.4 s for names
+// Proton's own couldn't resolve at all, mostly under 1.5 s.
+var fallbackAttempt = 5 * time.Second
+
 func (tunnel *tunnel) lookupWithRetries(ctx context.Context, host string) ([]string, error) {
+	var names []string
+	var err error
 	for _, limit := range dnsAttempts {
 		attempt, cancel := context.WithTimeout(ctx, limit)
-		names, err := tunnel.net.LookupContextHost(attempt, host)
+		names, err = tunnel.net.LookupContextHost(attempt, host)
 		cancel()
-		if err == nil || ctx.Err() != nil || !isTimeout(err, attempt) {
+		// Anything but an answer is retried: a timeout, and also a
+		// failure such as SERVFAIL, which the next attempt may not get.
+		if err == nil || ctx.Err() != nil || isNotFound(err) {
 			return names, err
 		}
 	}
-	return tunnel.net.LookupContextHost(ctx, host)
+	if len(tunnel.fallbackDNS) == 0 {
+		return tunnel.net.LookupContextHost(ctx, host)
+	}
+	// Seen live: Proton's resolver times out or fails on some names (NRK's
+	// CDN host, a CNAME chain over three DNS providers) while public ones
+	// reached through the same tunnel answer at once.
+	names, fallbackErr := tunnel.lookupFallback(ctx, host)
+	if isNotFound(fallbackErr) {
+		return nil, fallbackErr
+	}
+	if fallbackErr != nil {
+		return nil, fmt.Errorf("%w; fallback DNS: %w", err, fallbackErr)
+	}
+	logger.Log.Debug("DNS through " + tunnel.server.Name + ": the tunnel's resolver failed on " + host + " (" + err.Error() + "); a fallback resolver answered.")
+	return names, nil
 }
 
-// isTimeout reports whether a lookup failed only because its attempt ran out
-// of time, as opposed to a real answer such as "no such host".
-func isTimeout(err error, attempt context.Context) bool {
-	var dnsError *net.DNSError
-	if errors.As(err, &dnsError) && dnsError.IsNotFound {
-		return false
+// lookupFallback asks the fallback resolvers in turn, over TCP through the
+// tunnel, so the lookup still leaves from the tunnel's region. TCP because
+// the tunnel's connections don't expose net.PacketConn, so Go's resolver
+// would frame UDP queries as TCP. It keeps the addresses the tunnel can
+// reach: those of the families it has an address in.
+func (tunnel *tunnel) lookupFallback(ctx context.Context, host string) ([]string, error) {
+	fqdn := host
+	if !strings.HasSuffix(fqdn, ".") {
+		fqdn += "." // no search domains from the host's resolv.conf
 	}
-	return attempt.Err() != nil || (errors.As(err, &dnsError) && dnsError.IsTimeout)
+	var errs error
+	for _, server := range tunnel.fallbackDNS {
+		resolver := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return tunnel.net.DialContextTCPAddrPort(ctx, netip.AddrPortFrom(server, 53))
+		}}
+		attempt, cancel := context.WithTimeout(ctx, fallbackAttempt)
+		names, err := resolver.LookupHost(attempt, fqdn)
+		cancel()
+		var dnsError *net.DNSError
+		if errors.As(err, &dnsError) {
+			// Go's resolver names the host's resolv.conf server, not the
+			// one it was dialled to.
+			dnsError.Server = netip.AddrPortFrom(server, 53).String()
+		}
+		if err == nil {
+			if reachable := tunnel.reachable(names); len(reachable) > 0 {
+				return reachable, nil
+			}
+			err = fmt.Errorf("no address the tunnel can reach among %s", strings.Join(names, ", "))
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if isNotFound(err) {
+			return nil, err
+		}
+		errs = errors.Join(errs, fmt.Errorf("%s: %w", server, err))
+	}
+	return nil, errs
+}
+
+// reachable keeps the addresses of the families the tunnel has an address
+// in.
+func (tunnel *tunnel) reachable(names []string) []string {
+	var v4, v6 bool
+	for _, address := range tunnel.server.Addresses {
+		if address.Unmap().Is4() {
+			v4 = true
+		} else {
+			v6 = true
+		}
+	}
+	var kept []string
+	for _, name := range names {
+		address, err := netip.ParseAddr(name)
+		if err == nil && (address.Unmap().Is4() && v4 || !address.Unmap().Is4() && v6) {
+			kept = append(kept, name)
+		}
+	}
+	return kept
+}
+
+// isNotFound reports whether a lookup got a real "no such host" answer.
+func isNotFound(err error) bool {
+	var dnsError *net.DNSError
+	return errors.As(err, &dnsError) && dnsError.IsNotFound
 }
 
 // Dial opens a connection through the tunnel. The tunnel counts as in use

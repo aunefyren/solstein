@@ -6,12 +6,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"aunefyren/solstein/database"
 	"aunefyren/solstein/feeds"
 	"aunefyren/solstein/models"
 	"aunefyren/solstein/outbound"
+
+	"github.com/google/uuid"
 )
 
 func newTestServer(t *testing.T, setup *testSetup) *Server {
@@ -270,5 +273,97 @@ func TestOnlyOneTeePerEpisode(t *testing.T) {
 	server.endTee(episode.ID)
 	if !server.startTee(episode.ID) {
 		t.Error("tee not allowed after the first ended")
+	}
+}
+
+func TestContentTypeFor(t *testing.T) {
+	cases := map[string]string{
+		"a/b.mp3":  "audio/mpeg",
+		"a/b.m4a":  "audio/mp4",
+		"a/b.m4b":  "audio/mp4",
+		"a/b.json": "application/json",
+		"a/b.zzz9": "application/octet-stream",
+	}
+	for filePath, want := range cases {
+		if got := contentTypeFor(filePath); got != want {
+			t.Errorf("contentTypeFor(%q) = %q, want %q", filePath, got, want)
+		}
+	}
+}
+
+func TestClientWriterDropsAfterFailure(t *testing.T) {
+	failing := &failingWriter{header: http.Header{}, written: 3}
+	client := &clientWriter{writer: failing}
+	for range 2 {
+		if n, err := client.Write([]byte("abc")); n != 3 || err != nil {
+			t.Errorf("Write = %d, %v; want 3, nil", n, err)
+		}
+	}
+	if !client.gone {
+		t.Error("client not marked gone after a failed write")
+	}
+}
+
+// TestServerWithoutPipeline covers the core without a pipeline: nothing is
+// prepared, so there is nothing to reconcile or queue.
+func TestServerWithoutPipeline(t *testing.T) {
+	setup := newTestSetup(t)
+	setup.pipeline = nil
+	server := newTestServer(t, setup)
+	ctx := context.Background()
+
+	if err := server.FeedChanged(ctx, setup.feed.ID); err != nil {
+		t.Errorf("FeedChanged: %v", err)
+	}
+	if _, err := server.RetryFailed(ctx, setup.feed.ID); !errors.Is(err, ErrNotPrepared) {
+		t.Errorf("RetryFailed: %v, want ErrNotPrepared", err)
+	}
+	if _, err := server.Queue(ctx, setup.feed.ID, 0); !errors.Is(err, ErrNotPrepared) {
+		t.Errorf("Queue: %v, want ErrNotPrepared", err)
+	}
+	episode := setup.addBacklog(t, "/ok.mp3")
+	if recorder, err := serve(t, server, episode, http.MethodGet, ""); err != nil || recorder.Body.String() != audio {
+		t.Errorf("serve: %v, body %q", err, recorder.Body)
+	}
+}
+
+func TestServeStoreFailure(t *testing.T) {
+	setup := newTestSetup(t)
+	server := newTestServer(t, setup)
+	episode := setup.addBacklog(t, "/ok.mp3")
+	setup.store.Close()
+	if _, err := serve(t, server, episode, http.MethodGet, ""); err == nil || errors.Is(err, database.ErrEpisodeNotFound) {
+		t.Errorf("err = %v, want a database error", err)
+	}
+}
+
+func TestCacheDirectoryErrors(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewCache(filepath.Join(blocker, "cache")); err == nil {
+		t.Error("NewCache under a file: no error")
+	}
+
+	directory := t.TempDir()
+	cache, err := NewCache(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedID, episodeID := uuid.New(), uuid.New()
+	// A file where the feed's directory belongs.
+	if err := os.WriteFile(filepath.Join(directory, feedID.String()), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := cache.create(feedID, episodeID, "mp3"); err == nil {
+		t.Error("create with the feed directory blocked: no error")
+	}
+
+	if err := os.RemoveAll(directory); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.RemovePartFiles(); err == nil {
+		t.Error("RemovePartFiles without the cache directory: no error")
 	}
 }

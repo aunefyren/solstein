@@ -46,8 +46,11 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # -coverpkg=./... counts code run by any package's tests, not only its
+      # own: the vendored decoder in mp3/spectrum/internal has no tests of
+      # its own and is covered through mp3/spectrum's.
       - name: Test (race + coverage)
-        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+        run: go test -race -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...
 
       - name: Extract coverage total
         run: |
@@ -84,11 +87,11 @@ jobs:
 
       # Coverage gate — runs LAST so the badge and summary are still produced
       # when coverage drops below the minimum. Set a little under the current
-      # total (70.1% at the time of writing, with main.go untested) so small
-      # swings don't fail CI; raise this single value as the suite grows.
+      # total (90% at the time of writing, with most of main.go untested) so
+      # small swings don't fail CI; raise this single value as the suite grows.
       - name: Coverage gate
         env:
-          COVERAGE_MIN: "65"
+          COVERAGE_MIN: "88"
         run: |
           echo "Total coverage: ${COVERAGE_TOTAL}% (required minimum: ${COVERAGE_MIN}%)"
           awk -v c="${COVERAGE_TOTAL}" -v min="${COVERAGE_MIN}" 'BEGIN {

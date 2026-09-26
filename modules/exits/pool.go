@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -38,7 +39,7 @@ type pool struct {
 	tunnels map[string]*tunnel // by server name
 }
 
-func newPool(provider string, max int, keys []Key, now func() time.Time) *pool {
+func newPool(provider string, max int, keys []Key, fallbackDNS []netip.Addr, now func() time.Time) *pool {
 	if now == nil {
 		now = time.Now
 	}
@@ -50,7 +51,11 @@ func newPool(provider string, max int, keys []Key, now func() time.Time) *pool {
 		idle:     idleTimeout,
 		now:      now,
 		open: func(ctx context.Context, server Server) (*tunnel, error) {
-			return openTunnel(ctx, server, now)
+			opened, err := openTunnel(ctx, server, now)
+			if err == nil {
+				opened.fallbackDNS = fallbackDNS
+			}
+			return opened, err
 		},
 		tunnels: map[string]*tunnel{},
 	}

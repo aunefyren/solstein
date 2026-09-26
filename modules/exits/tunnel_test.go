@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,9 @@ import (
 var (
 	serverTunnelAddress = netip.MustParseAddr("10.99.0.1")
 	clientTunnelAddress = netip.MustParseAddr("10.99.0.2")
+	// fallbackResolverAddress is a DNS server over TCP inside the test peer,
+	// standing in for a public resolver reached through the tunnel.
+	fallbackResolverAddress = netip.MustParseAddr("10.99.0.53")
 )
 
 func quietLogs(t *testing.T) {
@@ -80,7 +84,7 @@ var dnsDrop int
 func startWireGuardServerWith(t *testing.T, clientPublic PublicKey, handler http.Handler) wireGuardServer {
 	t.Helper()
 	key := generateKey(t)
-	tunDevice, tunNet, err := netstack.CreateNetTUN([]netip.Addr{serverTunnelAddress}, nil, defaultMTU)
+	tunDevice, tunNet, err := netstack.CreateNetTUN([]netip.Addr{serverTunnelAddress, fallbackResolverAddress}, nil, defaultMTU)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,9 +110,16 @@ func startWireGuardServerWith(t *testing.T, clientPublic PublicKey, handler http
 	}
 	go serveDNSDropping(dnsConn, map[string]netip.Addr{"example.test.": serverTunnelAddress}, dnsDrop)
 
+	fallbackListener, err := tunNet.ListenTCP(&net.TCPAddr{IP: fallbackResolverAddress.AsSlice(), Port: 53})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go serveDNSOverTCP(fallbackListener, map[string]netip.Addr{"example.test.": serverTunnelAddress, "fallback.test.": serverTunnelAddress})
+
 	t.Cleanup(func() {
 		listener.Close()
 		dnsConn.Close()
+		fallbackListener.Close()
 		wgDevice.Close()
 	})
 	return wireGuardServer{endpoint: fmt.Sprintf("127.0.0.1:%d", port), publicKey: key.Public()}
@@ -132,34 +143,69 @@ func serveDNSDropping(packetConn net.PacketConn, records map[string]netip.Addr, 
 			drop--
 			continue
 		}
-		var parser dnsmessage.Parser
-		header, err := parser.Start(buffer[:size])
-		if err != nil {
-			continue
-		}
-		question, err := parser.Question()
-		if err != nil {
-			continue
-		}
-		response := dnsmessage.Message{
-			Header:    dnsmessage.Header{ID: header.ID, Response: true, Authoritative: true, RCode: dnsmessage.RCodeSuccess},
-			Questions: []dnsmessage.Question{question},
-		}
-		address, known := records[strings.ToLower(question.Name.String())]
-		switch {
-		case !known:
-			response.Header.RCode = dnsmessage.RCodeNameError
-		case question.Type == dnsmessage.TypeA:
-			response.Answers = []dnsmessage.Resource{{
-				Header: dnsmessage.ResourceHeader{Name: question.Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 60},
-				Body:   &dnsmessage.AResource{A: address.As4()},
-			}}
-		}
-		packed, err := response.Pack()
-		if err == nil {
-			packetConn.WriteTo(packed, from)
+		if response, ok := dnsAnswer(buffer[:size], records); ok {
+			packetConn.WriteTo(response, from)
 		}
 	}
+}
+
+// serveDNSOverTCP answers as serveDNS does, over TCP: each message is
+// preceded by its length in two bytes.
+func serveDNSOverTCP(listener net.Listener, records map[string]netip.Addr) {
+	for {
+		connection, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			defer connection.Close()
+			for {
+				var length [2]byte
+				if _, err := io.ReadFull(connection, length[:]); err != nil {
+					return
+				}
+				query := make([]byte, int(length[0])<<8|int(length[1]))
+				if _, err := io.ReadFull(connection, query); err != nil {
+					return
+				}
+				response, ok := dnsAnswer(query, records)
+				if !ok {
+					return
+				}
+				connection.Write(append([]byte{byte(len(response) >> 8), byte(len(response))}, response...))
+			}
+		}()
+	}
+}
+
+// dnsAnswer answers a query for an A record of the given names, with
+// NXDOMAIN for other names and an empty answer for other types.
+func dnsAnswer(query []byte, records map[string]netip.Addr) ([]byte, bool) {
+	var parser dnsmessage.Parser
+	header, err := parser.Start(query)
+	if err != nil {
+		return nil, false
+	}
+	question, err := parser.Question()
+	if err != nil {
+		return nil, false
+	}
+	response := dnsmessage.Message{
+		Header:    dnsmessage.Header{ID: header.ID, Response: true, Authoritative: true, RCode: dnsmessage.RCodeSuccess},
+		Questions: []dnsmessage.Question{question},
+	}
+	address, known := records[strings.ToLower(question.Name.String())]
+	switch {
+	case !known:
+		response.Header.RCode = dnsmessage.RCodeNameError
+	case question.Type == dnsmessage.TypeA:
+		response.Answers = []dnsmessage.Resource{{
+			Header: dnsmessage.ResourceHeader{Name: question.Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 60},
+			Body:   &dnsmessage.AResource{A: address.As4()},
+		}}
+	}
+	packed, err := response.Pack()
+	return packed, err == nil
 }
 
 // clientServer is the Server a .conf file would describe for the test peer.
@@ -381,5 +427,69 @@ func TestLookupRetriesALostFirstQuery(t *testing.T) {
 	}
 	if time.Since(start) > 500*time.Millisecond {
 		t.Errorf("NXDOMAIN took %s; it shouldn't be retried", time.Since(start))
+	}
+}
+
+// TestLookupFallsBackWhenTunnelDNSFails covers the tunnel's resolver not
+// answering at all, as Proton's didn't for NRK's CDN host: the fallback
+// resolver, over TCP through the tunnel, answers instead.
+func TestLookupFallsBackWhenTunnelDNSFails(t *testing.T) {
+	dnsDrop = 1 << 30 // the tunnel's resolver never answers
+	t.Cleanup(func() { dnsDrop = 0 })
+	opened := openTestTunnel(t, true)
+	dnsDrop = 0
+	opened.fallbackDNS = []netip.Addr{netip.MustParseAddr("10.99.0.54"), fallbackResolverAddress} // the first isn't there
+	originalAttempts, originalFallback := dnsAttempts, fallbackAttempt
+	dnsAttempts, fallbackAttempt = []time.Duration{100 * time.Millisecond, 200 * time.Millisecond}, 500*time.Millisecond
+	t.Cleanup(func() { dnsAttempts, fallbackAttempt = originalAttempts, originalFallback })
+
+	start := time.Now()
+	addresses, err := opened.LookupIP(context.Background(), "fallback.test")
+	if err != nil || len(addresses) != 1 || addresses[0] != serverTunnelAddress {
+		t.Fatalf("LookupIP = %v, %v", addresses, err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("lookup took %s; the tunnel's resolver should get its attempts, then each fallback its own limit", elapsed)
+	}
+
+	// The fallback's "no such host" is an answer.
+	if _, err := opened.LookupIP(context.Background(), "unknown.test"); !isNotFound(err) {
+		t.Errorf("unknown name: err = %v, want not found", err)
+	}
+
+	// Every resolver failing names them all.
+	opened.fallbackDNS = []netip.Addr{netip.MustParseAddr("10.99.0.54")}
+	if _, err := opened.LookupIP(context.Background(), "fallback.test"); err == nil || !strings.Contains(err.Error(), "fallback DNS: 10.99.0.54") {
+		t.Errorf("every resolver failing: err = %v", err)
+	}
+
+	// A cancelled lookup stops.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := opened.LookupIP(ctx, "fallback.test"); err == nil {
+		t.Error("cancelled lookup succeeded")
+	}
+}
+
+// TestLookupDoesNotFallBackOnAnswers checks that the fallback is only for a
+// resolver that fails: an answer, including "no such host", stands.
+func TestLookupDoesNotFallBackOnAnswers(t *testing.T) {
+	opened := openTestTunnel(t, true)
+	opened.fallbackDNS = []netip.Addr{fallbackResolverAddress}
+	// fallback.test is only known to the fallback resolver.
+	if _, err := opened.LookupIP(context.Background(), "fallback.test"); !isNotFound(err) {
+		t.Errorf("err = %v; the tunnel resolver's NXDOMAIN should stand", err)
+	}
+}
+
+func TestReachableKeepsTheTunnelsFamilies(t *testing.T) {
+	names := []string{"192.0.2.10", "2001:db8::10", "not an address"}
+	v4 := &tunnel{server: Server{Addresses: []netip.Addr{netip.MustParseAddr("10.2.0.2")}}}
+	if kept := v4.reachable(names); !slices.Equal(kept, []string{"192.0.2.10"}) {
+		t.Errorf("IPv4 tunnel kept %v", kept)
+	}
+	both := &tunnel{server: Server{Addresses: []netip.Addr{netip.MustParseAddr("10.2.0.2"), netip.MustParseAddr("fd00::2")}}}
+	if kept := both.reachable(names); !slices.Equal(kept, []string{"192.0.2.10", "2001:db8::10"}) {
+		t.Errorf("dual-stack tunnel kept %v", kept)
 	}
 }

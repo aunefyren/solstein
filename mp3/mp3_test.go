@@ -399,3 +399,12 @@ func TestSilentFrame(t *testing.T) {
 		}
 	}
 }
+
+func TestVersionString(t *testing.T) {
+	cases := map[Version]string{MPEG1: "MPEG-1", MPEG2: "MPEG-2", MPEG25: "MPEG-2.5", Version(3): "unknown"}
+	for version, want := range cases {
+		if got := version.String(); got != want {
+			t.Errorf("Version(%d).String() = %q, want %q", version, got, want)
+		}
+	}
+}

@@ -14,6 +14,7 @@ The module plugs into the core as an `outbound.Provider` ([`architecture.md`](ar
       "private_keys": ["env:PROTON_KEY_1", "env:PROTON_KEY_2"],
       "tier": "plus",                 // "free" limits the pool to free servers
       "max_tunnels": 2,               // defaults to the number of keys
+      "fallback_dns": ["1.1.1.1", "9.9.9.9"],  // the default; [] turns it off
       "filter": {                     // optional; empty = everything the tier allows
         "countries": ["SE", "DE", "NL"],
         "cities": [],
@@ -74,6 +75,8 @@ Credentials once, servers from Proton's published list:
 
 - Embedded userspace WireGuard: `golang.zx2c4.com/wireguard` with `tun/netstack`, one tunnel per server. No gluetun sidecar, no `NET_ADMIN`, no `network_mode` coupling. Builds for every release platform including 32-bit ARM.
 - **DNS goes through the tunnel**, to the config's `DNS` server; a tunnel without DNS refuses lookups rather than leak them to the host's resolver (a CDN that picks its edge by resolver location could otherwise serve the wrong region). Lookups retry after 1 s, then 2 s: the first query through a new tunnel is sometimes lost (seen with Proton), which would otherwise cost the resolver's 5-second timeout.
+- **Fallback DNS:** when the tunnel's DNS server still hasn't answered (anything but an answer, "no such host" included, counts as failing), the provider's `fallback_dns` resolvers are asked in turn, 5 s each, over TCP through the same tunnel, so the lookup still leaves from the exit's region and nothing reaches the host's resolver. The default is 1.1.1.1 and 9.9.9.9; `[]` turns it off, and then a last attempt at the tunnel's own server gets whatever time the request has left, as before. The trade-off is that a name the VPN's resolver fails on is also sent to that third party. Answers are limited to the address families the tunnel has. TCP because a tunnel connection doesn't expose `net.PacketConn`, so Go's resolver would frame UDP queries as TCP.
+  - Why: measured live on 2026-09-26, Proton's resolver (10.2.0.1) failed on NRK's CDN host `nrk-pod-pd.telenorcdn.net` (a four-step CNAME chain over nextra.no, AWS Route 53 and Oracle Cloud DNS, with TTLs under a minute at the end) in 9 of 9 lookups through a US server, over UDP and TCP alike, and intermittently on `podkast.nrk.no` through US and Norwegian servers. 1.1.1.1, 9.9.9.9 and 8.8.8.8 over TCP through the same tunnels answered all 48 lookups, in at most 5.4 s and mostly under 1.5 s. Names Proton had cached, such as `feeds.acast.com`, never failed.
 - The VPN server's own endpoint name is resolved through the host (the tunnel isn't up yet), preferring IPv4.
 - **Lifecycle:** a tunnel opens on first use and closes after **5 minutes idle**, so a configured but unused exit costs nothing. It counts its open connections and is only idle once all are closed, so a long download is never cut. At `max_tunnels`, the least recently used idle tunnel is closed to make room; if all are busy, the request fails with `ErrTunnelLimit` rather than cut a transfer. All tunnels close on shutdown.
 - **Handshake before use:** a new tunnel sends one throwaway packet (to TEST-NET-1, discard port) to trigger the WireGuard handshake and waits up to 6 s for it (WireGuard resends a lost handshake after 5).
@@ -97,7 +100,7 @@ Where exits are used:
 
 ## Testing
 
-- Tunnel tests run a real WireGuard peer inside the test process (its own netstack device on a local UDP port, with a web server and DNS server reachable only through the tunnel): handshake, DNS, HTTP, a wrong peer key failing cleanly, a DNS server that drops the first query. Pool tests use a fake opener.
+- Tunnel tests run a real WireGuard peer inside the test process (its own netstack device on a local UDP port, with a web server and DNS server reachable only through the tunnel): handshake, DNS, HTTP, a wrong peer key failing cleanly, a DNS server that drops the first query, and one that never answers, with a DNS server over TCP at a second address inside the peer as the fallback. Pool tests use a fake opener.
 - **Live tests** (`live_test.go`, build tag `live`) run against real Proton servers, ifconfig.co and Acast, in a Go container started with `--env-file .env` ([`development.md`](development.md)); never in CI. The maintainer's Proton keys are in `.env` at the repository root (`PROTON_KEY_1`, `PROTON_KEY_2`, generated for Solstein with NetShield off), which is ignored by git and excluded from the Docker build context. It is referenced only by path and through `env:` references, never opened or printed.
 
 Live results (2026-09-25):

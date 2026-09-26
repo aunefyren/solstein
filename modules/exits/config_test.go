@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -257,5 +259,44 @@ func TestParseLocation(t *testing.T) {
 		if _, err := ParseLocation(text); err == nil {
 			t.Errorf("ParseLocation(%q) accepted", text)
 		}
+	}
+}
+
+func TestLoadFallbackDNS(t *testing.T) {
+	if addresses, err := loadFallbackDNS(nil); err != nil || !slices.Equal(addresses, defaultFallbackDNS) {
+		t.Errorf("unset: %v, %v; want the default", addresses, err)
+	}
+	if addresses, err := loadFallbackDNS(&[]string{}); err != nil || len(addresses) != 0 {
+		t.Errorf("empty: %v, %v; want none", addresses, err)
+	}
+	if addresses, err := loadFallbackDNS(&[]string{" 8.8.8.8", "2606:4700:4700::1111"}); err != nil || len(addresses) != 2 || addresses[0] != netip.MustParseAddr("8.8.8.8") {
+		t.Errorf("listed: %v, %v", addresses, err)
+	}
+	for _, bad := range [][]string{{"dns.example"}, {"1.1.1.1", "1.1.1.1"}} {
+		if _, err := loadFallbackDNS(&bad); !errors.Is(err, errInvalid) {
+			t.Errorf("%v: err = %v, want errInvalid", bad, err)
+		}
+	}
+	// A provider takes it from its settings.
+	empty := []string{}
+	provider, err := loadProvider("vpn", settings.VPNProvider{Type: "wireguard", ConfigFile: "a.conf", FallbackDNS: &empty}, nil)
+	if err != nil || len(provider.FallbackDNS) != 0 {
+		t.Errorf("provider: %+v, %v", provider.FallbackDNS, err)
+	}
+	if _, err := loadProvider("vpn", settings.VPNProvider{Type: "wireguard", ConfigFile: "a.conf", FallbackDNS: &[]string{"nope"}}, nil); err == nil {
+		t.Error("provider with a bad fallback_dns accepted")
+	}
+}
+
+func TestTrimAll(t *testing.T) {
+	if got := trimAll([]string{" a ", "", "  ", "b"}); !slices.Equal(got, []string{"a", "b"}) {
+		t.Errorf("trimAll = %q", got)
+	}
+}
+
+func TestKeyMarshalTextRedacts(t *testing.T) {
+	var key Key
+	if text, err := key.MarshalText(); err != nil || string(text) != "[redacted]" {
+		t.Errorf("MarshalText = %q, %v", text, err)
 	}
 }

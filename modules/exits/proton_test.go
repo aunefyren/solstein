@@ -290,7 +290,7 @@ func TestPoolHandsOutKeys(t *testing.T) {
 	quietLogs(t)
 	keys := []Key{generateKey(t), generateKey(t)}
 	clock := &fakeClock{now: time.Now()}
-	pool := newPool("proton", 3, keys, clock.Now)
+	pool := newPool("proton", 3, keys, nil, clock.Now)
 	var opened []Server
 	pool.open = func(ctx context.Context, server Server) (*tunnel, error) {
 		opened = append(opened, server)

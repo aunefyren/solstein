@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/netip"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -221,6 +222,8 @@ type Provider struct {
 	// wireguard: server locations by .conf file name without extension.
 	Locations  map[string]ServerLocation
 	MaxTunnels int // zero means no limit
+	// FallbackDNS are asked through the tunnel when its own DNS fails.
+	FallbackDNS []netip.Addr
 }
 
 // Exit is a validated exit.
@@ -298,6 +301,11 @@ func loadProvider(name string, raw settings.VPNProvider, getenv func(string) str
 		return Provider{}, fmt.Errorf("%w: max_tunnels must not be negative", errInvalid)
 	}
 	provider := Provider{Name: name, Type: strings.ToLower(strings.TrimSpace(raw.Type)), MaxTunnels: raw.MaxTunnels}
+	fallbackDNS, err := loadFallbackDNS(raw.FallbackDNS)
+	if err != nil {
+		return Provider{}, err
+	}
+	provider.FallbackDNS = fallbackDNS
 
 	switch provider.Type {
 	case TypeProtonVPN:
@@ -471,4 +479,29 @@ func trimAll(values []string) []string {
 		}
 	}
 	return result
+}
+
+// defaultFallbackDNS are public resolvers that answered every lookup through
+// Proton tunnels in the US and Norway that Proton's own resolver failed
+// (docs/exits.md).
+var defaultFallbackDNS = []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("9.9.9.9")}
+
+// loadFallbackDNS reads fallback_dns: unset is the default, an empty list
+// none.
+func loadFallbackDNS(raw *[]string) ([]netip.Addr, error) {
+	if raw == nil {
+		return defaultFallbackDNS, nil
+	}
+	addresses := make([]netip.Addr, 0, len(*raw))
+	for _, value := range *raw {
+		address, err := netip.ParseAddr(strings.TrimSpace(value))
+		if err != nil {
+			return nil, fmt.Errorf("%w: fallback_dns: %q is not an IP address", errInvalid, value)
+		}
+		if slices.Contains(addresses, address) {
+			return nil, fmt.Errorf("%w: fallback_dns: %s is listed twice", errInvalid, address)
+		}
+		addresses = append(addresses, address)
+	}
+	return addresses, nil
 }

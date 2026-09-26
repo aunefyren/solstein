@@ -31,7 +31,7 @@ func newFakePool(t *testing.T, max int) (*pool, *fakeClock, *int) {
 	t.Helper()
 	quietLogs(t)
 	clock := &fakeClock{now: time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)}
-	pool := newPool("test", max, nil, clock.Now)
+	pool := newPool("test", max, nil, nil, clock.Now)
 	opened := 0
 	pool.open = func(ctx context.Context, server Server) (*tunnel, error) {
 		if server.Name == "unreachable" {

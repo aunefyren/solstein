@@ -271,3 +271,58 @@ func TestResolveDirectExit(t *testing.T) {
 		t.Error("a bad direct_exit was accepted")
 	}
 }
+
+func TestResolveStringSettings(t *testing.T) {
+	args := []string{"-configdir", t.TempDir(),
+		"-authtoken", "token-from-a-flag-0123456789",
+		"-defaultexit", "direct",
+		"-homecountry", "NO",
+		"-timezone", "Europe/Oslo",
+		"-directexit", "on",
+		"-deliverymode", "stream",
+	}
+	cfg, _, err := Resolve(args, envFrom(nil), io.Discard)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	got := []string{cfg.AuthToken, cfg.DefaultExit, cfg.HomeCountry, cfg.Timezone, cfg.DirectExit, cfg.DeliveryMode}
+	want := []string{"token-from-a-flag-0123456789", "direct", "NO", "Europe/Oslo", "on", "stream"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("settings = %v, want %v", got, want)
+	}
+}
+
+func TestResolveConfigDirErrors(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Resolve([]string{"-configdir", filepath.Join(blocker, "config")}, envFrom(nil), io.Discard); err == nil || !strings.Contains(err.Error(), "create config directory") {
+		t.Errorf("config directory under a file: err = %v", err)
+	}
+
+	configDir := t.TempDir()
+	writeConfig(t, configDir, "{broken")
+	if _, _, err := Resolve([]string{"-configdir", configDir}, envFrom(nil), io.Discard); err == nil {
+		t.Error("broken config.json: no error")
+	}
+
+	if _, _, err := Resolve([]string{"-configdir", t.TempDir()}, envFrom(map[string]string{"SOLSTEIN_DISABLE_DIRECT": "maybe"}), io.Discard); err == nil || !strings.Contains(err.Error(), "SOLSTEIN_DISABLE_DIRECT") {
+		t.Errorf("bad SOLSTEIN_DISABLE_DIRECT: err = %v", err)
+	}
+}
+
+func TestWriteFileAtomicErrors(t *testing.T) {
+	directory := t.TempDir()
+	if err := writeFileAtomic(filepath.Join(directory, "missing", "config.json"), []byte("{}")); err == nil {
+		t.Error("write into a missing directory: no error")
+	}
+	// The target is a non-empty directory, so the rename fails.
+	target := filepath.Join(directory, "config.json")
+	if err := os.MkdirAll(filepath.Join(target, "inside"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileAtomic(target, []byte("{}")); err == nil {
+		t.Error("replace a directory: no error")
+	}
+}

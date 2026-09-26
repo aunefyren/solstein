@@ -130,3 +130,50 @@ func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
+
+func TestSweepErrors(t *testing.T) {
+	ctx := context.Background()
+
+	// Without the cache directory, stray files can't be looked for.
+	setup := newTestSetup(t)
+	housekeeper := NewHousekeeper(setup.store, setup.cache, time.Hour, setup.clock.Now)
+	if err := os.RemoveAll(setup.cache.directory); err != nil {
+		t.Fatal(err)
+	}
+	if err := housekeeper.Sweep(ctx); err == nil {
+		t.Error("Sweep without the cache directory: no error")
+	}
+
+	// A cached file that can't be deleted (here a non-empty directory) stays
+	// for the next sweep.
+	setup = newTestSetup(t)
+	housekeeper = NewHousekeeper(setup.store, setup.cache, time.Hour, setup.clock.Now)
+	episode := setup.addEpisode(t, "/ok.mp3")
+	setup.processOne(t)
+	cached := setup.reload(t, episode)
+	fullPath, _ := setup.cache.Path(cached.CacheFile)
+	os.Remove(fullPath)
+	os.MkdirAll(filepath.Join(fullPath, "inside"), 0o750)
+	setup.clock.advance(2 * time.Hour)
+	if err := housekeeper.Sweep(ctx); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if setup.reload(t, episode).CacheFile == "" {
+		t.Error("the entry of a file that couldn't be deleted was forgotten")
+	}
+
+	// A failing database fails the sweep, and Run logs it and carries on.
+	setup.store.Close()
+	if err := housekeeper.Sweep(ctx); err == nil {
+		t.Error("Sweep with a closed store: no error")
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		housekeeper.Run(runCtx)
+		close(done)
+	}()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-done
+}

@@ -11,6 +11,17 @@ Everything about Solstein that isn't finished: known issues, gaps, open question
 
 ## Region diff
 
+### Connections through Proton exits fail intermittently beyond DNS (open, 2026-09-26)
+
+Found while checking fallback DNS live (`modules/exits/live_dns_probe_test.go`, temporary, `live` tag: `TestLiveDNSProbe` resolves NRK's hosts and fetches, `TestLiveHTTPProbe` makes 18 ranged requests for an NRK episode per exit, on new and reused connections). With fallback DNS on, the CDN host resolved in most lookups through US-AZ#108, where Proton's resolver alone had failed 9 of 9; the remaining failures are of other kinds:
+- **Whole-tunnel stalls:** for 10–15 s nothing gets through, not even the write of a DNS query ("write udp …: i/o timeout" from netstack), and the fallback resolvers time out too; lookups of cached names such as `feeds.acast.com` take 11 s meanwhile. Seen through US-AZ#108 (twice in about 10 minutes) and NO#23 (once). Unknown whether it is the servers, Proton's network, or our netstack/WireGuard device (a send path that blocks).
+- **`podkast.nrk.no` (Akamai) cutting requests:** `EOF`, `unexpected EOF` or `connection reset by peer` within 1–5 s, on new and reused connections: 4 of 18 through NO#23, 1 of 18 through US. Its CDN (`nrk-pod-pd.telenorcdn.net`, the redirect target) never did this. Possibly Akamai treating VPN addresses with suspicion.
+- **Reused connections after 20 s idle:** through US, one `http2: client connection lost` and one `timeout awaiting response headers` (30 s) out of 6.
+
+Production copes through retries, and a fallback exit that fails no longer fails the attempt ([`region-diff.md`](region-diff.md)), but a failed home or partner download still does. To look into: whether other US and NO servers stall the same way (the exit stays on one server unless its handshake fails), a packet capture of a stall inside the device, and retrying a request once on `EOF` from the redirecting host. Delete the probe file once this is settled.
+
+Open question: should a tunnel DNS failure with a fresh handshake count against the server? Today `through` treats it as the destination's problem, so the exit keeps the same server. Proton's resolver failed per name rather than per server (the same names through US and NO servers), and with fallback DNS the lookup mostly succeeds; the stalls above may argue for it.
+
 ### Comparing by audio: not checked in production yet (2026-09-26)
 
 Built and checked offline on the kept Safety Third downloads ([`region-diff.md`](region-diff.md), Hosts that re-encode), but not yet run on the server against RedCircle and ABS. Worth watching: the time per episode on the server (about 7 s per episode on the development machine, for two ~80-minute downloads measured at once; a slower CPU may push episodes processed on request past the 20 s wait), memory (570 MB peak for two 80-minute downloads here, 150 MB above just holding them; a small server running two workers at once needs about twice that), and whether any host re-encodes with ads in both markets, so that cuts at breaks are made in production.

@@ -163,13 +163,22 @@ func (processor *Processor) Process(ctx context.Context, job episodes.Job) (epis
 	against := other
 	comparison := NewComparison(home.Data, options)
 	result, err := comparison.With(ctx, other.Data)
+	// A fallback that can't be downloaded through is skipped: the pair
+	// already agrees, so it can only add certainty, and failing the attempt
+	// over it would repeat every download on the retry.
+	var unreachable []string
 	for _, exit := range fallbacks {
 		if !errors.Is(err, ErrIdentical) {
 			break
 		}
 		fallback, fetchErr := job.Fetch(ctx, exit, job.Fresh)
+		if ctx.Err() != nil {
+			return episodes.Processed{}, fmt.Errorf("download through fallback exit %q: %w", exit, ctx.Err())
+		}
 		if fetchErr != nil {
-			return episodes.Processed{}, fmt.Errorf("download through fallback exit %q: %w", exit, fetchErr)
+			logger.Log.Warn(fmt.Sprintf("Region diff: downloading '%s' through fallback exit %s failed; going on without it. Error: %s", job.Episode.Title, exit, fetchErr))
+			unreachable = append(unreachable, exit)
+			continue
 		}
 		fetched := checkedDownload{Download: fallback, duration: audioDuration(fallback.Data)}
 		compared, against = exit, processor.recheck(ctx, job, exit, fetched, home.duration)
@@ -179,6 +188,9 @@ func (processor *Processor) Process(ctx context.Context, job episodes.Job) (epis
 	switch {
 	case errors.Is(err, ErrIdentical):
 		note := identicalNote(home.Data, options)
+		if len(unreachable) > 0 {
+			note += " (not compared through " + strings.Join(unreachable, ", ") + ": the download failed)"
+		}
 		processor.keepSuccessful(job, note, nil, map[string]checkedDownload{pair[0]: home, compared: against})
 		return episodes.Processed{Audio: home.Data, ContentType: home.ContentType, Note: note}, nil
 	case err != nil:

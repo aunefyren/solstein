@@ -38,6 +38,11 @@ type VPNProvider struct {
 	// simultaneous connections. Zero means one per private key for
 	// protonvpn, and no limit for wireguard.
 	MaxTunnels int `json:"max_tunnels,omitempty"`
+
+	// FallbackDNS are resolvers asked, over TCP through the same tunnel,
+	// when the tunnel's own DNS server fails on a name. Unset means the
+	// default (1.1.1.1 and 9.9.9.9); an empty list turns it off.
+	FallbackDNS *[]string `json:"fallback_dns,omitempty"`
 }
 
 // VPNServerLocation is where a WireGuard server is.

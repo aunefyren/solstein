@@ -200,9 +200,11 @@ Commands:
 go test ./...                                   # whole module
 go test ./mp3/...                               # one package
 go test ./modules/regiondiff/... -run TestDiff -v    # one test, verbose
-go test -race -covermode=atomic -coverprofile=coverage.out ./...   # what CI runs
+go test -race -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...   # what CI runs
 go tool cover -func=coverage.out | tail -1      # total coverage
 ```
+
+Coverage is measured with `-coverpkg=./...`, so code counts as covered when any package's tests run it, not only its own package's. This is what brings in the vendored decoder in `mp3/spectrum/internal`, which has no tests of its own and is exercised through `mp3/spectrum`'s.
 
 Conventions:
 - Tests are colocated: `foo.go` → `foo_test.go`, same package (white-box), so internal helpers are tested directly.
@@ -220,7 +222,7 @@ Conventions:
 
 `.github/workflows/`:
 
-- `go.yml` — on push and pull request to `main` and `dev`: gofmt check, `go mod tidy` check, build, vet, `go test -race` with coverage in the job summary, the coverage badge (push to `main` only) and, last, the coverage gate. The gate's minimum is `COVERAGE_MIN` in that file (65% while the total is ~70%); raise it as the suite grows, never lower it to get a change through.
+- `go.yml` — on push and pull request to `main` and `dev`: gofmt check, `go mod tidy` check, build, vet, `go test -race` with coverage in the job summary, the coverage badge (push to `main` only) and, last, the coverage gate. The gate's minimum is `COVERAGE_MIN` in that file (88% while the total is ~90%); raise it as the suite grows, never lower it to get a change through.
 - `codeql-analysis.yml` — CodeQL with the `security-extended` queries, on push/PR to `main` and `dev` and weekly.
 - `docker-image-beta.yml` — on push to `main`: multi-arch image `ghcr.io/aunefyren/solstein:beta`, version `beta-<sha>`.
 - `docker-image.yml` — on a published release: multi-arch image tagged with the release and `latest`, on GHCR only (no Docker Hub).

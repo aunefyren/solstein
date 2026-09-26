@@ -58,7 +58,7 @@ func New(config Config, servers map[string][]Server, now func() time.Time) *Modu
 		protonListURL: protonListURL,
 	}
 	for name, provider := range config.Providers {
-		module.pools[name] = newPool(name, provider.MaxTunnels, provider.PrivateKeys, now)
+		module.pools[name] = newPool(name, provider.MaxTunnels, provider.PrivateKeys, provider.FallbackDNS, now)
 	}
 	for name := range config.Exits {
 		module.states[name] = &exitState{}
