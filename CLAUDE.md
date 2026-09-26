@@ -30,13 +30,15 @@ Never run `git` commands that change state (commit, push, branch, reset, etc.) â
 
 **Read `docs/development.md` before writing any code.** It covers layout, layering, naming (camelCase, acronyms as one unit), error handling, dependencies (Gin, logrus, WireGuard netstack), config, logging, build, testing, CI and Docker. Every change should follow it.
 
-Must be clean before handing work over (CI enforces all of them, plus `go mod tidy`):
+Must be clean before handing work over (CI enforces all of them, plus `go mod tidy`, and runs the full `go test -race ./...` on every push):
 ```
 gofmt -l .      # must print nothing
 go build ./...
 go vet ./...
-go test -race ./...
+go test ./...   # from the test cache where nothing changed; never -count=1 here
+go test -race <the changed packages and every package that imports them>
 ```
+The full race suite is left to CI; `docs/development.md` (Testing) has the command that lists a package's importers.
 
 Run locally with `go run .` (serves on :8080, config directory `./config`); `go run . -h` lists every flag and its `SOLSTEIN_*` env var.
 

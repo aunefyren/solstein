@@ -453,7 +453,16 @@ func TestDiffKeepsShowThatResumesOnABorrowingFrame(t *testing.T) {
 // TestDiffKeptFailures re-runs the diff on the downloads kept by
 // keep_failed_downloads (config/regiondiff-failures), when there are any:
 // each set that failed before must now diff, within the sanity checks.
+// TestDiffKeptFailures diffs again the downloads production kept after
+// failures (keep_failed_downloads), to see how a change to the diff treats
+// them. It is a diagnostic over the maintainer's local data (5 GB of real
+// episodes, about 25 minutes under -race), so it only runs when asked:
+//
+//	SOLSTEIN_KEPT_FAILURES=1 go test -run TestDiffKeptFailures -v ./modules/regiondiff/
 func TestDiffKeptFailures(t *testing.T) {
+	if os.Getenv("SOLSTEIN_KEPT_FAILURES") == "" {
+		t.Skip("set SOLSTEIN_KEPT_FAILURES=1 to diff the downloads kept in config/regiondiff-failures")
+	}
 	sets, _ := filepath.Glob(filepath.Join("..", "..", "config", "regiondiff-failures", "*", "*"))
 	if len(sets) == 0 {
 		t.Skip("no kept failures in config/regiondiff-failures")

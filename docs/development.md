@@ -204,11 +204,18 @@ go test -race -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...
 go tool cover -func=coverage.out | tail -1      # total coverage
 ```
 
+Locally, before handing work over: `go test ./...`, then `-race` only for the packages that changed and those that import them; CI runs the whole race suite on every push. The whole race suite takes a few minutes locally, and CI runs it on every push anyway, so running it all for every change isn't worth it. Don't pass `-count=1` for these runs: it switches off Go's test cache, which otherwise skips packages whose code and dependencies haven't changed. The packages to race-test after changing, say, `episodes`:
+```
+pkg=aunefyren/solstein/episodes
+go test -race $(go list -f '{{.ImportPath}}{{range .Deps}} {{.}}{{end}}' ./... | awk -v p=$pkg '$1 == p {print $1; next} {for (i = 2; i <= NF; i++) if ($i == p) {print $1; next}}')
+```
+
 Coverage is measured with `-coverpkg=./...`, so code counts as covered when any package's tests run it, not only its own package's. This is what brings in the vendored decoder in `mp3/spectrum/internal`, which has no tests of its own and is exercised through `mp3/spectrum`'s.
 
 Conventions:
 - Tests are colocated: `foo.go` → `foo_test.go`, same package (white-box), so internal helpers are tested directly.
 - Parsers of downloaded, untrusted data (`mp3`, `mp3/spectrum`) have a fuzz test; run it with `go test -run '^$' -fuzz FuzzParse -fuzztime 60s ./mp3` (or `-fuzz FuzzMeasure ./mp3/spectrum`) after changing the parser.
+- `TestDiffKeptFailures` diffs again the real downloads production kept in `config/regiondiff-failures/` (gitignored, local only). With 32 kept sets that is 5 GB of episodes and about 25 minutes under `-race`, so it only runs with `SOLSTEIN_KEPT_FAILURES=1`: `SOLSTEIN_KEPT_FAILURES=1 go test -run TestDiffKeptFailures -v ./modules/regiondiff/`.
 - Audio fixtures for comparing by audio are in `modules/regiondiff/testdata/`, made by `generate.sh` there (synthetic, no real episode audio; needs ffmpeg with libmp3lame to regenerate, not to test).
 - Table-driven tests (`cases := []struct{...}{...}`) for pure functions: frame header parsing, duration calculation, feed rewriting, country filtering.
 - **No real network in tests.** Use `httptest.Server` for podcast hosts and the gluetun server list; inject HTTP clients rather than reaching for globals. Tests must pass offline and in CI.

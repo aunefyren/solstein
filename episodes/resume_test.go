@@ -3,6 +3,7 @@ package episodes
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -155,12 +156,74 @@ func TestParseContentRange(t *testing.T) {
 		{"bytes */200", 0, 0, false},
 		{"items 1-2/3", 0, 0, false},
 		{"bytes x-199/200", 0, 0, false},
+		{"bytes 100/200", 0, 0, false},
 		{"", 0, 0, false},
 	}
 	for _, c := range cases {
 		start, total, ok := parseContentRange(c.value)
 		if ok != c.ok || ok && (start != c.start || total != c.total) {
 			t.Errorf("parseContentRange(%q) = %d, %d, %v", c.value, start, total, ok)
+		}
+	}
+}
+
+// halfThenBreak returns its data and a broken connection in the same read,
+// as a reader may.
+type halfThenBreak struct{ data []byte }
+
+func (reader *halfThenBreak) Read(buffer []byte) (int, error) {
+	if len(reader.data) == 0 {
+		return 0, io.ErrUnexpectedEOF
+	}
+	n := copy(buffer, reader.data)
+	reader.data = reader.data[n:]
+	return n, io.ErrUnexpectedEOF
+}
+func (reader *halfThenBreak) Close() error { return nil }
+
+func TestResumingBodyHandsOverDataBeforeResuming(t *testing.T) {
+	newResumeSetup(t) // for its quiet logs
+	host, _ := startBreakingHost(t)
+	client := &http.Client{}
+	half := len(longAudio) / 2
+	request, _ := http.NewRequest(http.MethodGet, host.URL+"/resumes.mp3", nil)
+	response := &http.Response{
+		StatusCode:    http.StatusOK,
+		ContentLength: int64(len(longAudio)),
+		Header:        http.Header{"Etag": {`"v1"`}},
+		Body:          &halfThenBreak{data: longAudio[:half]},
+		Request:       request,
+	}
+	// The host's first answer to /resumes.mp3 breaks; use it up so the
+	// resume gets the rest.
+	if first, err := client.Get(host.URL + "/resumes.mp3"); err == nil {
+		io.Copy(io.Discard, first.Body)
+		first.Body.Close()
+	}
+	body := newResumingBody(context.Background(), client, response, func(*http.Request) {})
+	data, err := io.ReadAll(body)
+	if err != nil || !bytes.Equal(data, longAudio) {
+		t.Fatalf("read %d bytes, err %v; want the whole file", len(data), err)
+	}
+}
+
+func TestCheckRest(t *testing.T) {
+	body := &resumingBody{etag: `"v1"`, read: 100, total: 200}
+	cases := []struct {
+		status        int
+		etag, content string
+		want          string
+	}{
+		{http.StatusPartialContent, `"v1"`, "bytes 100-199/200", ""},
+		{http.StatusOK, `"v1"`, "", "instead of the rest"},
+		{http.StatusPartialContent, `"v2"`, "bytes 100-199/200", "has changed"},
+		{http.StatusPartialContent, `"v1"`, "bytes 50-199/200", "doesn't continue"},
+		{http.StatusPartialContent, `"v1"`, "bytes 100-299/300", "doesn't continue"},
+	}
+	for _, c := range cases {
+		response := &http.Response{StatusCode: c.status, Status: strconv.Itoa(c.status), Header: http.Header{"Etag": {c.etag}, "Content-Range": {c.content}}}
+		if got := body.checkRest(response); c.want == "" && got != "" || !strings.Contains(got, c.want) {
+			t.Errorf("%d %s %q: %q, want %q", c.status, c.etag, c.content, got, c.want)
 		}
 	}
 }
