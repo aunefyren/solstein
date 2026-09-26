@@ -205,31 +205,46 @@ func (dialer exitDialer) through(ctx context.Context, operation func(*tunnel) er
 			continue
 		}
 
-		if err := tunnel.awaitHandshake(ctx); err != nil {
-			if ctx.Err() != nil {
-				return err
-			}
-			module.reportFailure(dialer.exit.Provider, server, err)
-			lastErr = err
-			continue
-		}
-
-		err = operation(tunnel)
-		switch {
-		case err == nil:
-			module.reportSuccess(dialer.exit.Provider, server)
-			return nil
-		case ctx.Err() != nil:
-			return err // the caller gave up; nobody's fault
-		case tunnel.handshakeFresh():
-			// The tunnel works, so the failure lies beyond it: the
-			// destination's problem, not the server's.
+		final, err := dialer.attempt(ctx, server, tunnel, operation)
+		if final {
 			return err
 		}
-		module.reportFailure(dialer.exit.Provider, server, fmt.Errorf("no working WireGuard handshake: %w", err))
 		lastErr = err
 	}
 	return fmt.Errorf("%w: %w", outbound.ErrExitUnavailable, lastErr)
+}
+
+// attempt runs one operation on a tunnel the pool handed over in use, and
+// gives that use back afterwards — so the pool can't close the tunnel under
+// the handshake or the operation, and a connection the operation opened keeps
+// it open on its own. final means the outcome stands, error or not; otherwise
+// the caller tries the next server.
+func (dialer exitDialer) attempt(ctx context.Context, server Server, tunnel *tunnel, operation func(*tunnel) error) (final bool, err error) {
+	defer tunnel.release()
+	module := dialer.module
+
+	if err := tunnel.awaitHandshake(ctx); err != nil {
+		if ctx.Err() != nil {
+			return true, err
+		}
+		module.reportFailure(dialer.exit.Provider, server, err)
+		return false, err
+	}
+
+	err = operation(tunnel)
+	switch {
+	case err == nil:
+		module.reportSuccess(dialer.exit.Provider, server)
+		return true, nil
+	case ctx.Err() != nil:
+		return true, err // the caller gave up; nobody's fault
+	case tunnel.handshakeFresh():
+		// The tunnel works, so the failure lies beyond it: the
+		// destination's problem, not the server's.
+		return true, err
+	}
+	module.reportFailure(dialer.exit.Provider, server, fmt.Errorf("no working WireGuard handshake: %w", err))
+	return false, err
 }
 
 // ServerNames lists each provider's server names, for status output.

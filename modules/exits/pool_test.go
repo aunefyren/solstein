@@ -54,6 +54,11 @@ func TestPoolReusesTunnels(t *testing.T) {
 	if first != second || *opened != 1 {
 		t.Errorf("tunnel not reused: opened %d", *opened)
 	}
+	if first.activeCount() != 2 {
+		t.Errorf("get handed over %d uses, want one each", first.activeCount())
+	}
+	first.release()
+	second.release()
 	if _, err := pool.get(ctx, Server{Name: "unreachable"}); err == nil {
 		t.Error("failed open not reported")
 	}
@@ -66,25 +71,84 @@ func TestPoolLimitEvictsIdleTunnel(t *testing.T) {
 	pool, clock, _ := newFakePool(t, 2)
 	ctx := context.Background()
 	oldest, _ := pool.get(ctx, Server{Name: "a"})
+	oldest.release() // the caller is done with it
 	clock.advance(time.Minute)
 	busy, _ := pool.get(ctx, Server{Name: "b"})
-	busy.use() // an open connection
+	busy.use()     // an open connection
+	busy.release() // ... and the use get handed over is given back
 
 	clock.advance(time.Minute)
-	if _, err := pool.get(ctx, Server{Name: "c"}); err != nil {
+	third, err := pool.get(ctx, Server{Name: "c"})
+	if err != nil {
 		t.Fatalf("get at the limit: %v", err)
 	}
-	if !oldest.closed || busy.closed {
-		t.Errorf("wrong tunnel evicted: a closed %v, b closed %v", oldest.closed, busy.closed)
+	third.release()
+	oldestClosed, _ := oldest.shut()
+	busyClosed, _ := busy.shut()
+	if !oldestClosed || busyClosed {
+		t.Errorf("wrong tunnel evicted: a closed %v, b closed %v", oldestClosed, busyClosed)
 	}
 
 	// Now "b" (busy) and "c" (idle but newest): c goes next.
-	third := pool.tunnels["c"]
 	if _, err := pool.get(ctx, Server{Name: "d"}); err != nil {
 		t.Fatal(err)
 	}
-	if !third.closed || busy.closed {
+	thirdClosed, _ := third.shut()
+	busyClosed, _ = busy.shut()
+	if !thirdClosed || busyClosed {
 		t.Error("busy tunnel closed to make room")
+	}
+}
+
+// A tunnel the pool has handed over is in use before its borrower has dialled
+// anything: it may be writing its handshake through it, and closing the device
+// under that packet panics the process rather than failing (see tunnel.close).
+func TestPoolCannotEvictHandedOverTunnel(t *testing.T) {
+	pool, clock, _ := newFakePool(t, 1)
+	ctx := context.Background()
+	handed, err := pool.get(ctx, Server{Name: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(10 * time.Minute) // idle by the clock, but held
+
+	if _, err := pool.get(ctx, Server{Name: "b"}); !errors.Is(err, ErrTunnelLimit) {
+		t.Errorf("err = %v, want ErrTunnelLimit", err)
+	}
+	if closed, _ := handed.shut(); closed {
+		t.Fatal("a tunnel handed over was closed to make room")
+	}
+	pool.reap()
+	if closed, _ := handed.shut(); closed {
+		t.Error("a tunnel handed over was reaped while in use")
+	}
+
+	handed.release()
+	if _, err := pool.get(ctx, Server{Name: "b"}); err != nil {
+		t.Errorf("after the use was given back: %v", err)
+	}
+}
+
+// Closing a tunnel that is still in use marks it shut at once, so nothing new
+// starts on it, and closes the device only once the last user has left.
+func TestCloseWaitsForTheLastUser(t *testing.T) {
+	pool, _, _ := newFakePool(t, 0)
+	held, err := pool.get(context.Background(), Server{Name: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.forget("a")
+	closed, deviceClosed := held.shut()
+	if !closed || deviceClosed {
+		t.Errorf("closed = %v, device closed = %v; want the device to wait", closed, deviceClosed)
+	}
+	if err := held.use(); !errors.Is(err, errTunnelShut) {
+		t.Errorf("new use of a shut tunnel: err = %v", err)
+	}
+
+	held.release()
+	if _, deviceClosed := held.shut(); !deviceClosed {
+		t.Error("device not closed once the last user left")
 	}
 }
 
@@ -93,17 +157,21 @@ func TestPoolLimitWithEverythingBusy(t *testing.T) {
 	ctx := context.Background()
 	only, _ := pool.get(ctx, Server{Name: "a"})
 	only.use()
+	only.release() // one open connection left
 
 	if _, err := pool.get(ctx, Server{Name: "b"}); !errors.Is(err, ErrTunnelLimit) {
 		t.Errorf("err = %v, want ErrTunnelLimit", err)
 	}
-	if only.closed {
+	if closed, _ := only.shut(); closed {
 		t.Error("busy tunnel closed")
 	}
 
 	only.release()
-	if _, err := pool.get(ctx, Server{Name: "b"}); err != nil {
+	next, err := pool.get(ctx, Server{Name: "b"})
+	if err != nil {
 		t.Errorf("after release: %v", err)
+	} else {
+		next.release()
 	}
 }
 
@@ -111,21 +179,23 @@ func TestPoolReapsIdleTunnels(t *testing.T) {
 	pool, clock, _ := newFakePool(t, 0)
 	ctx := context.Background()
 	idle, _ := pool.get(ctx, Server{Name: "idle"})
+	idle.release()
 	busy, _ := pool.get(ctx, Server{Name: "busy"})
 	busy.use()
+	busy.release()
 
 	clock.advance(4 * time.Minute)
 	pool.reap()
-	if idle.closed {
+	if closed, _ := idle.shut(); closed {
 		t.Error("closed before the idle timeout")
 	}
 
 	clock.advance(2 * time.Minute)
 	pool.reap()
-	if !idle.closed {
+	if closed, _ := idle.shut(); !closed {
 		t.Error("idle tunnel not closed after 5 minutes")
 	}
-	if busy.closed {
+	if closed, _ := busy.shut(); closed {
 		t.Error("tunnel with an open connection closed; a long download would be cut")
 	}
 
@@ -133,12 +203,12 @@ func TestPoolReapsIdleTunnels(t *testing.T) {
 	busy.release()
 	clock.advance(4 * time.Minute)
 	pool.reap()
-	if busy.closed {
+	if closed, _ := busy.shut(); closed {
 		t.Error("closed 4 minutes after its last connection ended")
 	}
 	clock.advance(time.Minute)
 	pool.reap()
-	if !busy.closed || pool.openCount() != 0 {
+	if closed, _ := busy.shut(); !closed || pool.openCount() != 0 {
 		t.Error("not closed 5 minutes after its last connection ended")
 	}
 }
@@ -147,12 +217,14 @@ func TestPoolForgetAndRun(t *testing.T) {
 	pool, _, opened := newFakePool(t, 0)
 	ctx, cancel := context.WithCancel(context.Background())
 	first, _ := pool.get(ctx, Server{Name: "a"})
+	first.release()
 	pool.forget("a")
 	pool.forget("never-opened")
-	if !first.closed || pool.openCount() != 0 {
+	if closed, _ := first.shut(); !closed || pool.openCount() != 0 {
 		t.Error("forget didn't close the tunnel")
 	}
-	pool.get(ctx, Server{Name: "a"})
+	again, _ := pool.get(ctx, Server{Name: "a"})
+	again.release()
 	if *opened != 2 {
 		t.Errorf("forgotten tunnel not reopened: opened %d", *opened)
 	}

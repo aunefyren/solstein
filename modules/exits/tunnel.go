@@ -35,10 +35,14 @@ type tunnel struct {
 	fallbackDNS []netip.Addr
 
 	mutex    sync.Mutex
-	active   int       // connections open through the tunnel
+	active   int       // users of the tunnel: open connections, and operations
 	lastUsed time.Time // last dial or connection close
-	closed   bool
-	now      func() time.Time
+	closed   bool      // shut: no new user may start
+	// deviceClosed is whether the WireGuard device itself is closed. It
+	// follows `closed` once the last user has released the tunnel, never
+	// before: see close.
+	deviceClosed bool
+	now          func() time.Time
 	// keyIndex is which of the pool's keys the tunnel uses, -1 for its own.
 	keyIndex int
 }
@@ -284,9 +288,13 @@ func (tunnel *tunnel) use() error {
 
 func (tunnel *tunnel) release() {
 	tunnel.mutex.Lock()
-	defer tunnel.mutex.Unlock()
 	tunnel.active--
 	tunnel.lastUsed = tunnel.now()
+	last := tunnel.closed && tunnel.active == 0
+	tunnel.mutex.Unlock()
+	if last {
+		tunnel.closeDevice()
+	}
 }
 
 // activeCount is how many connections are open through the tunnel.
@@ -362,6 +370,13 @@ func (tunnel *tunnel) awaitHandshake(ctx context.Context) error {
 	if tunnel.net == nil {
 		return errors.New("no network stack")
 	}
+	// The poke below is a packet through the tunnel, so it counts as a use:
+	// without it the tunnel looks idle and the pool may close it mid-poke,
+	// and writing into a closed device is fatal (see close).
+	if err := tunnel.use(); err != nil {
+		return err
+	}
+	defer tunnel.release()
 	// WireGuard starts a handshake when it has a packet to send.
 	if poke, err := tunnel.net.DialUDPAddrPort(netip.AddrPort{}, pokeAddress); err == nil {
 		poke.Write([]byte{0})
@@ -385,6 +400,17 @@ func (tunnel *tunnel) awaitHandshake(ctx context.Context) error {
 	}
 }
 
+// close shuts the tunnel: no new user may start, and the WireGuard device is
+// closed once the last one has left (the closing release does it). Closing it
+// under a live user would not be an error but fatal: netstack's Close shuts
+// the channel outgoing packets go into, so the next packet written panics the
+// process. That happened live, with a tunnel closed to make room while a
+// dialler was handshaking through it (docs/exits.md).
+//
+// The pool closes a tunnel it hands out only when it fails or on shutdown, so
+// the wait is short: the users are connections whose requests are already
+// being cancelled. A device left open until then costs a goroutine and its
+// UDP socket, and the process is on its way out anyway.
 func (tunnel *tunnel) close() {
 	tunnel.mutex.Lock()
 	if tunnel.closed {
@@ -392,10 +418,33 @@ func (tunnel *tunnel) close() {
 		return
 	}
 	tunnel.closed = true
+	inUse := tunnel.active > 0
+	tunnel.mutex.Unlock()
+	if !inUse {
+		tunnel.closeDevice()
+	}
+}
+
+// closeDevice closes the WireGuard device, once, whichever goroutine gets
+// there first.
+func (tunnel *tunnel) closeDevice() {
+	tunnel.mutex.Lock()
+	if tunnel.deviceClosed {
+		tunnel.mutex.Unlock()
+		return
+	}
+	tunnel.deviceClosed = true
 	tunnel.mutex.Unlock()
 	if tunnel.device != nil {
 		tunnel.device.Close()
 	}
+}
+
+// shut reports whether the tunnel is closed and its device with it.
+func (tunnel *tunnel) shut() (closed, deviceClosed bool) {
+	tunnel.mutex.Lock()
+	defer tunnel.mutex.Unlock()
+	return tunnel.closed, tunnel.deviceClosed
 }
 
 // trackedConn tells its tunnel when it is closed.

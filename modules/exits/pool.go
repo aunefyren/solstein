@@ -68,12 +68,20 @@ func newPool(provider string, max int, keys []Key, fallbackDNS []netip.Addr, now
 // get returns the tunnel to a server, opening it if needed. At the limit it
 // first closes the least recently used idle tunnel; if every tunnel is busy
 // it returns ErrTunnelLimit rather than cut someone's download.
+//
+// The tunnel is handed over **in use**, so it can't be closed to make room
+// between here and the caller's first packet; the caller releases it when it
+// is done with it (exitDialer.through does).
 func (pool *pool) get(ctx context.Context, server Server) (*tunnel, error) {
 	pool.mutex.Lock()
 	defer pool.mutex.Unlock()
 
 	if existing, ok := pool.tunnels[server.Name]; ok {
-		return existing, nil
+		if err := existing.use(); err == nil {
+			return existing, nil
+		}
+		// Shut behind the pool's back: drop it and open a fresh one.
+		pool.remove(server.Name)
 	}
 	if pool.max > 0 && len(pool.tunnels) >= pool.max {
 		victim := ""
@@ -113,6 +121,8 @@ func (pool *pool) get(ctx context.Context, server Server) (*tunnel, error) {
 		pool.keyLast[keyIndex] = keyPlace{server: server.Name, at: pool.now()}
 	}
 	pool.tunnels[server.Name] = opened
+	// Handed over in use, as above; a tunnel this new can't be shut.
+	_ = opened.use()
 	logger.Log.Info("Opened WireGuard tunnel to " + server.Name + " (provider '" + pool.provider + "').")
 	return opened, nil
 }
@@ -188,18 +198,21 @@ func (pool *pool) reap() {
 	}
 }
 
-// remove closes a tunnel and frees its key. The caller holds the mutex.
+// remove drops a tunnel from the pool, closes it and frees its key. Its
+// device closes once its last user has left (see tunnel.close), so this
+// doesn't block, and nothing new finds the tunnel meanwhile. The caller holds
+// the mutex.
 func (pool *pool) remove(serverName string) {
 	candidate, ok := pool.tunnels[serverName]
 	if !ok {
 		return
 	}
+	delete(pool.tunnels, serverName)
 	candidate.close()
 	if candidate.keyIndex >= 0 {
 		pool.keyUse[candidate.keyIndex]--
 		pool.keyLast[candidate.keyIndex] = keyPlace{server: serverName, at: pool.now()}
 	}
-	delete(pool.tunnels, serverName)
 }
 
 // forget closes and drops one tunnel, e.g. after it failed.

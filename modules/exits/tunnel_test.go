@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -368,6 +369,44 @@ func TestClosedTunnelRefusesUse(t *testing.T) {
 	}
 	if _, err := opened.LookupIP(context.Background(), "example.test"); !errors.Is(err, errTunnelShut) {
 		t.Errorf("lookup on a closed tunnel: err = %v", err)
+	}
+	// Without this check the poke packet went into a closed network stack,
+	// which panics the process instead of failing (see tunnel.close).
+	if err := opened.awaitHandshake(context.Background()); !errors.Is(err, errTunnelShut) {
+		t.Errorf("handshake on a closed tunnel: err = %v", err)
+	}
+}
+
+// A handshake and a close at the same moment: the close must wait for the
+// handshake's packet, or writing it kills the process. This is what happened
+// live, when the pool closed a tunnel it had just handed out to make room
+// (docs/exits.md). Run under -race.
+func TestHandshakeRacingClose(t *testing.T) {
+	for range 20 {
+		opened := openTestTunnel(t, false)
+		start := make(chan struct{})
+		var waiting sync.WaitGroup
+		waiting.Add(2)
+		go func() {
+			defer waiting.Done()
+			<-start
+			// The handshake either goes through or is refused because the
+			// tunnel is shut. Panicking is not an outcome, and neither is
+			// waiting out the handshake timeout on a closed network stack.
+			if err := opened.awaitHandshake(context.Background()); err != nil && !errors.Is(err, errTunnelShut) {
+				t.Errorf("handshake racing close: err = %v", err)
+			}
+		}()
+		go func() {
+			defer waiting.Done()
+			<-start
+			opened.close()
+		}()
+		close(start)
+		waiting.Wait()
+		if closed, deviceClosed := opened.shut(); !closed || !deviceClosed {
+			t.Fatalf("after the race: closed = %v, device closed = %v", closed, deviceClosed)
+		}
 	}
 }
 

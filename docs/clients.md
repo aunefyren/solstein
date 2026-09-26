@@ -43,4 +43,11 @@ ABS 2.36.1 and Solstein in Docker on one compose network (2026-09-24), with the 
 
 **An episode held back until cached** (same day; a controllable feed host, ABS checking every minute, a podcast with nothing downloaded): Solstein found the new episode, its download failed, and the feed correctly hid it. Once the audio was available Solstein cached and published it — but ABS never downloaded it: it compared the episode's date (12:47) with its own previous check (12:49 and later) and skipped it for good. The same happens without holding back, whenever Solstein's poll picks up an episode after an ABS check but dated before it. With the served `pubDate` never earlier than `released_at`, ABS's next check found the episode and downloaded it from the cache in half a second.
 
+**A bulk download of a region-diff backlog needs `prepare` first** (2026-09-26, ABS 2.36.1 and Solstein in Docker, "The Always Sunny Podcast" behind the Podtrac chain, Proton `norway`/`germany` and three keys). 15 backlog episodes were selected in ABS at once:
+- **First pass: none arrived.** ABS downloads one episode at a time and gives each two attempts, ~20 s apart, so each episode got 40 s — while cleaning one took 20 s at best and minutes when it had to walk the fallback markets under a tunnel shortage. All 30 attempts got `503` with `Retry-After`, and ABS stopped asking after 9 minutes. Solstein carried on: the jobs it had registered kept running two at a time long after the client had gone, so the requests were not wasted.
+- **`POST /api/v1/feeds/{id}/prepare` with `{"newest": 15}`** queued the rest (`{"queued": 7}`), which the background queue cleaned two at a time.
+- **Second pass: 15 of 15, in 16 seconds** — 0.6–1.0 s per episode from the cache, no failed attempt, each episode remuxed by ABS with its GUID kept.
+
+So for a backlog, `prepare` (or `region_diff.backlog` at subscription) and then the client's bulk download; selecting a backlog in ABS on its own only warms Solstein's cache for the next attempt. ABS's own limit is the cause — two attempts and no queue position it can come back to — so nothing in Solstein can make the first pass succeed.
+
 Region diff through ABS: [`region-diff.md`](region-diff.md).

@@ -29,11 +29,13 @@ Built and checked offline on the kept Safety Third downloads ([`region-diff.md`]
 
 Five of 115 "It Was A Sh*t Show" episodes failed as implausible in production within a minute (2026-09-25, [`region-diff.md`](region-diff.md)); downloaded again, they diff cleanly. Most likely one side got a partial or wrong file during the burst of downloads, but it is unconfirmed. Re-downloaded through ABS 25 minutes later (14:24–14:25, one at a time, both tunnels opened cold), all five were cleaned in 3–12 s each, 3 breaks and about 3 minutes removed per episode, and none of the downloads looked incomplete: consistent with a passing problem on the host's side. Solstein now re-fetches downloads that look cut off, asks for fresh copies after a failure, and applies the failure policy after three failed attempts on request. To settle it: run with `keep_failed_downloads` on, and look at the kept files and note the next time it happens. Then decide whether anything else is needed. Withheld episodes are now retried slowly, and a backlog can be cleaned ahead two at a time with `prepare` instead of through ABS's burst; ABS re-downloading a whole backlog still processes on request, as fast as it asks.
 
-### Background queue: not checked live yet (2026-09-25)
+### Background queue: the retry paths aren't checked live yet (2026-09-26)
 
-Slow retries of withheld episodes, `POST /api/v1/feeds/{id}/retry` (and `/api/v1/retry`) and `POST /api/v1/feeds/{id}/prepare` ([`episodes.md`](episodes.md), Background queue) are built and tested, but haven't run against Acast and ABS yet. Worth checking: a `prepare` of a large region-diff backlog (does two at a time stay clear of the burst failures above?), and that a withheld new episode published by a late retry is picked up by ABS (it should be, being dated when first served).
+`POST /api/v1/feeds/{id}/prepare` has now run live: a `prepare` of 7 region-diff backlog episodes cleaned them two at a time with no failure, and the client's bulk download then came from the cache ([`clients.md`](clients.md), 2026-09-26). Still unchecked: the slow retries of withheld episodes, `POST /api/v1/feeds/{id}/retry` and `/api/v1/retry` — and that a withheld new episode published by a late retry is picked up by ABS (it should be, being dated when first served).
 
 ### Ads that are the same in every compared market (open, 2026-09-25)
+
+Megaphone's "The Always Sunny Podcast" is the strongest case: 15 episodes, all byte-identical through `norway`, `germany` and the `us` fallback (2026-09-26, [`region-diff.md`](region-diff.md)). Either the host inserts no dynamic ads on this show, or the same campaign runs in every market Solstein reaches; a market further out, or a direct download from the host's own region, would tell them apart.
 
 Darknet Diaries (PRX Dovetail) keeps 2–3 minutes of ads per episode after cleaning: the cleaned files are that much longer than `itunes:duration`, and the audio that differs between Norway, Sweden and Germany is a single ~1-minute mid-roll. The rest is probably a pre-roll or campaign that runs in all three markets (or host-read ads, which no diff can find). Worth trying: a fallback in a more distant market (e.g. the US, where PRX sells most ads) to see whether that part differs there.
 
@@ -49,11 +51,17 @@ Off by default because a show's own sting spliced in at breaks would go too. Rev
 
 ### Open questions
 
-- **Other hosts:** Acast and Dovetail splice at frame level, RedCircle re-encodes (compared by audio). Others are untested. Region diff refuses anything that isn't MP3 (e.g. AAC) rather than guessing.
+- **Other hosts:** Acast and Dovetail splice at frame level, RedCircle re-encodes (compared by audio). Megaphone serves MP3s the diff handles but with nothing regional to cut in 15 episodes ([`region-diff.md`](region-diff.md), 2026-09-26). Others are untested. Region diff refuses anything that isn't MP3 (e.g. AAC) rather than guessing.
 - **Other variance in ads:** whether ad selection also depends on User-Agent, cookies or random rotation. Known so far: same region at the same moment gives byte-identical files (a show without dynamic ads on 2026-09-24, one with Norwegian ads on 2026-09-25); hours apart, and through a VPN exit instead of direct, the ads differ but the show audio doesn't. Not tested: different User-Agents, and how often the same campaign runs in several markets (which `fallback_exits` covers).
 - **Geolocation drift:** what picks the ads is how Acast geolocates the exit IP, not the country in the server list, and VPN IPs are sometimes misplaced. An optional IP-geolocation check through the tunnel (off by default, as it adds an external dependency)? The real test remains whether the two downloads differ.
 
 ## Exits
+
+### Tunnel budget is too small for two region-diff jobs (2026-09-26)
+
+In the same run, with three keys (so three tunnels), every second concurrent episode ran out of tunnels: two jobs at once need **four** (`norway` + `germany` each), and a fallback needs a fifth. The symptom is `exit unavailable: provider 'proton': tunnel limit reached; all tunnels are in use (max_tunnels 3)`, which arrives as a *download* failure, so the tracking-redirect unwrapping walks the whole Podtrac chain one host at a time (7 log lines per episode) before region diff gives up on `germany` and compares with `us` instead. Episodes still came out, but the ad comparison quietly used the fallback market, and the tunnel churn (open, evict, reopen) drove the key moves that warn about stalls — and triggered the crash that is now fixed ([`exits.md`](exits.md), "A tunnel is never written to after it is closed").
+
+Worth deciding: cap concurrent processing by the tunnels available (a region-diff job needs two, so with `n` usable keys at most `n/2` jobs), or let the module report its capacity to the pipeline; and refuse the second exit rather than fall back when the failure is "no tunnel free" (a fallback market can't help when the limit is the local one). Solstein already warns at start-up when `max_tunnels` exceeds the number of keys; it says nothing about region diff needing two per job.
 
 ### Open questions
 
