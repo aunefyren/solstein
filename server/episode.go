@@ -1,6 +1,7 @@
 package server
 
 import (
+	stdcontext "context"
 	"errors"
 	"net/http"
 	"regexp"
@@ -44,6 +45,13 @@ func (handlers *handlers) episode(context *gin.Context) {
 	case errors.Is(err, episodes.ErrSourceFailed):
 		logger.Log.Warn("Failed to fetch episode from its source. Error: " + err.Error())
 		context.JSON(http.StatusBadGateway, gin.H{"error": "Could not fetch the episode from its source."})
+		context.Abort()
+	case errors.Is(err, stdcontext.Canceled), errors.Is(err, stdcontext.DeadlineExceeded), errors.Is(context.Request.Context().Err(), stdcontext.Canceled):
+		// The client hung up or ran out of patience (a podcast client's own
+		// download timeout). Nothing is wrong here, and no status can reach
+		// it any more, so this is not a 500: it was logged as one for every
+		// abandoned download, which buried the real errors.
+		logger.Log.Debug("The client gave up on episode " + episodeID.String() + " before it was served: " + err.Error())
 		context.Abort()
 	default:
 		logger.Log.Error("Failed to serve episode. Error: " + err.Error())

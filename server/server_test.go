@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	stdcontext "context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -655,6 +656,26 @@ func TestEpisodeRouteSourceFailure(t *testing.T) {
 
 	if recorder := do(router, http.MethodGet, signed, "", nil); recorder.Code != http.StatusBadGateway {
 		t.Errorf("status = %d, want 502", recorder.Code)
+	}
+}
+
+// A client that gives up mid-request (a podcast client's own download
+// timeout, ABS's PODCAST_DOWNLOAD_TIMEOUT) is not a server error: nothing can
+// reach it any more. It used to be logged and answered as a 500, which buried
+// the real errors under every abandoned download (seen live, 2026-09-26).
+func TestEpisodeRouteClientGivesUp(t *testing.T) {
+	host := startPodcastHost(t)
+	router := newTestRouter(t, nil)
+	signed := enclosurePath(t, router, host.URL+"/feed")
+
+	ctx, cancel := stdcontext.WithCancel(stdcontext.Background())
+	request := httptest.NewRequest(http.MethodGet, signed, nil).WithContext(ctx)
+	cancel() // as if the client had hung up
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code == http.StatusInternalServerError {
+		t.Errorf("status = %d, want anything but 500 for a client that gave up", recorder.Code)
 	}
 }
 

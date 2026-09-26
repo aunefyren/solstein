@@ -24,21 +24,12 @@ Open question: should a tunnel DNS failure with a fresh handshake count against 
 ### Comparing by audio: what the RedCircle run left open (2026-09-26)
 
 Run live against RedCircle and ABS on 15 "Safety Third" episodes ([`region-diff.md`](region-diff.md)): about a minute each, 805 MB peak for one pair of up to 220 MB downloads, no failure. Left:
-- **No cut has been made at a break in production yet.** Every episode's home download was ad-free, so the diff had nothing to remove — the cutting path for a re-encoded host is still only checked offline on the kept downloads. It needs a host that re-encodes *and* puts ads in the home market.
 - **Why RedCircle leaves Norway alone** is unknown: no advertiser for the market, or no ad server for it at all. If it holds for every RedCircle show, region diff has nothing to do on them and the pair's downloads cost twice the bandwidth for nothing — worth a way to notice a feed that never has ads at home and stop comparing it (and what would then make it start again).
 - **A slower server** may push an episode of this size past the 20 s wait more often than the 22 s best case here; with `prepare_ahead` that no longer matters.
 
 ### Why five backlog downloads were implausible (open question)
 
 Five of 115 "It Was A Sh*t Show" episodes failed as implausible in production within a minute (2026-09-25, [`region-diff.md`](region-diff.md)); downloaded again, they diff cleanly. Most likely one side got a partial or wrong file during the burst of downloads, but it is unconfirmed. Re-downloaded through ABS 25 minutes later (14:24–14:25, one at a time, both tunnels opened cold), all five were cleaned in 3–12 s each, 3 breaks and about 3 minutes removed per episode, and none of the downloads looked incomplete: consistent with a passing problem on the host's side. Solstein now re-fetches downloads that look cut off, asks for fresh copies after a failure, and applies the failure policy after three failed attempts on request. To settle it: run with `keep_failed_downloads` on, and look at the kept files and note the next time it happens. Then decide whether anything else is needed. Withheld episodes are now retried slowly, and a backlog can be cleaned ahead two at a time with `prepare` instead of through ABS's burst; ABS re-downloading a whole backlog still processes on request, as fast as it asks.
-
-### A raised `processing_wait_seconds` isn't checked live yet (2026-09-26)
-
-Built and documented ([`episodes.md`](episodes.md)): the wait before a client gets `503` is now a setting (default 20 s), with a start-up warning above 25 s that the client's own timeout has to be raised too. The log lines are verified both ways. What isn't measured:
-- **Whether ABS really sits through it.** With `PODCAST_DOWNLOAD_TIMEOUT=600` and `processing_wait_seconds: 300`, does a bulk download of a backlog arrive on the first pass? Its timeout is documented as covering feed fetches and episode downloads, but a request held for minutes may hit something else (a proxy, its own queue, the progress estimate).
-- **What it costs ABS** to have a download slot held for minutes: whether its queue simply waits, and whether the episode's progress display copes.
-- **Other clients:** the same question, and most have shorter patience than ABS.
-Worth a run on the RedCircle feed, where an episode takes about a minute — long enough to need the raised wait, short enough to watch.
 
 ### Background queue: the retry paths aren't checked live yet (2026-09-26)
 
@@ -70,7 +61,9 @@ Off by default because a show's own sting spliced in at breaks would go too. Rev
 
 ### Batching a feed's downloads by exit (idea, 2026-09-26)
 
-Built: `region_diff.pair_downloads` (`auto`/`together`/`in_turn`) and `prepare_ahead`, so a setup with **one VPN key** works by downloading an episode's two copies one after the other and having nothing wait on a client ([`region-diff.md`](region-diff.md), [`episodes.md`](episodes.md), and the operating styles in [`README.md`](../README.md)). What is left is making it fast.
+Built: `region_diff.pair_downloads` (`auto`/`together`/`in_turn`) and `prepare_ahead`, so a setup with **one VPN key** works by downloading an episode's two copies one after the other and having nothing wait on a client ([`region-diff.md`](region-diff.md), [`episodes.md`](episodes.md), and the one-key guide in [`README.md`](../README.md)). What is left is making it fast.
+
+**A one-key setup hasn't been run live yet.** The code paths are tested (in turn never overlaps its downloads, `auto` picks it when the exits don't fit, the whole backlog is queued and published only when ready), but no measurement exists of what it actually costs per episode, so the guide's "a few minutes per episode" is an estimate from the `together` runs doubled, not a figure. The run to do: one key in the provider, `pair_downloads: auto`, `prepare_ahead`, four or five episodes of the RedCircle feed — which would also measure how long a moved key really disturbs a tunnel (the `keyMoveSettle` question above), since every episode moves it twice.
 
 In turn, each episode moves the key between two servers twice, and a moved Proton key can leave the new tunnel stalling for `keyMoveSettle` (3 min, measured). Batching by exit would amortise that: download ten episodes through `norway`, move the key once, download the same ten through `germany`, then diff each pair — one key move per batch instead of two per episode, about a minute per episode at the sizes measured (45 MB, 10–20 s per download) instead of minutes.
 
