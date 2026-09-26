@@ -22,7 +22,8 @@ episodes/          core: download pipeline, processor hook, cache, serving audio
 outbound/          core: exit Manager, direct exit, guarded dialling (private-address block)
 rss/               feed parsing and byte-preserving rewriting; no Solstein dependencies
 signing/           HMAC signatures for feed and episode URLs
-mp3/               MP3 frame reader (tags, info frames, headers, main_data_begin), fuzzed; no Solstein dependencies
+mp3/               MP3 frame reader (tags, info frames, headers, main_data_begin), silent frames for cuts, fuzzed; no Solstein dependencies
+mp3/spectrum/      loudness over time from the compressed spectrum, for comparing re-encoded downloads; a trimmed copy of go-mp3 under internal/ (see its README), fuzzed
 modules/exits/     module: config, .conf parsing, netstack tunnels, pool, geography, selection, health, Proton provider, Setup
 modules/regiondiff/  module: frame diff and cutting, the episode processor (dual download, fallbacks), Setup
 docs/              what Solstein does (one document per service or module), development.md, wip.md
@@ -53,10 +54,12 @@ Keep the list short; every new dependency needs a reason.
 | IDs | `github.com/google/uuid` | In use |
 | Feed rewriting | Own `rss` package on `encoding/xml` `RawToken` + byte offsets; `golang.org/x/text/encoding/charmap` for Latin-1/Windows-1252 feeds | In use |
 | MP3 frames | Own `mp3` package | In use |
+| MP3 loudness | `mp3/spectrum`: Solstein's own, over a trimmed copy of `github.com/hajimehoshi/go-mp3` v0.3.4's frame decoding (Apache-2.0, licence and changes in `mp3/spectrum/`), not the Go module | In use |
 
 Notes:
 - **Feed rewriting:** the proxied feed must keep every element and namespace the source had (`itunes:`, `podcast:`, `acast:` …). Unmarshalling into structs drops what we didn't model, and `encoding/xml`'s encoder rewrites namespace prefixes — which breaks ABS, since it looks elements up by literal prefix (`itunes:new-feed-url`). So `rss` copies the **original bytes** through and splices in only the changed values (enclosure `url`/`length`, `media:content`/`podcast:source` URLs, `itunes:duration`, self-links), using the decoder's byte offsets. A rewrite with no changes is byte-identical to the input; a test enforces it. Elements are matched by namespace URI, not prefix. Non-UTF-8 feeds (ISO-8859-1/15, Windows-1252) are converted to UTF-8 first and the declaration updated.
-- **MP3:** frame parsing (sync word, header, frame length, Xing/LAME/ID3 handling) is small enough to own, and the diff needs exact byte-level control. An existing library would only be worth it if audio-level (decoded) alignment were ever needed.
+- **MP3:** frame parsing (sync word, header, frame length, Xing/LAME/ID3 handling) is small enough to own, and the diff needs exact byte-level control.
+- **MP3 loudness:** comparing downloads a host re-encodes needs their audio, but only its loudness over time, not sound. go-mp3 (pure Go, so no CGO) has the frame decoding, but its API only decodes to PCM: 44 s for an 86-minute episode, 71% of it synthesis. Its reading, Huffman and requantisation code is copied in instead and stopped before synthesis: about 7 s. `minimp3` would be faster but needs CGO. Copied code keeps its licence headers, each copied file notes that it is part of the copy, and `mp3/spectrum/README.md` lists every change; update it when the copy changes.
 - Run `go mod tidy` after adding or removing imports; commit `go.sum`.
 
 ## Code conventions
@@ -203,11 +206,12 @@ go tool cover -func=coverage.out | tail -1      # total coverage
 
 Conventions:
 - Tests are colocated: `foo.go` → `foo_test.go`, same package (white-box), so internal helpers are tested directly.
-- Parsers of downloaded, untrusted data (`mp3`) have a fuzz test; run it with `go test -run '^$' -fuzz FuzzParse -fuzztime 60s ./mp3` after changing the parser.
+- Parsers of downloaded, untrusted data (`mp3`, `mp3/spectrum`) have a fuzz test; run it with `go test -run '^$' -fuzz FuzzParse -fuzztime 60s ./mp3` (or `-fuzz FuzzMeasure ./mp3/spectrum`) after changing the parser.
+- Audio fixtures for comparing by audio are in `modules/regiondiff/testdata/`, made by `generate.sh` there (synthetic, no real episode audio; needs ffmpeg with libmp3lame to regenerate, not to test).
 - Table-driven tests (`cases := []struct{...}{...}`) for pure functions: frame header parsing, duration calculation, feed rewriting, country filtering.
 - **No real network in tests.** Use `httptest.Server` for podcast hosts and the gluetun server list; inject HTTP clients rather than reaching for globals. Tests must pass offline and in CI.
 - Tunnels are tested behind the exit interface with a fake exit that returns an `httptest` client. Anything that genuinely needs a live WireGuard endpoint is an integration test behind a build tag (`//go:build integration`) and never runs in CI.
-- **Audio fixtures** live in `testdata/` next to the test. Keep them tiny (a few seconds, generated or openly licensed — never downloaded episodes of real shows). Include cases for: identical files, one inserted segment, segments at start/middle/end, different ID3 tags, and truncated/corrupt frames.
+- **Audio fixtures** live in `testdata/` next to the test. Keep them tiny (a few seconds, generated or openly licensed — never downloaded episodes of real shows). Include cases for: identical files, one inserted segment, segments at start/middle/end, different ID3 tags, and truncated/corrupt frames. The exception is comparing by audio, which needs stretches of at least 10 s to line up: its fixtures are 40 s each, about 800 KB in all, at the lowest bitrates that still correlate like real episodes.
 - **Feed fixtures**: real-world-shaped RSS (with `itunes:`/`podcast:` namespaces) in `testdata/`, anonymised. Rewriting tests assert that everything except the fields we change survives byte-for-byte or element-for-element.
 - Prefer real dependencies over hand-rolled fakes when they're cheap (in-memory SQLite, real files in `t.TempDir()`).
 - Use `t.TempDir()` for anything written to disk; never write into the repo during tests.

@@ -66,6 +66,7 @@ func Setup(config settings.RegionDiff, available []string, locator Locator, conf
 	diff.MinShared = time.Duration(config.MinSharedSeconds * float64(time.Second))
 	diff.MaxRemovedShare = config.MaxRemovedShare
 	diff.TrimBreakMarkers = config.TrimBreakMarkers
+	diff.CompareByAudio = config.ComparesByAudio()
 	processor, err := NewProcessor(ProcessorOptions{
 		Enabled:       config.Enabled,
 		Exits:         [2]string{config.Exits[0], config.Exits[1]},
@@ -147,6 +148,9 @@ func (processor *Processor) Summary() string {
 	}
 	if options.Diff.TrimBreakMarkers {
 		summary += "; break markers are trimmed"
+	}
+	if !options.Diff.CompareByAudio {
+		summary += "; downloads a host re-encodes are not compared by audio"
 	}
 	if options.FailureDir != "" {
 		summary += "; downloads of failed attempts are kept in " + options.FailureDir

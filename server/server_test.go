@@ -372,7 +372,7 @@ func TestFeedAPI(t *testing.T) {
 	}
 	// Region diff isn't running here: a feed can't switch it on, but can
 	// switch it off.
-	for _, body := range []string{`{"region_diff": "on"}`, `{"region_diff": "yes"}`, `{"region_diff_exits": ["direct", "direct"]}`, `{"region_diff_on_failure": "shrug"}`} {
+	for _, body := range []string{`{"region_diff": "on"}`, `{"region_diff": "yes"}`, `{"region_diff_exits": ["direct", "direct"]}`, `{"region_diff_on_failure": "shrug"}`, `{"region_diff_compare_by_audio": "sometimes"}`} {
 		if recorder := do(router, http.MethodPatch, feedPath, body, bearer); recorder.Code != http.StatusBadRequest {
 			t.Errorf("patch %s: status = %d, want 400", body, recorder.Code)
 		}

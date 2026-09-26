@@ -474,3 +474,30 @@ func TestProcessorNotesSharedAdsLeftIn(t *testing.T) {
 		t.Errorf("note = %q", processed.Note)
 	}
 }
+
+func TestProcessorComparesReencodedDownloadsByAudio(t *testing.T) {
+	// RedCircle: the home region gets the original, the other a re-encoded
+	// copy with ads, so no frame is shared.
+	home := fixture(t, "home-clean.mp3")
+	source := &fakeSource{downloads: map[string][]byte{"norway": home, "sweden": fixture(t, "other-ads.mp3")}}
+	processed, err := newTestProcessor(t).Process(context.Background(), source.job())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(processed.Audio, home) || processed.Duration != 0 {
+		t.Error("the home download wasn't kept whole")
+	}
+	if want := "no ads in the norway download: sweden's has 2 breaks (13s) more; compared by audio"; !strings.HasPrefix(processed.Note, want) {
+		t.Errorf("note %q, want it to start %q", processed.Note, want)
+	}
+
+	// A home download with an ad of its own is cut.
+	source = &fakeSource{downloads: map[string][]byte{"norway": fixture(t, "home-ad.mp3"), "sweden": fixture(t, "other-ads.mp3")}}
+	processed, err = newTestProcessor(t).Process(context.Background(), source.job())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(processed.Note, "in 1 break, comparing norway with sweden by audio") || processed.Duration < 39*time.Second || processed.Duration > 41*time.Second {
+		t.Errorf("note %q, duration %s", processed.Note, processed.Duration)
+	}
+}

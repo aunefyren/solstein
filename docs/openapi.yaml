@@ -662,6 +662,10 @@ components:
           type: string
           enum: ["", "on", "off"]
           description: Also remove break markers that can be cut cleanly; empty follows `region_diff.trim_break_markers`.
+        region_diff_compare_by_audio:
+          type: string
+          enum: ["", "on", "off"]
+          description: Compare downloads that share no MP3 frame (the host re-encodes around its ads) by their loudness over time; empty follows `region_diff.compare_by_audio` (on by default).
 
     Feed:
       description: A subscribed feed, its settings and its state.

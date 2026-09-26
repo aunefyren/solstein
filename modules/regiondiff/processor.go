@@ -96,7 +96,9 @@ func (processor *Processor) HideOnFailure(feed models.Feed) bool {
 // would cut differently, so episodes cut before are cut again. 2: long
 // shared runs are kept without a clean frame to start or end on (Dovetail).
 // 3: a result longer than the stated duration is no longer implausible.
-const algorithmVersion = 3
+// 4: downloads that share no frames (the host re-encodes) are compared by
+// audio, and cuts keep silent frames for the bit reservoir.
+const algorithmVersion = 4
 
 // Recipe describes the settings that shape a feed's cleaned episodes, for
 // episodes.Processor. The failure policy is left out: it doesn't change a
@@ -109,6 +111,9 @@ func (processor *Processor) Recipe(feed models.Feed) string {
 	}
 	options := processor.options.Diff
 	recipe += fmt.Sprintf(", shared ≥%s, removed ≤%g%%", options.MinShared, options.MaxRemovedShare*100)
+	if !processor.comparesByAudio(feed) {
+		recipe += ", not by audio"
+	}
 	if processor.trimsMarkers(feed) {
 		return recipe + ", markers trimmed"
 	}
@@ -133,9 +138,10 @@ func (processor *Processor) exitsFor(feed models.Feed) (pair [2]string, fallback
 // Process downloads the episode through both exits at once and removes the
 // audio they don't share. When both carry the same audio, the fallback
 // exits are tried in turn; if every one agrees, the episode is kept as it
-// is, since it most likely has no dynamic ads. Files that can't be diffed
-// frame by frame fail for good; an implausible result is retried, as the
-// next downloads may carry other ads.
+// is, since it most likely has no dynamic ads. Downloads that share no frame
+// (the host re-encodes) are compared by audio (see Comparison). Files that
+// can't be compared either way fail for good; an implausible result is
+// retried, as the next downloads may carry other ads.
 func (processor *Processor) Process(ctx context.Context, job episodes.Job) (episodes.Processed, error) {
 	pair, fallbacks := processor.exitsFor(job.Feed)
 	pair, fallbacks, err := processor.inDifferentCountries(pair, fallbacks)
@@ -153,8 +159,10 @@ func (processor *Processor) Process(ctx context.Context, job episodes.Job) (epis
 	options := processor.options.Diff
 	options.ExpectedDuration = job.ExpectedDuration
 	options.TrimBreakMarkers = processor.trimsMarkers(job.Feed)
+	options.CompareByAudio = processor.comparesByAudio(job.Feed)
 	against := other
-	result, err := Diff(home.Data, other.Data, options)
+	comparison := NewComparison(home.Data, options)
+	result, err := comparison.With(ctx, other.Data)
 	for _, exit := range fallbacks {
 		if !errors.Is(err, ErrIdentical) {
 			break
@@ -165,7 +173,7 @@ func (processor *Processor) Process(ctx context.Context, job episodes.Job) (epis
 		}
 		fetched := checkedDownload{Download: fallback, duration: audioDuration(fallback.Data)}
 		compared, against = exit, processor.recheck(ctx, job, exit, fetched, home.duration)
-		result, err = Diff(home.Data, against.Data, options)
+		result, err = comparison.With(ctx, against.Data)
 	}
 
 	switch {
@@ -184,12 +192,23 @@ func (processor *Processor) Process(ctx context.Context, job episodes.Job) (epis
 		return episodes.Processed{}, err
 	}
 
+	if result.ByAudio && len(result.Removed) == 0 {
+		// The host re-encodes around its ads, and the home download has none
+		// the other lacks: it is kept whole.
+		note := fmt.Sprintf("no ads in the %s download: %s's has %s (%s) more; compared by audio, as the host re-encodes",
+			pair[0], compared, plural(result.OtherBreaks, "break"), result.OtherExtra.Round(time.Second))
+		processor.keepSuccessful(job, note, &result, map[string]checkedDownload{pair[0]: home, compared: against})
+		return episodes.Processed{Audio: result.Output, ContentType: home.ContentType, Note: note}, nil
+	}
 	var removed time.Duration
 	for _, segment := range result.Removed {
 		removed += segment.Duration
 	}
 	note := fmt.Sprintf("removed %s of ads in %s, comparing %s with %s",
 		removed.Round(time.Second), plural(len(result.Removed), "break"), pair[0], compared)
+	if result.ByAudio {
+		note += " by audio, as the host re-encodes"
+	}
 	if len(result.Markers) > 0 {
 		var markers time.Duration
 		for _, marker := range result.Markers {
@@ -281,6 +300,17 @@ func plural(count int, noun string) string {
 		return "1 " + noun
 	}
 	return fmt.Sprintf("%d %ss", count, noun)
+}
+
+// comparesByAudio is the feed's compare_by_audio switch, or the global one.
+func (processor *Processor) comparesByAudio(feed models.Feed) bool {
+	switch feed.RegionDiffCompareByAudio {
+	case "on":
+		return true
+	case "off":
+		return false
+	}
+	return processor.options.Diff.CompareByAudio
 }
 
 // trimsMarkers is the feed's trim_break_markers switch, or the global one.

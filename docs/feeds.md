@@ -36,6 +36,7 @@ What a new subscription does:
 | `region_diff_exits` | two different exits, home region first | `region_diff.exits` |
 | `region_diff_on_failure` | `publish`, `hide` | `region_diff.on_failure` |
 | `region_diff_trim_break_markers` | `on`, `off` | `region_diff.trim_break_markers` |
+| `region_diff_compare_by_audio` | `on`, `off` | `region_diff.compare_by_audio` |
 
 - `feeds.ValidateSettings` refuses an exit that doesn't exist (including `direct` under `disable_direct`), an unknown delivery mode, a negative poll interval, `region_diff: on` while region diff isn't running, unknown region-diff values, and a `region_diff_exits` that isn't two different existing exits.
 - At start-up, `main.go` warns about feeds whose exit (or region-diff exit) no longer exists, and feeds with region diff switched on while it is off.

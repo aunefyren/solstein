@@ -569,6 +569,8 @@ func TestValidateRegionDiffSettings(t *testing.T) {
 		{on, Settings{RegionDiff: "maybe"}, false},
 		{on, Settings{RegionDiffOnFailure: "hide"}, true},
 		{on, Settings{RegionDiffOnFailure: "ignore"}, false},
+		{on, Settings{RegionDiffCompareByAudio: "off"}, true},
+		{on, Settings{RegionDiffCompareByAudio: "maybe"}, false},
 		{on, Settings{RegionDiffExits: []string{"direct"}}, false},
 		{on, Settings{RegionDiffExits: []string{"direct", "direct"}}, false},
 		{on, Settings{RegionDiffExits: []string{"direct", "sweden"}}, false}, // no such exit

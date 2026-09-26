@@ -427,8 +427,12 @@ func TestDiffKeepsShowThatResumesOnABorrowingFrame(t *testing.T) {
 	other := join(tag("o"), show1, audio(260, 21), part2)
 
 	result := mustDiff(t, home, other)
-	if want := join(tag("h"), show1, part2); !bytes.Equal(result.Output, want) {
-		t.Errorf("output is %d bytes, want both show parts (%d)", len(result.Output), len(want))
+	// The ad's last frame stays as a silent frame: the show's first frame
+	// after it borrows from it.
+	ad, _ := mp3.Parse(audio(200, 11))
+	carrier := ad.SilentFrame(ad.Frames[len(ad.Frames)-1])
+	if want := join(tag("h"), show1, carrier, part2); !bytes.Equal(result.Output, want) {
+		t.Errorf("output is %d bytes, want both show parts with a silent frame between (%d)", len(result.Output), len(want))
 	}
 
 	// A short shared stretch without a clean start is still not show: the

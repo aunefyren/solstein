@@ -25,6 +25,9 @@ type Feed struct {
 	// RegionDiffTrimBreakMarkers is "on" or "off", or empty to follow
 	// region_diff.trim_break_markers.
 	RegionDiffTrimBreakMarkers string `json:"region_diff_trim_break_markers"`
+	// RegionDiffCompareByAudio is "on" or "off", or empty to follow
+	// region_diff.compare_by_audio.
+	RegionDiffCompareByAudio string `json:"region_diff_compare_by_audio"`
 
 	LastPolledAt  *time.Time `json:"last_polled_at"`
 	LastSuccessAt *time.Time `json:"last_success_at"`

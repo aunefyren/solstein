@@ -40,6 +40,8 @@ type Settings struct {
 	RegionDiffOnFailure string   `json:"region_diff_on_failure"`
 	// RegionDiffTrimBreakMarkers is "on", "off" or empty.
 	RegionDiffTrimBreakMarkers string `json:"region_diff_trim_break_markers"`
+	// RegionDiffCompareByAudio is "on", "off" or empty.
+	RegionDiffCompareByAudio string `json:"region_diff_compare_by_audio"`
 }
 
 // SettingsOf returns a feed's per-feed settings.
@@ -52,6 +54,7 @@ func SettingsOf(feed models.Feed) Settings {
 		RegionDiffExits:            feed.RegionDiffExits,
 		RegionDiffOnFailure:        feed.RegionDiffOnFailure,
 		RegionDiffTrimBreakMarkers: feed.RegionDiffTrimBreakMarkers,
+		RegionDiffCompareByAudio:   feed.RegionDiffCompareByAudio,
 	}
 }
 
@@ -115,6 +118,9 @@ func (service *Service) ValidateSettings(feedSettings Settings) error {
 	}
 	if !slices.Contains(regionDiffSwitches, feedSettings.RegionDiffTrimBreakMarkers) {
 		return fmt.Errorf("%w: region_diff_trim_break_markers must be \"on\", \"off\" or empty (follow the global setting)", ErrInvalidSettings)
+	}
+	if !slices.Contains(regionDiffSwitches, feedSettings.RegionDiffCompareByAudio) {
+		return fmt.Errorf("%w: region_diff_compare_by_audio must be \"on\", \"off\" or empty (follow the global setting)", ErrInvalidSettings)
 	}
 	if feedSettings.RegionDiff == "on" && !service.options.RegionDiffAvailable {
 		return fmt.Errorf("%w: region diff isn't running; set up region_diff in config.json first", ErrInvalidSettings)
@@ -183,6 +189,7 @@ func (service *Service) Subscribe(ctx context.Context, rawSourceURL string, feed
 		RegionDiffExits:            feedSettings.RegionDiffExits,
 		RegionDiffOnFailure:        feedSettings.RegionDiffOnFailure,
 		RegionDiffTrimBreakMarkers: feedSettings.RegionDiffTrimBreakMarkers,
+		RegionDiffCompareByAudio:   feedSettings.RegionDiffCompareByAudio,
 	}
 
 	result, err := service.fetch(ctx, feed)

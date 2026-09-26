@@ -52,6 +52,17 @@ type RegionDiff struct {
 	// to look into a bad cut that passed the sanity checks. Off by default;
 	// it costs twice each episode's size.
 	KeepSuccessfulDownloads bool `json:"keep_successful_downloads"`
+	// CompareByAudio lets downloads that share no MP3 frame (the host
+	// re-encodes the episode around its ads) be compared by their loudness
+	// over time, read from the compressed spectrum. On by default; off, such
+	// downloads fail as they did before it existed. A pointer so a missing
+	// field can default to on.
+	CompareByAudio *bool `json:"compare_by_audio"`
+}
+
+// ComparesByAudio is CompareByAudio, on when unset.
+func (regionDiff RegionDiff) ComparesByAudio() bool {
+	return regionDiff.CompareByAudio == nil || *regionDiff.CompareByAudio
 }
 
 func (regionDiff *RegionDiff) applyDefaults() {
@@ -70,6 +81,10 @@ func (regionDiff *RegionDiff) applyDefaults() {
 	}
 	if regionDiff.OnFailure == "" {
 		regionDiff.OnFailure = defaultOnFailure
+	}
+	if regionDiff.CompareByAudio == nil {
+		on := true
+		regionDiff.CompareByAudio = &on
 	}
 }
 

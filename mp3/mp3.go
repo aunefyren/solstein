@@ -192,6 +192,62 @@ type File struct {
 	Truncated int
 }
 
+// MainDataSize is how many bytes of Layer III audio data the frame itself
+// carries, after its header, CRC and side information. Frames after it can
+// borrow them through the bit reservoir.
+func (frame Frame) MainDataSize() int {
+	return max(frame.Size-frame.Header.mainDataOffset(), 0)
+}
+
+// mainDataOffset is where a Layer III frame's own audio data starts.
+func (header Header) mainDataOffset() int {
+	offset := 4 + header.sideInfoSize()
+	if header.Protected {
+		offset += 2
+	}
+	return offset
+}
+
+// SilentFrame returns a copy of a Layer III frame that plays as silence but
+// keeps every byte after its side information. The side information is
+// zeroed, so the frame claims no audio data of its own and borrows none;
+// its bytes stay in the stream for the bit reservoir. Put in place of the
+// removed frames just before a cut, it keeps the bytes the next kept frame
+// borrows where that frame looks for them, so the cut decodes without a
+// glitch. The CRC, if the frame has one, is recomputed.
+func (file File) SilentFrame(frame Frame) []byte {
+	silent := append([]byte(nil), file.FrameBytes(frame)...)
+	header := frame.Header
+	sideInfo := 4
+	if header.Protected {
+		sideInfo += 2
+	}
+	end := min(sideInfo+header.sideInfoSize(), len(silent))
+	clear(silent[sideInfo:end])
+	if header.Protected && len(silent) >= end {
+		crc := crc16(append(append([]byte(nil), silent[2:4]...), silent[sideInfo:end]...))
+		silent[4], silent[5] = byte(crc>>8), byte(crc)
+	}
+	return silent
+}
+
+// crc16 is MPEG audio's frame CRC: polynomial 0x8005, initial value
+// 0xFFFF, over the header's last two bytes and the side information.
+func crc16(data []byte) uint16 {
+	crc := uint16(0xFFFF)
+	for _, value := range data {
+		for bit := 7; bit >= 0; bit-- {
+			in := uint16(value>>uint(bit)) & 1
+			top := crc >> 15
+			crc <<= 1
+			if top^in == 1 {
+				crc ^= 0x8005
+			}
+		}
+	}
+	return crc
+}
+
 // FrameBytes returns a frame's bytes.
 func (file File) FrameBytes(frame Frame) []byte {
 	return file.Data[frame.Offset : frame.Offset+frame.Size]

@@ -146,7 +146,7 @@ func TestRecipe(t *testing.T) {
 		"markers":        processor.Recipe(models.Feed{RegionDiffTrimBreakMarkers: "on"}),
 		"failure policy": processor.Recipe(models.Feed{RegionDiffOnFailure: "publish"}),
 	}
-	if want := "v3 norway→sweden, fallback germany, shared ≥3s, removed ≤40%"; recipes["global"] != want {
+	if want := "v4 norway→sweden, fallback germany, shared ≥3s, removed ≤40%"; recipes["global"] != want {
 		t.Errorf("recipe = %q, want %q", recipes["global"], want)
 	}
 	// Anything that changes the cleaned file changes the recipe; the failure

@@ -11,6 +11,10 @@ Everything about Solstein that isn't finished: known issues, gaps, open question
 
 ## Region diff
 
+### Comparing by audio: not checked in production yet (2026-09-26)
+
+Built and checked offline on the kept Safety Third downloads ([`region-diff.md`](region-diff.md), Hosts that re-encode), but not yet run on the server against RedCircle and ABS. Worth watching: the time per episode on the server (about 7 s per episode on the development machine, for two ~80-minute downloads measured at once; a slower CPU may push episodes processed on request past the 20 s wait), memory (570 MB peak for two 80-minute downloads here, 150 MB above just holding them; a small server running two workers at once needs about twice that), and whether any host re-encodes with ads in both markets, so that cuts at breaks are made in production.
+
 ### Why five backlog downloads were implausible (open question)
 
 Five of 115 "It Was A Sh*t Show" episodes failed as implausible in production within a minute (2026-09-25, [`region-diff.md`](region-diff.md)); downloaded again, they diff cleanly. Most likely one side got a partial or wrong file during the burst of downloads, but it is unconfirmed. Re-downloaded through ABS 25 minutes later (14:24–14:25, one at a time, both tunnels opened cold), all five were cleaned in 3–12 s each, 3 breaks and about 3 minutes removed per episode, and none of the downloads looked incomplete: consistent with a passing problem on the host's side. Solstein now re-fetches downloads that look cut off, asks for fresh copies after a failure, and applies the failure policy after three failed attempts on request. To settle it: run with `keep_failed_downloads` on, and look at the kept files and note the next time it happens. Then decide whether anything else is needed. Withheld episodes are now retried slowly, and a backlog can be cleaned ahead two at a time with `prepare` instead of through ABS's burst; ABS re-downloading a whole backlog still processes on request, as fast as it asks.
@@ -27,7 +31,7 @@ Darknet Diaries (PRX Dovetail) keeps 2–3 minutes of ads per episode after clea
 
 `trim_break_markers` removes only markers that are their own spliced segment ([`region-diff.md`](region-diff.md)). In "Corner Piece", the chime after each mid-roll is encoded together with the start of the next show segment, so one chime per break remains even with trimming on.
 
-Cutting it would leave the first show frame without the bit-reservoir bytes it borrows from the chime's last frame: a 26 ms decode error, possibly a click. Ways round it, none tried: re-encode just that one frame (would need an MP3 encoder, which Solstein has none of and the no-re-encoding rule avoids), or replace the chime's frames with silent frames of the same size that still carry the borrowed bytes (keeps the timing; complex, and depends on the encoder's reservoir use). Only worth it if the remaining chime bothers in practice.
+Cutting it would leave the first show frame without the bit-reservoir bytes it borrows from the chime's last frame. Cuts at breaks now keep such frames as silent frames ([`region-diff.md`](region-diff.md), Write), so the way round it exists: trim the marker but keep its last one or two frames silent (26–52 ms of silence in place of 2.3 s of chime). Not built: marker trimming still requires a clean frame after the marker. Only worth it if the remaining chime bothers in practice.
 
 ### `trim_break_markers` default (to decide after the trial)
 
@@ -35,7 +39,7 @@ Off by default because a show's own sting spliced in at breaks would go too. Rev
 
 ### Open questions
 
-- **Other hosts than Acast:** whether they splice at frame level too. Region diff refuses anything that isn't MP3 rather than guessing; a host that re-encodes per listener can't be diffed this way at all.
+- **Other hosts:** Acast and Dovetail splice at frame level, RedCircle re-encodes (compared by audio). Others are untested. Region diff refuses anything that isn't MP3 (e.g. AAC) rather than guessing.
 - **Other variance in ads:** whether ad selection also depends on User-Agent, cookies or random rotation. Known so far: same region at the same moment gives byte-identical files (a show without dynamic ads on 2026-09-24, one with Norwegian ads on 2026-09-25); hours apart, and through a VPN exit instead of direct, the ads differ but the show audio doesn't. Not tested: different User-Agents, and how often the same campaign runs in several markets (which `fallback_exits` covers).
 - **Geolocation drift:** what picks the ads is how Acast geolocates the exit IP, not the country in the server list, and VPN IPs are sometimes misplaced. An optional IP-geolocation check through the tunnel (off by default, as it adds an external dependency)? The real test remains whether the two downloads differ.
 
@@ -43,7 +47,7 @@ Off by default because a show's own sting spliced in at breaks would go too. Rev
 
 ### Open questions
 
-- **Proton NO transfers cut off mid-body (2026-09-25):** three of about eight long downloads through the `norway` Proton exit (NO#23 in production) broke off partway with `unexpected EOF` or `connection reset by peer`; Sweden didn't. The pipeline retries them, but a server that does this often isn't benched, since the WireGuard handshake stays fresh and a mid-body reset looks like the destination's fault. Watch whether it keeps happening; if so, count mid-body resets against the server, or prefer another server in the country.
+- **Proton NO transfers cut off mid-body (2026-09-25):** three of about eight long downloads through the `norway` Proton exit (NO#23 in production) broke off partway with `unexpected EOF` or `connection reset by peer`; Sweden didn't. The pipeline retries them, but a server that does this often isn't benched, since the WireGuard handshake stays fresh and a mid-body reset looks like the destination's fault. It happened again during the Safety Third burst the same evening: 19 downloads failed with `http2: client connection lost`, 13 through `norway` and 6 through `germany`. Watch whether it keeps happening; if so, count mid-body resets against the server, or prefer another server in the country.
 - **DNS through Proton times out now and then (2026-09-25):** four lookups through the `norway` tunnel's DNS (10.2.0.1) failed with `i/o timeout` in about 40 minutes of heavy downloading: a feed poll (the last good copy was served), a fallback download, the server-list refresh. Lookups already retry after 1 s and 2 s. If it keeps happening, retry longer, or cache answers for their TTL.
 - **Proton connection counting:** one key holds several tunnels at once (verified), but whether Proton counts them as one connection or several against the plan limit (Free 1, Plus 10) is unknown.
 - **Server-list format:** the refresh accepts only format version 4. If gluetun-servers moves to a new version, Solstein keeps the last good copy and warns once it is 60 days old ([`exits.md`](exits.md)); reading the new format waits until there is one.

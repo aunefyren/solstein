@@ -1,12 +1,17 @@
 // Package regiondiff is the region-diff module: it removes dynamically
 // inserted ads from an episode by comparing two downloads of it made from
 // different regions. The audio both share is the show; what differs is ads.
-// It works on MP3 frames directly, because hosts such as Acast splice ads in
-// as whole frames without re-encoding; nothing is decoded or re-encoded.
+// Where the host splices ads in as whole frames without re-encoding (Acast,
+// Dovetail), it compares the MP3 frames themselves. Where the host
+// re-encodes the episode around its ads (RedCircle), no frame is shared,
+// and it compares the downloads' loudness over time instead (audio.go).
+// Either way the output is the home download's own frames: nothing is
+// re-encoded.
 package regiondiff
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"hash/maphash"
@@ -14,6 +19,7 @@ import (
 	"time"
 
 	"aunefyren/solstein/mp3"
+	"aunefyren/solstein/mp3/spectrum"
 )
 
 var (
@@ -52,6 +58,9 @@ type Options struct {
 	// zero if unknown. The result must be within DurationTolerance of it.
 	ExpectedDuration  time.Duration
 	DurationTolerance float64
+	// CompareByAudio compares downloads that share no frame by their
+	// loudness (audio.go); off, they fail as unsupported or implausible.
+	CompareByAudio bool
 	// TrimBreakMarkers also removes break markers: short spliced pieces the
 	// regions share, repeated at the edges of the show segments (see
 	// trimMarkers).
@@ -60,7 +69,7 @@ type Options struct {
 
 // DefaultOptions are the decided defaults (see docs/region-diff.md).
 func DefaultOptions() Options {
-	return Options{MinShared: 2 * time.Second, MaxRemovedShare: 0.3, DurationTolerance: 0.05}
+	return Options{MinShared: 2 * time.Second, MaxRemovedShare: 0.3, DurationTolerance: 0.05, CompareByAudio: true}
 }
 
 // Segment is a range of frames of the home download, [Start, End).
@@ -79,39 +88,126 @@ type Result struct {
 	// Markers are the break markers removed with TrimBreakMarkers; they
 	// are part of Removed too.
 	Markers []Segment
-	// Durations of the home download, the other one and the output.
+	// Durations of the home download, the other one and the output. The
+	// output's includes the silent frames kept at cuts (see write).
 	HomeDuration, OtherDuration, Duration time.Duration
+	// ByAudio is set when the downloads were compared by their loudness,
+	// because they share no frames (the host re-encodes).
+	ByAudio bool
+	// OtherExtra is how much audio the other download has that the home
+	// download doesn't, in OtherBreaks stretches; only known by audio.
+	OtherExtra  time.Duration
+	OtherBreaks int
+}
+
+// errNoSharedFrames means the downloads share no frame at all: the host
+// re-encodes them, so they are compared by audio instead.
+var errNoSharedFrames = errors.New("the downloads share no frames")
+
+// Comparison compares a home download with others: by frames where the
+// host splices, by audio where it re-encodes. It keeps what it learned of
+// the home download (its frames, its loudness) between comparisons, as the
+// processor compares it with one fallback after another.
+type Comparison struct {
+	home     []byte
+	options  Options
+	homeFile *mp3.File
+	loudness *spectrum.Loudness
+}
+
+// NewComparison starts comparisons of a home download.
+func NewComparison(home []byte, options Options) *Comparison {
+	return &Comparison{home: home, options: options}
+}
+
+// Diff is a comparison of one pair.
+func Diff(home, other []byte, options Options) (Result, error) {
+	return NewComparison(home, options).With(context.Background(), other)
+}
+
+// With removes from the home download everything it doesn't share with
+// other. home is the download from the listener's own region (its tags are
+// kept); other is from another region. Comparing by audio takes seconds;
+// it stops with ctx's error when ctx is done.
+func (comparison *Comparison) With(ctx context.Context, other []byte) (Result, error) {
+	if bytes.Equal(comparison.home, other) {
+		return Result{}, ErrIdentical
+	}
+	if comparison.homeFile == nil {
+		homeFile, err := mp3.Parse(comparison.home)
+		if err != nil {
+			return Result{}, fmt.Errorf("%w: home download: %w", ErrUnsupported, err)
+		}
+		comparison.homeFile = &homeFile
+	}
+	homeFile := *comparison.homeFile
+	otherFile, err := mp3.Parse(other)
+	if err != nil {
+		return Result{}, fmt.Errorf("%w: other download: %w", ErrUnsupported, err)
+	}
+	homeFormat, otherFormat := homeFile.Frames[0].Header, otherFile.Frames[0].Header
+	// Where the audio can't be measured, the frame comparison's verdict
+	// stands: no frames shared is retryable, as a fresh download may be
+	// better; different formats are not.
+	verdict := fmt.Errorf("%w: the downloads share no show audio", ErrImplausible)
+	if homeFormat.Version == otherFormat.Version && homeFormat.Layer == otherFormat.Layer && homeFormat.SampleRate == otherFormat.SampleRate {
+		result, err := frameDiff(homeFile, otherFile, comparison.options)
+		if !errors.Is(err, errNoSharedFrames) {
+			return result, err
+		}
+	} else {
+		verdict = fmt.Errorf("%w: the downloads differ in format (%s layer %d %d Hz vs %s layer %d %d Hz)", ErrUnsupported,
+			homeFormat.Version, homeFormat.Layer, homeFormat.SampleRate, otherFormat.Version, otherFormat.Layer, otherFormat.SampleRate)
+	}
+	if !comparison.options.CompareByAudio {
+		return Result{}, verdict
+	}
+	result, err := comparison.byAudio(ctx, otherFile)
+	if errors.Is(err, spectrum.ErrUnsupported) {
+		return result, fmt.Errorf("%w, and can't be compared by audio (%w)", verdict, err)
+	}
+	return result, err
+}
+
+// byAudio measures both downloads' loudness, at the same time, and lines
+// them up (audioDiff).
+func (comparison *Comparison) byAudio(ctx context.Context, otherFile mp3.File) (Result, error) {
+	var otherLoudness spectrum.Loudness
+	var otherErr error
+	measured := make(chan struct{})
+	go func() {
+		defer close(measured)
+		otherLoudness, otherErr = spectrum.Measure(ctx, otherFile)
+	}()
+	if comparison.loudness == nil {
+		loudness, err := spectrum.Measure(ctx, *comparison.homeFile)
+		if err != nil {
+			<-measured
+			return Result{}, fmt.Errorf("home download: %w", err)
+		}
+		comparison.loudness = &loudness
+	}
+	<-measured
+	if otherErr != nil {
+		return Result{}, fmt.Errorf("other download: %w", otherErr)
+	}
+	return audioDiff(ctx, *comparison.homeFile, otherFile, *comparison.loudness, otherLoudness, comparison.options)
 }
 
 // run is a stretch of identical frames: home[home:home+length] equals
 // other[other:other+length].
 type run struct{ home, other, length int }
 
-// Diff removes from home everything it doesn't share with other. home is
-// the download from the listener's own region (its tags are kept); other is
-// from another region.
-func Diff(home, other []byte, options Options) (Result, error) {
-	if bytes.Equal(home, other) {
-		return Result{}, ErrIdentical
-	}
-	homeFile, err := mp3.Parse(home)
-	if err != nil {
-		return Result{}, fmt.Errorf("%w: home download: %w", ErrUnsupported, err)
-	}
-	otherFile, err := mp3.Parse(other)
-	if err != nil {
-		return Result{}, fmt.Errorf("%w: other download: %w", ErrUnsupported, err)
-	}
-	homeFormat, otherFormat := homeFile.Frames[0].Header, otherFile.Frames[0].Header
-	if homeFormat.Version != otherFormat.Version || homeFormat.Layer != otherFormat.Layer || homeFormat.SampleRate != otherFormat.SampleRate {
-		return Result{}, fmt.Errorf("%w: the downloads differ in format (%s layer %d %d Hz vs %s layer %d %d Hz)", ErrUnsupported,
-			homeFormat.Version, homeFormat.Layer, homeFormat.SampleRate, otherFormat.Version, otherFormat.Layer, otherFormat.SampleRate)
-	}
-
+// frameDiff compares two downloads of the same format frame by frame.
+func frameDiff(homeFile, otherFile mp3.File, options Options) (Result, error) {
+	homeFormat := homeFile.Frames[0].Header
 	seed := maphash.MakeSeed()
 	homeHashes, otherHashes := frameHashes(homeFile, seed), frameHashes(otherFile, seed)
 	runs := align(homeHashes, otherHashes)
 	runs = verify(runs, homeFile, otherFile)
+	if len(runs) == 0 {
+		return Result{}, errNoSharedFrames
+	}
 
 	frameDuration := homeFormat.Duration()
 	minimum := int((options.MinShared + frameDuration - 1) / frameDuration)
@@ -151,7 +247,9 @@ func Diff(home, other []byte, options Options) (Result, error) {
 	if err := check(result, options); err != nil {
 		return result, err
 	}
-	result.Output = write(homeFile, result.Kept)
+	var carried time.Duration
+	result.Output, carried = write(homeFile, result.Kept)
+	result.Duration += carried
 	return result, nil
 }
 
@@ -485,19 +583,52 @@ func check(result Result, options Options) error {
 // write builds the output: the home file's ID3v2 tag, the kept frames, and
 // its ID3v1 tag. Frames are copied one by one, so junk between them is left
 // behind. An info frame isn't copied: it describes the uncut file.
-func write(file mp3.File, kept []Segment) []byte {
+//
+// A kept frame after a cut may borrow bytes from the removed frames before
+// it (the bit reservoir); a re-encoded file's frames nearly all do. Those
+// removed frames are kept as silent frames (mp3.File.SilentFrame), so the
+// borrowed bytes are still where the frame looks for them and the cut
+// decodes cleanly: a moment of silence (26 ms a frame, usually one or two)
+// instead of a corrupted frame. It returns the output and how long the
+// silent frames play.
+func write(file mp3.File, kept []Segment) ([]byte, time.Duration) {
 	size := len(file.ID3v2) + len(file.ID3v1)
 	for _, segment := range kept {
 		for _, frame := range file.Frames[segment.Start:segment.End] {
 			size += frame.Size
 		}
 	}
-	output := make([]byte, 0, size)
+	output := make([]byte, 0, size+4*1500)
 	output = append(output, file.ID3v2...)
+	var silent time.Duration
+	keptUpTo := 0 // frames before this were written
 	for _, segment := range kept {
+		first := carriers(file, keptUpTo, segment.Start)
+		for _, frame := range file.Frames[first:segment.Start] {
+			output = append(output, file.SilentFrame(frame)...)
+			silent += frame.Header.Duration()
+		}
 		for _, frame := range file.Frames[segment.Start:segment.End] {
 			output = append(output, file.FrameBytes(frame)...)
 		}
+		keptUpTo = segment.End
 	}
-	return append(output, file.ID3v1...)
+	return append(output, file.ID3v1...), silent
+}
+
+// carriers is the first of the removed frames [removedFrom, start) that
+// have to stay, as silent frames, for frame start to find the bytes it
+// borrows: as few as carry that many bytes. Frames before removedFrom are
+// in the output already, right before them.
+func carriers(file mp3.File, removedFrom, start int) int {
+	if start <= removedFrom || start >= len(file.Frames) {
+		return start
+	}
+	need := file.Frames[start].MainDataBegin
+	first := start
+	for carried := 0; carried < need && first > removedFrom; {
+		first--
+		carried += file.Frames[first].MainDataSize()
+	}
+	return first
 }

@@ -98,6 +98,7 @@ type updateFeedRequest struct {
 	RegionDiffExits            *[]string `json:"region_diff_exits"`
 	RegionDiffOnFailure        *string   `json:"region_diff_on_failure"`
 	RegionDiffTrimBreakMarkers *string   `json:"region_diff_trim_break_markers"`
+	RegionDiffCompareByAudio   *string   `json:"region_diff_compare_by_audio"`
 }
 
 func (handlers *handlers) apiUpdateFeed(context *gin.Context) {
@@ -131,6 +132,9 @@ func (handlers *handlers) apiUpdateFeed(context *gin.Context) {
 	}
 	if request.RegionDiffTrimBreakMarkers != nil {
 		feed.RegionDiffTrimBreakMarkers = *request.RegionDiffTrimBreakMarkers
+	}
+	if request.RegionDiffCompareByAudio != nil {
+		feed.RegionDiffCompareByAudio = *request.RegionDiffCompareByAudio
 	}
 
 	err := handlers.feeds.Update(context.Request.Context(), &feed)

@@ -168,7 +168,8 @@ func TestValidate(t *testing.T) {
 		{name: "disable direct without default exit", modify: func(cfg *Config) { cfg.DisableDirect = true }, wantErr: true},
 		{name: "disable direct with default exit direct", modify: func(cfg *Config) { cfg.DisableDirect, cfg.DefaultExit = true, "direct" }, wantErr: true},
 		{name: "region diff defaults", modify: func(cfg *Config) {}, check: func(t *testing.T, cfg Config) {
-			want := RegionDiff{Exits: []string{}, FallbackExits: []string{}, MinSharedSeconds: 2, MaxRemovedShare: 0.3, OnFailure: "publish"}
+			on := true
+			want := RegionDiff{Exits: []string{}, FallbackExits: []string{}, MinSharedSeconds: 2, MaxRemovedShare: 0.3, OnFailure: "publish", CompareByAudio: &on}
 			if !reflect.DeepEqual(cfg.RegionDiff, want) {
 				t.Errorf("region diff = %+v", cfg.RegionDiff)
 			}
@@ -178,6 +179,14 @@ func TestValidate(t *testing.T) {
 		}, check: func(t *testing.T, cfg Config) {
 			if !reflect.DeepEqual(cfg.RegionDiff.Exits, []string{"norway", "sweden"}) || cfg.RegionDiff.OnFailure != "hide" {
 				t.Errorf("region diff = %+v", cfg.RegionDiff)
+			}
+		}},
+		{name: "region diff compare by audio switched off stays off", modify: func(cfg *Config) {
+			off := false
+			cfg.RegionDiff.CompareByAudio = &off
+		}, check: func(t *testing.T, cfg Config) {
+			if cfg.RegionDiff.ComparesByAudio() {
+				t.Error("compare_by_audio: false was turned on")
 			}
 		}},
 		{name: "region diff bad failure policy", modify: func(cfg *Config) { cfg.RegionDiff.OnFailure = "ignore" }, wantErr: true},
@@ -241,5 +250,24 @@ func TestLocation(t *testing.T) {
 	location, err = Config{Timezone: "Europe/Oslo"}.Location()
 	if err != nil || location.String() != "Europe/Oslo" {
 		t.Errorf("Europe/Oslo = %v, %v", location, err)
+	}
+}
+
+func TestCompareByAudioDefaultsOn(t *testing.T) {
+	for _, c := range []struct {
+		json string
+		want bool
+	}{{`{}`, true}, {`{"compare_by_audio": true}`, true}, {`{"compare_by_audio": false}`, false}} {
+		var regionDiff RegionDiff
+		if err := json.Unmarshal([]byte(c.json), &regionDiff); err != nil {
+			t.Fatal(err)
+		}
+		regionDiff.applyDefaults()
+		if regionDiff.ComparesByAudio() != c.want || regionDiff.CompareByAudio == nil {
+			t.Errorf("%s: compares by audio %v, want %v (written out: %v)", c.json, regionDiff.ComparesByAudio(), c.want, regionDiff.CompareByAudio != nil)
+		}
+	}
+	if !(RegionDiff{}).ComparesByAudio() {
+		t.Error("unset should mean on")
 	}
 }

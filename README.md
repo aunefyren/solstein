@@ -60,7 +60,7 @@ curl -H "Authorization: Bearer <auth_token>" -H "Content-Type: application/json"
 | Method and path | Purpose |
 |---|---|
 | `GET /api/v1/feeds` | List feeds |
-| `POST /api/v1/feeds` | Subscribe: `{"source_url", "exit", "delivery_mode", "poll_interval_minutes", "region_diff", "region_diff_exits", "region_diff_on_failure", "region_diff_trim_break_markers"}`; `201` when new, `200` when already subscribed |
+| `POST /api/v1/feeds` | Subscribe: `{"source_url", "exit", "delivery_mode", "poll_interval_minutes", "region_diff", "region_diff_exits", "region_diff_on_failure", "region_diff_trim_break_markers", "region_diff_compare_by_audio"}`; `201` when new, `200` when already subscribed |
 | `GET /api/v1/feeds/{id}` | One feed |
 | `PATCH /api/v1/feeds/{id}` | Change any of the settings above; an empty value clears the override |
 | `DELETE /api/v1/feeds/{id}` | Unsubscribe and delete everything stored for the feed |
@@ -130,7 +130,7 @@ In `config.json` (paths are relative to the config directory, `/app/config` in D
 
 ## Removing ads (region diff)
 
-Hosts such as Acast insert ads per listener region. Region diff downloads each episode through two exits in different ad markets at the same moment, keeps the audio both share and drops the rest: the show stays byte for byte as published, without re-encoding. It needs two exits, typically one in your own country and one abroad (see **VPN exits**), and works on MP3 episodes.
+Hosts such as Acast insert ads per listener region. Region diff downloads each episode through two exits in different ad markets at the same moment, keeps the audio both share and drops the rest: the show stays byte for byte as published, without re-encoding. It works both with hosts that splice ads in (Acast, PRX) and with hosts that re-encode the whole episode around them (RedCircle), which it compares by audio instead. It needs two exits, typically one in your own country and one abroad (see **VPN exits**), and works on MP3 episodes.
 
 ```json
 "region_diff": {
@@ -140,6 +140,7 @@ Hosts such as Acast insert ads per listener region. Region diff downloads each e
   "on_failure": "publish",
   "backlog": 0,
   "trim_break_markers": false,
+  "compare_by_audio": true,
   "keep_failed_downloads": false,
   "keep_successful_downloads": false
 }
@@ -151,15 +152,17 @@ Hosts such as Acast insert ads per listener region. Region diff downloads each e
 - `on_failure`: `publish` serves an episode that can't be cleaned (not MP3, implausible result) with its ads; `hide` keeps it out of the feed, and tries it again after 1 hour, after 6 hours, then daily for about a week (Solstein says so at start-up). After that it stays out until `POST /api/v1/feeds/{id}/retry` or a change of settings.
 - `backlog`: how many of a new feed's newest existing episodes are cleaned straight away. The rest are cleaned the first time they are played: the client waits a few seconds (about 5 for a 40-minute episode). If it takes over 20 seconds, it gets `503` and `Retry-After`, and the next attempt gets the clean file. To clean a feed's older episodes ahead instead, use `POST /api/v1/feeds/{id}/prepare`.
 - `trim_break_markers`: also remove the short chime or sting a host splices in around ad breaks, where it can be cut without a glitch (it has to repeat identically, be under 5 seconds and sit at a break). Off by default, since a show's own sting at breaks would go too.
+- `compare_by_audio`: on by default. Some hosts (RedCircle) re-encode the whole episode when they insert ads, so the two downloads share no MP3 frame; Solstein then compares their loudness over time instead, read from the compressed audio (a few seconds of CPU per episode, a couple of hundred MB of memory while it runs), and still cuts only the home download's own frames, without re-encoding. Off, such episodes fail as they did before (`on_failure` applies).
 - `min_shared_seconds` (default `2`) and `max_removed_share` (default `0.3`) tune the diff and its sanity check.
 - An episode that can't be cleaned on request (ABS gets `503`) is tried again on each request, and after three failed attempts `on_failure` applies. A download that looks cut off is fetched again before the diff.
 - `keep_failed_downloads`: keep both downloads of an episode whose diff failed, with a note, in `regiondiff-failures/` in the config directory for 14 days, to see what the host sent. Off by default; episodes are large.
 - `keep_successful_downloads`: the same for every diff that worked, in `regiondiff-successes/`, with a note of where each ad was cut: to look into a bad cut. Off by default; it costs twice each episode's size for 14 days.
-- The two exits must come out in different countries: two in the same one get the same ads. Solstein checks this for VPN exits (not for `direct`, whose country it can't know): at start-up it stays off if both can only be in one and the same country, and before each download it skips an exit that has fallen back to the home exit's country.
+- The two exits must come out in different countries: two in the same one get the same ads. Solstein checks this for VPN exits, and for `direct` when you set `home_country`: at start-up it stays off if both can only be in one and the same country, and before each download it skips an exit that has fallen back to the home exit's country.
 - Changing a setting that affects the result (exits, diff settings, `trim_break_markers`, switching region diff on or off, a feed's exit or delivery mode) clears the cached episodes made with the old settings; they are prepared again the next time they are played.
 - New episodes appear in the feed once cleaned, whatever the feed's `delivery_mode`, and the feed carries the cleaned file's size and duration.
-- Per feed (API): `region_diff` (`on`, `off`, or empty for the global setting), `region_diff_exits` (its own pair), `region_diff_on_failure` and `region_diff_trim_break_markers`. The feed's `region_diff_in_use` shows the result.
+- Per feed (API): `region_diff` (`on`, `off`, or empty for the global setting), `region_diff_exits` (its own pair), `region_diff_on_failure`, `region_diff_trim_break_markers` and `region_diff_compare_by_audio`. The feed's `region_diff_in_use` shows the result.
 - If the exits don't exist, region diff stays off and Solstein logs why at start-up.
+- **Upgrading to this version:** region diff's algorithm changed (version 4: comparing by audio, silent frames at cuts), so at the first start every cleaned episode's cached file is cleared and the episode cleaned again the next time it is played or prepared, and episodes that failed before are tried again. Audiobookshelf keeps the copies it has already downloaded, so this is no mass re-download; `POST /api/v1/feeds/{id}/prepare` cleans a feed's episodes ahead if you want them cached again.
 
 ## Configuration
 

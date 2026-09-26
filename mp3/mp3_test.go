@@ -356,3 +356,46 @@ func FuzzParse(f *testing.F) {
 		}
 	})
 }
+
+func TestCRC16(t *testing.T) {
+	// The standard check value for this CRC (CRC-16/CMS).
+	if got := crc16([]byte("123456789")); got != 0xAEE7 {
+		t.Errorf("crc16 = %#04x, want 0xaee7", got)
+	}
+}
+
+func TestSilentFrame(t *testing.T) {
+	for _, protected := range []bool{false, true} {
+		raw := headerBytes(3, 3, 9, 0, false, protected, false)
+		data := append(frame(t, raw, 300, 0xAB), frame(t, raw, 0, 0xCD)...)
+		file, err := Parse(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		original := file.Frames[0]
+		silent := file.SilentFrame(original)
+		offset := original.Header.mainDataOffset()
+		if len(silent) != original.Size || !bytes.Equal(silent[:4], data[:4]) || !bytes.Equal(silent[offset:], data[offset:original.Size]) {
+			t.Fatalf("protected=%v: header or audio bytes changed", protected)
+		}
+		start := 4
+		if protected {
+			start = 6
+			if crc := crc16(append(append([]byte(nil), silent[2:4]...), silent[6:offset]...)); silent[4] != byte(crc>>8) || silent[5] != byte(crc) {
+				t.Errorf("CRC not recomputed")
+			}
+		}
+		if !bytes.Equal(silent[start:offset], make([]byte, offset-start)) {
+			t.Errorf("protected=%v: side information not zeroed", protected)
+		}
+		if parsed, err := Parse(append(silent, data[original.Size:]...)); err != nil || parsed.Frames[0].MainDataBegin != 0 {
+			t.Errorf("protected=%v: silent frame %+v, %v", protected, parsed.Frames, err)
+		}
+		if want := original.Size - offset; original.MainDataSize() != want || want <= 0 {
+			t.Errorf("main data size %d, want %d", original.MainDataSize(), want)
+		}
+		if !bytes.Equal(data[:original.Size], file.FrameBytes(original)) {
+			t.Error("the original frame was changed")
+		}
+	}
+}
