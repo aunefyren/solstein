@@ -510,6 +510,33 @@ func TestLookupFallsBackWhenTunnelDNSFails(t *testing.T) {
 	}
 }
 
+// TestLookupSkipsSecondAttemptWhenFallbackConfigured checks that a fallback
+// resolver being configured means only the first, shorter attempt at the
+// tunnel's own resolver runs before falling back: measured live, the second,
+// longer attempt never once succeeded where the first hadn't (docs/wip.md).
+func TestLookupSkipsSecondAttemptWhenFallbackConfigured(t *testing.T) {
+	dnsDrop = 1 << 30 // the tunnel's resolver never answers
+	t.Cleanup(func() { dnsDrop = 0 })
+	opened := openTestTunnel(t, true)
+	dnsDrop = 0
+	opened.fallbackDNS = []netip.Addr{fallbackResolverAddress}
+	originalAttempts, originalFallback := dnsAttempts, fallbackAttempt
+	// The second attempt is unmistakably long: if it ran, the lookup would
+	// take at least 5 s.
+	dnsAttempts, fallbackAttempt = []time.Duration{100 * time.Millisecond, 5 * time.Second}, 500*time.Millisecond
+	t.Cleanup(func() { dnsAttempts, fallbackAttempt = originalAttempts, originalFallback })
+
+	start := time.Now()
+	addresses, err := opened.LookupIP(context.Background(), "fallback.test")
+	elapsed := time.Since(start)
+	if err != nil || len(addresses) != 1 {
+		t.Fatalf("LookupIP = %v, %v", addresses, err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("lookup took %s; with a fallback configured, the second (5 s) attempt at the tunnel's own resolver should never run", elapsed)
+	}
+}
+
 // TestLookupDoesNotFallBackOnAnswers checks that the fallback is only for a
 // resolver that fails: an answer, including "no such host", stands.
 func TestLookupDoesNotFallBackOnAnswers(t *testing.T) {

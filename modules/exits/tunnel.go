@@ -156,6 +156,15 @@ func (tunnel *tunnel) LookupIP(ctx context.Context, host string) ([]netip.Addr, 
 // cost the resolver's full 5-second timeout. Retrying after a second makes
 // that cost a second. TCP needs nothing like it: it retransmits after about
 // a second on its own.
+//
+// With a fallback configured, only the first attempt runs: measured live
+// (2026-09-27, one-key `docker-test`, 84 tunnel opens), the tunnel's own
+// resolver failed on a fresh tunnel's first lookup 66 times, and the second,
+// longer attempt never once succeeded where the first hadn't already —
+// every one of those 66 needed the fallback anyway. The fallback answers in
+// under 1.5 s (below), so burning the second attempt's own timeout first,
+// on a resolver that's already shown it isn't answering, only delays it.
+// Without a fallback it's the only recourse, so the second attempt stays.
 var dnsAttempts = []time.Duration{time.Second, 2 * time.Second}
 
 // fallbackAttempt is the time limit of each fallback resolver. Through
@@ -164,9 +173,13 @@ var dnsAttempts = []time.Duration{time.Second, 2 * time.Second}
 var fallbackAttempt = 5 * time.Second
 
 func (tunnel *tunnel) lookupWithRetries(ctx context.Context, host string) ([]string, error) {
+	attempts := dnsAttempts
+	if len(tunnel.fallbackDNS) > 0 {
+		attempts = dnsAttempts[:1]
+	}
 	var names []string
 	var err error
-	for _, limit := range dnsAttempts {
+	for _, limit := range attempts {
 		attempt, cancel := context.WithTimeout(ctx, limit)
 		names, err = tunnel.net.LookupContextHost(attempt, host)
 		cancel()
