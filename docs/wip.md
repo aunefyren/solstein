@@ -14,16 +14,14 @@ Everything about Solstein that isn't finished: known issues, gaps, open question
 ### Proton keys and stalls: what's left (open, 2026-09-26)
 
 Built: one tunnel per Proton key, key affinity, and resuming broken downloads ([`exits.md`](exits.md), [`episodes.md`](episodes.md)). Left:
-- **How long a moved key stays disturbed:** `keyMoveSettle` (3 minutes) is a guess from WireGuard's 180 s session lifetime. Measured directly now (`exits.md`, Measured live), but noisily and non-monotonically — doesn't overturn the 3-minute default, doesn't prove it necessary either. A larger sample per pause, or several repeats, would be needed to say more.
 - **`podkast.nrk.no` (Akamai) cutting requests** (`EOF` within 1–5 s, 4 of 18 through NO#23): the original measurement ran while production shared the probe's keys, which confounded it. Production and testing now confirmed on separate keys, so that confound is gone, but it hasn't actually been rechecked yet: `prod.log` (2026-09-27) shows no NRK activity, but a feed that polls cleanly with nothing new logs nothing at all (`feeds/poller.go`), so that's not evidence either way — NRK feeds are still subscribed in production. Watch the next time an NRK episode is actually downloaded.
-- **Probe files** `modules/exits/live_dns_probe_test.go` and `live_stall_probe_test.go` (temporary, `live` tag): delete once the above is settled.
+- **Probe files** `modules/exits/live_dns_probe_test.go`, `live_stall_probe_test.go` and `live_keymove_repeat_test.go` (temporary, `live` tag): delete once the above is settled.
 
-Open question: should a tunnel DNS failure with a fresh handshake count against the server? The stalls turned out to be key conflicts, where switching servers moves the key and makes things worse, so probably not; left open until the above is settled.
+Open question: should a tunnel DNS failure with a fresh handshake count against the server? The stalls turned out to be key conflicts, where switching servers moves the key and makes things worse, so probably not — and now settled that it's chance per session rather than a pause-length threshold (`exits.md`, keyMoveSettle), which only reinforces "probably not"; left open until the NRK/Akamai recheck above is settled too.
 
 ### Comparing by audio: what the RedCircle run left open (2026-09-26)
 
 Run live against RedCircle and ABS on 15 "Safety Third" episodes ([`region-diff.md`](region-diff.md)): about a minute each, 805 MB peak for one pair of up to 220 MB downloads, no failure. Left:
-- **Why RedCircle leaves Norway alone** is unknown: no advertiser for the market, or no ad server for it at all. If it holds for every RedCircle show, region diff has nothing to do on them and the pair's downloads cost twice the bandwidth for nothing — worth a way to notice a feed that never has ads at home and stop comparing it (and what would then make it start again).
 - **A slower server** may push an episode of this size past the 20 s wait more often than the 22 s best case here; with `prepare_ahead` that no longer matters.
 
 ### Why five backlog downloads were implausible (open question)
@@ -32,17 +30,15 @@ Five of 115 "It Was A Sh*t Show" episodes failed as implausible in production wi
 
 **Tried and inconclusive (2026-09-27):** a comparable burst on `docker-test` — 31 backlog episodes queued at once, `keep_failed_downloads: true` — reproduced nothing: no implausible result, no failure that stuck, one mid-body break resumed cleanly by the fix built since (`region-diff.md`, Retried since). Doesn't confirm or rule out a specific cause for the original five; it does show the current code already handles the failure shape (a cut-off download) that would explain them, without needing to reproduce the exact cause. Left open: whether the original burst hit something this one didn't (more concurrency, a specific host state that evening) — watch for a recurrence in production rather than trying to force another one here.
 
-### Ads that are the same in every compared market (open, 2026-09-25)
-
-Megaphone's "The Always Sunny Podcast" is the strongest case: 15 episodes, all byte-identical through `norway`, `germany` and the `us` fallback (2026-09-26, [`region-diff.md`](region-diff.md)). Either the host inserts no dynamic ads on this show, or the same campaign runs in every market Solstein reaches; a market further out, or a direct download from the host's own region, would tell them apart.
-
-Darknet Diaries (PRX Dovetail) keeps 2–3 minutes of ads per episode after cleaning: the cleaned files are that much longer than `itunes:duration`, and the audio that differs between Norway, Sweden and Germany is a single ~1-minute mid-roll. The rest is probably a pre-roll or campaign that runs in all three markets (or host-read ads, which no diff can find). Worth trying: a fallback in a more distant market (e.g. the US, where PRX sells most ads) to see whether that part differs there.
-
 ### Open questions
 
 - **Other hosts:** Acast and Dovetail splice at frame level, RedCircle re-encodes (compared by audio). Megaphone serves MP3s the diff handles but with nothing regional to cut in 15 episodes ([`region-diff.md`](region-diff.md), 2026-09-26). Others are untested. Region diff refuses anything that isn't MP3 (e.g. AAC) rather than guessing.
 - **Other variance in ads:** whether ad selection also depends on User-Agent, cookies or random rotation. Known so far: same region at the same moment gives byte-identical files (a show without dynamic ads on 2026-09-24, one with Norwegian ads on 2026-09-25); hours apart, and through a VPN exit instead of direct, the ads differ but the show audio doesn't. Not tested: different User-Agents, and how often the same campaign runs in several markets (which `fallback_exits` covers).
 - **Geolocation drift:** what picks the ads is how Acast geolocates the exit IP, not the country in the server list, and VPN IPs are sometimes misplaced. An optional IP-geolocation check through the tunnel (off by default, as it adds an external dependency)? The real test remains whether the two downloads differ.
+
+### Deferred ideas
+
+- **Skip comparing a feed that never has ads at home** (`region-diff.md`, RedCircle, compared by audio): if a show's home download is reliably ad-free (RedCircle's "Safety Third", 15 of 15), the pair's second download costs bandwidth for a result that's already known. A cost optimization, not a correctness one — ad removal already works either way. Needs a way to notice it (some run count of clean results?) and to un-notice it if the host ever starts inserting ads again.
 
 ## Exits
 
