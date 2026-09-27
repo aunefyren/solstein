@@ -373,21 +373,46 @@ func TestDiffTrimsBreakMarkers(t *testing.T) {
 	}
 }
 
-func TestDiffKeepsMarkersItCantCutCleanly(t *testing.T) {
+func TestDiffCutsMarkersGluedToAShowSegment(t *testing.T) {
 	// After the mid-roll, the marker is encoded together with the show
-	// segment that follows (no clean frame after it): cutting it would break
-	// the first show frame, so it stays. The two clean ones go.
+	// segment that follows: no clean frame between them, so it can't be
+	// found by scanning for one. Its bytes still match the marker's clean
+	// occurrences elsewhere, so it is trimmed too, its last frame kept as a
+	// silent carrier for the show frame that borrows from it.
 	marker := audio(87, 99)
 	baked := join(marker, withoutCleanStart(show2))
 	home := join(tag("h"), audio(100, 11), marker, show1, marker, audio(80, 12), baked, marker, audio(60, 13))
 	other := join(tag("o"), audio(90, 21), marker, show1, marker, audio(70, 22), baked, marker, audio(50, 23))
 
 	result := diffTrimming(t, home, other)
-	if want := join(tag("h"), show1, baked); !bytes.Equal(result.Output, want) {
-		t.Errorf("output is %d bytes, want %d: the show and the marker encoded into it", len(result.Output), len(want))
+	markerFile, err := mp3.Parse(marker)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(result.Markers) != 3 {
-		t.Errorf("markers = %+v, want the three that are their own segment", result.Markers)
+	carrier := markerFile.SilentFrame(markerFile.Frames[len(markerFile.Frames)-1])
+	if want := join(tag("h"), show1, carrier, withoutCleanStart(show2)); !bytes.Equal(result.Output, want) {
+		t.Errorf("output is %d bytes, want %d: show2 kept, with one silent carrier frame in place of the glued marker", len(result.Output), len(want))
+	}
+	if len(result.Markers) != 4 {
+		t.Errorf("markers = %+v, want all four occurrences, the glued one included", result.Markers)
+	}
+}
+
+func TestDiffKeepsAGluedMarkerWithNoCleanOccurrence(t *testing.T) {
+	// A marker spliced in cleanly nowhere in the episode has nothing to
+	// confirm its bytes against, so a glued occurrence is left alone rather
+	// than guessed at from its length or position alone.
+	marker := audio(87, 99)
+	baked := join(marker, withoutCleanStart(show2))
+	home := join(tag("h"), audio(100, 11), show1, audio(80, 12), baked, audio(60, 13))
+	other := join(tag("o"), audio(90, 21), show1, audio(70, 22), baked, audio(50, 23))
+
+	result := diffTrimming(t, home, other)
+	if want := join(tag("h"), show1, baked); !bytes.Equal(result.Output, want) {
+		t.Errorf("output is %d bytes, want %d: the glued marker left in place, with nothing to confirm it", len(result.Output), len(want))
+	}
+	if len(result.Markers) != 0 {
+		t.Errorf("markers = %+v, want none: nothing here is confirmed", result.Markers)
 	}
 }
 

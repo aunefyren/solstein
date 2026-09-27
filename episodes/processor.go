@@ -35,6 +35,31 @@ type Processor interface {
 	Process(ctx context.Context, job Job) (Processed, error)
 }
 
+// BatchProcessor is implemented by a Processor that can take several of a
+// feed's queued episodes together, when that amortises a cost that falls
+// per switch between exits rather than per episode (region diff, on a key
+// short of a tunnel per exit). The pipeline uses it instead of Process only
+// for queued (background) work, never for an episode a client is waiting
+// on, and only when more than one of a feed's episodes are queued at
+// once — otherwise episodes are prepared one at a time as always.
+type BatchProcessor interface {
+	Processor
+	// BatchSize reports how many of a feed's queued episodes to take
+	// together right now, and whether it's worth it at all; 0 or false
+	// means one at a time as usual.
+	BatchSize(feed models.Feed) (size int, ok bool)
+	// ProcessBatch is Process for several episodes of the same feed at
+	// once. It always returns one outcome per job, in the same order.
+	ProcessBatch(ctx context.Context, jobs []Job) []BatchOutcome
+}
+
+// BatchOutcome is one job's result from ProcessBatch: Processed is valid
+// only when Err is nil, exactly as Process's own return values are.
+type BatchOutcome struct {
+	Processed Processed
+	Err       error
+}
+
 // Job is one episode for a processor.
 type Job struct {
 	Feed    models.Feed

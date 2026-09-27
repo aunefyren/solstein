@@ -450,8 +450,13 @@ func toSegmentBoundaries(candidate run, frames []mp3.Frame, unanchored int) (run
 //   - it is at most maxMarker long;
 //   - its frames are byte-identical to another such piece in the episode.
 //
-// A marker encoded into the start of a show segment (no clean frame after
-// it) can't be cut without breaking the frame after it, and is kept.
+// A marker encoded together with the show segment next to it — no clean
+// frame between them, because one borrows bit-reservoir bytes from the
+// other — can't be found by scanning for a clean frame, but a marker found
+// elsewhere in the episode gives its exact bytes and length: matching those
+// against the run's edge finds it without needing a clean boundary there.
+// write's carrier-frame handling for a kept segment that starts or ends
+// without one works whether or not this function is the reason it doesn't.
 func trimMarkers(kept []run, file mp3.File, frameDuration time.Duration) ([]run, []run) {
 	longest := int(maxMarker / frameDuration)
 	cleanAt := func(i int) bool { return i == 0 || i == len(file.Frames) || file.Frames[i].MainDataBegin == 0 }
@@ -508,6 +513,37 @@ func trimMarkers(kept []run, file mp3.File, frameDuration time.Duration) ([]run,
 	}
 	if len(remove) == 0 {
 		return kept, nil
+	}
+
+	// A run's own edge may hold a marker glued to the segment next to it,
+	// invisible to the scan above because neither side of it is clean. Its
+	// bytes still match one of the markers already confirmed, so try each
+	// confirmed marker's length against every open edge that didn't already
+	// get a piece: a byte-for-byte match is as sure a marker as a clean
+	// boundary. Matched only against the originally confirmed markers, not
+	// against other glued ones this pass finds, so the result doesn't depend
+	// on the order runs happen to come in.
+	confirmed := make([]piece, 0, len(remove))
+	for marker := range remove {
+		confirmed = append(confirmed, marker)
+	}
+	for i, candidate := range kept {
+		start, end := candidate.home, candidate.home+candidate.length
+		openStart := i == 0 || kept[i-1].home+kept[i-1].length < start
+		openEnd := i == len(kept)-1 || kept[i+1].home > end
+		for _, marker := range confirmed {
+			length := marker.end - marker.start
+			if openStart && start+length <= end {
+				if glued := (piece{start, start + length}); !remove[glued] && same(glued, marker) {
+					remove[glued] = true
+				}
+			}
+			if openEnd && end-length >= start {
+				if glued := (piece{end - length, end}); !remove[glued] && same(glued, marker) {
+					remove[glued] = true
+				}
+			}
+		}
 	}
 
 	var result, markers []run

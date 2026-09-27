@@ -90,11 +90,27 @@ func (store *Store) MarkReleased(ctx context.Context, episodeIDs []uuid.UUID, at
 	return nil
 }
 
+// MarkFullyServed records that a client has downloaded a cache copy in
+// full, so cache_evict_after_serve can find it. Unlike released_at, it isn't
+// protected from UpdateEpisode: it is only ever an optimisation (a lost
+// update delays eviction by one more sweep at worst), and reconcile clears
+// it, along with the rest of the cache fields, in the same save as other
+// changes.
+func (store *Store) MarkFullyServed(ctx context.Context, episodeID uuid.UUID, at time.Time) error {
+	err := store.withContext(ctx).Model(&models.Episode{}).
+		Where("id = ? AND fully_served_at IS NULL", episodeID).
+		Update("fully_served_at", at).Error
+	if err != nil {
+		return fmt.Errorf("mark episode fully served: %w", err)
+	}
+	return nil
+}
+
 // UpdateEpisode saves every field of an existing episode except
-// released_at, which only MarkReleased sets: a download or stream that loaded
-// the episode before it was released would otherwise clear it again when it
-// saves. It returns ErrEpisodeNotFound if the episode doesn't exist, rather
-// than creating it.
+// released_at, which only MarkReleased sets: a download or stream that
+// loaded the episode before it was released would otherwise clear it again
+// when it saves. It returns ErrEpisodeNotFound if the episode doesn't
+// exist, rather than creating it.
 func (store *Store) UpdateEpisode(ctx context.Context, episode *models.Episode) error {
 	if episode.ID == uuid.Nil {
 		return ErrEpisodeNotFound

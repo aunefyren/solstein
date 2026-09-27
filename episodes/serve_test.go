@@ -63,6 +63,9 @@ func TestServeFromCache(t *testing.T) {
 	if recorder.Header().Get("Content-Type") != "audio/mpeg" || recorder.Header().Get("Accept-Ranges") != "bytes" {
 		t.Errorf("headers = %v", recorder.Header())
 	}
+	if stored := setup.reload(t, episode); stored.FullyServedAt == nil {
+		t.Error("a full GET wasn't recorded as fully served")
+	}
 
 	recorder, err = serve(t, server, episode, http.MethodGet, "bytes=0-3")
 	if err != nil || recorder.Code != http.StatusPartialContent || recorder.Body.String() != audio[:4] {
@@ -76,6 +79,26 @@ func TestServeFromCache(t *testing.T) {
 
 	if hits.Load() != before {
 		t.Error("cached episode was fetched from the source")
+	}
+}
+
+// TestServeCachedRangeAndHeadDontMarkFullyServed checks that only a full GET
+// counts, not a Range request or a HEAD, each of which gets only part of the
+// episode or none of its body.
+func TestServeCachedRangeAndHeadDontMarkFullyServed(t *testing.T) {
+	setup := newTestSetup(t)
+	server := newTestServer(t, setup)
+	episode := setup.addEpisode(t, "/ok.mp3")
+	setup.processOne(t)
+
+	if _, err := serve(t, server, episode, http.MethodGet, "bytes=0-3"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := serve(t, server, episode, http.MethodHead, ""); err != nil {
+		t.Fatal(err)
+	}
+	if stored := setup.reload(t, episode); stored.FullyServedAt != nil {
+		t.Errorf("a range request or a HEAD was recorded as fully served: %+v", stored)
 	}
 }
 

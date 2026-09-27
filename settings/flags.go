@@ -212,6 +212,19 @@ var settings = []setting{
 		apply: intSetting(func(cfg *Config) *int { return &cfg.CacheRetentionDays }),
 	},
 	{
+		flag:  "cachemaxsize",
+		env:   "SOLSTEIN_CACHE_MAX_SIZE",
+		usage: "Megabytes the cache directory may hold; 0 means no cap. Over it, the oldest cached copies are evicted first.",
+		apply: intSetting(func(cfg *Config) *int { return &cfg.CacheMaxSizeMB }),
+	},
+	{
+		flag:    "cacheevictafterserve",
+		env:     "SOLSTEIN_CACHE_EVICT_AFTER_SERVE",
+		usage:   "Evict a cached episode once a client has downloaded it in full.",
+		boolean: true,
+		apply:   boolSetting(func(cfg *Config) *bool { return &cfg.CacheEvictAfterServe }),
+	},
+	{
 		flag:  "processingwait",
 		env:   "SOLSTEIN_PROCESSING_WAIT",
 		usage: "Seconds a client is held while an episode it asked for is prepared, before it gets 503. Raise the client's own download timeout to match.",

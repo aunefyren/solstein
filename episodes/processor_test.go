@@ -74,6 +74,100 @@ func (processor *fakeProcessor) Process(ctx context.Context, job Job) (Processed
 	return Processed{Audio: []byte(strings.ToUpper(string(download.Data))), ContentType: download.ContentType, Duration: 90 * time.Second, Note: "shouted"}, nil
 }
 
+// fakeBatchProcessor adds BatchProcessor to fakeProcessor, recording each
+// ProcessBatch call's jobs, for testing the pipeline's own batching.
+type fakeBatchProcessor struct {
+	*fakeProcessor
+	size int
+	want bool
+
+	mutex   sync.Mutex
+	batches [][]Job
+}
+
+func (processor *fakeBatchProcessor) BatchSize(feed models.Feed) (int, bool) {
+	return processor.size, processor.want
+}
+
+func (processor *fakeBatchProcessor) ProcessBatch(ctx context.Context, jobs []Job) []BatchOutcome {
+	processor.mutex.Lock()
+	processor.batches = append(processor.batches, jobs)
+	processor.mutex.Unlock()
+	outcomes := make([]BatchOutcome, len(jobs))
+	for i, job := range jobs {
+		outcomes[i].Processed, outcomes[i].Err = processor.fakeProcessor.Process(ctx, job)
+	}
+	return outcomes
+}
+
+func TestPipelineBatchesQueuedEpisodesOfTheSameFeed(t *testing.T) {
+	setup := newTestSetup(t)
+	processor := &fakeBatchProcessor{fakeProcessor: &fakeProcessor{}, size: 3, want: true}
+	setup.withProcessor(t, processor)
+	var backlog []models.Episode
+	for i := range 3 {
+		backlog = append(backlog, setup.addBacklog(t, fmt.Sprintf("/ok.mp3?%d", i)))
+	}
+	if queued, err := setup.pipeline.Queue(context.Background(), setup.feed.ID, 0); err != nil || queued != 3 {
+		t.Fatalf("queued %d, %v", queued, err)
+	}
+
+	if !setup.processOne(t) {
+		t.Fatal("no work found")
+	}
+	if setup.processOne(t) {
+		t.Error("more work was found; the one batch should have taken all three")
+	}
+
+	processor.mutex.Lock()
+	batches := processor.batches
+	processor.mutex.Unlock()
+	if len(batches) != 1 || len(batches[0]) != 3 {
+		t.Fatalf("batches = %+v, want one batch of three", batches)
+	}
+	for _, episode := range backlog {
+		if stored := setup.reload(t, episode); stored.CacheFile == "" || stored.State != models.EpisodeReady {
+			t.Errorf("%s wasn't prepared: %+v", episode.GUID, stored)
+		}
+	}
+}
+
+// A client waiting on request must never be delayed behind someone else's
+// batch: on-request work always goes through Process, one episode at a
+// time, even when the processor would otherwise batch the feed's other
+// queued episodes.
+func TestPipelineDoesNotBatchOnRequestWork(t *testing.T) {
+	setup := newTestSetup(t)
+	processor := &fakeBatchProcessor{fakeProcessor: &fakeProcessor{}, size: 3, want: true}
+	setup.withProcessor(t, processor)
+	exits, err := outbound.New(outbound.Options{AllowPrivateDestinations: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedService := feeds.New(setup.store, exits, feeds.Options{DefaultDeliveryMode: "cache", Processed: processor.Handles})
+	server := NewServer(setup.store, exits, setup.cache, feedService, setup.pipeline, Options{ProcessingWait: 5 * time.Second, Now: setup.clock.Now})
+
+	for i := range 2 {
+		setup.addBacklog(t, fmt.Sprintf("/ok.mp3?%d", i))
+	}
+	setup.pipeline.Queue(context.Background(), setup.feed.ID, 0)
+
+	requested := setup.addBacklog(t, "/ok.mp3?requested")
+	if recorder, err := serve(t, server, requested, http.MethodGet, ""); err != nil || recorder.Body.String() != strings.ToUpper(audio) {
+		t.Fatalf("on-request serve: %d %q, %v", recorder.Code, recorder.Body.String(), err)
+	}
+
+	processor.mutex.Lock()
+	batched := len(processor.batches)
+	processor.mutex.Unlock()
+	if batched > 0 {
+		t.Errorf("on-request work went through a batch: %d", batched)
+	}
+	if stored := setup.reload(t, requested); stored.CacheFile == "" {
+		t.Error("requested episode wasn't prepared")
+	}
+}
+
 // withProcessor rebuilds the setup's pipeline with a processor, and makes
 // its feed one the processor handles, in stream mode: processing must not
 // depend on cache delivery.

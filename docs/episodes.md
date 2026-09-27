@@ -94,6 +94,9 @@ How it runs:
 - **Claiming** moves the episode's `next_attempt_at` on by 3 hours in the same transaction (`ClaimQueuedEpisode`), so no two workers take it; if the attempt never records an outcome (a crash), it simply comes due again then. Queueing only writes the queueing fields of episodes still in the right state, so it can't overwrite one prepared meanwhile.
 - **One job per episode**, as for work on request: a request for a queued episode being prepared joins that job; a worker that finds a request's job already running leaves it to that. While it runs, a stream of the episode isn't written to the cache, and settings checks leave it alone until it is done.
 - On success the episode is ready (a withheld one is published; being new to clients, it is dated when first served, so ABS picks it up). A processed file replaces an unprocessed one kept from the failure policy.
+- **A processor that batches** (region diff, short of tunnels: [`region-diff.md`](region-diff.md), Batching the background queue) claims the rest of its batch right after the first episode, from the same feed only (`ClaimQueuedEpisodesForFeed`); one already claimed elsewhere (a request racing in) is left out and comes due again after its own lease, same as the race a lone claim already has. Never for work on request: a client waiting on one episode is never held up behind someone else's batch.
+
+**Verified live (2026-09-27, [`docker-test`](../docker-test/README.md)):** a backlog episode was forced to fail three times on request (its partner exit pointed at a nonexistent server), correctly withheld — dropped from the served feed (167 items to 166) and answered `404`. With the exit fixed, `POST /api/v1/feeds/{id}/retry` queued it ("Queued 1 episodes of 'Safety Third' to be tried again in the background"); it processed with no client waiting and was back in the feed a few seconds later. The following `POST /api/v1/retry` correctly queued nothing more (`{"queued":0}`), so calling both doesn't double-queue what one already picked up. Not run to its real cadence: the slow 1 h/6 h/daily schedule itself, which would take about a week to see through. Whether a withheld *new* (non-backlog) episode's release date is set correctly by a late retry wasn't re-verified live here, but follows from the code doing exactly the same thing regardless of how the episode came to be published: `Render` (`feeds/service.go`) sets `releasedAt` from `ReleasedAt` if already set, otherwise from now, for every published, non-backlog episode on every render — a retry's success is just another render, identical to the 2026-09-24 case in [`clients.md`](clients.md) where a slow first attempt was picked up the same way.
 
 ## Settings changes
 
@@ -102,7 +105,7 @@ Each episode records `prepared_with`: a description of the settings its file was
 - **A failed episode whose settings or failure policy changed gets a fresh start** (its late retries too): withheld or not, it is retried from the first attempt — by the pipeline, or, for backlog, on request.
 - Episodes being prepared are left alone; a file they record with the old settings is caught when it is served.
 - Episodes from before settings were recorded are taken to match the current ones, except a processed feed's cached file with no processor's note, which wasn't processed: it is cleared, so switching region diff on for a feed cleans its cached episodes too.
-- Not recorded, so changing them clears nothing: `poll_interval_minutes`, `cache_retention_days`, `region_diff.backlog`.
+- Not recorded, so changing them clears nothing: `poll_interval_minutes`, `cache_retention_days`, `cache_max_size_mb`, `cache_evict_after_serve`, `region_diff.backlog`.
 
 ## Serving
 
@@ -121,6 +124,8 @@ Checked against Acast's CDN: a backlog episode (21.5 MB) streamed and cached in 
 
 An hourly sweep, and once at start-up:
 - **Retention:** cache copies older than `cache_retention_days` (default 14, by `cached_at`) are deleted and the episode's cache fields cleared. The episode stays published; a later play streams and re-caches it, or, for a processed feed, processes it again. A file that can't be deleted (e.g. being served, on Windows) is left for the next sweep rather than forgotten.
+- **Already served** (`cache_evict_after_serve`, off by default): once a client has downloaded a cache copy in full — a plain `GET`, not a `Range` request or a `HEAD`, that got a `200` and wasn't cut off — it is no longer needed for that, and is deleted the same way as an expired one. A second client, or the same one asking again, then costs a fresh download or, for a processed feed, reprocessing; Audiobookshelf is the only client this has been checked against, and it downloads each episode once, so nothing re-fetches it once this is on. Runs after retention and before the size cap, so those only have to look at what it left.
+- **Size cap** (`cache_max_size_mb`, 0 by default: off): once the cache directory's total recorded size is over it, cache copies are deleted oldest `cached_at` first until it isn't. Checked after retention and already-served eviction, so it only removes what those didn't.
 - **Strays:** files no episode refers to — a deleted feed's audio, abandoned `.part` files — are removed, then empty feed directories. Files younger than 70 minutes (the longest a download can run, plus a margin) are left alone, so a finished download not yet recorded is never removed.
 
 Deleting a feed through the API removes its cache directory at once.

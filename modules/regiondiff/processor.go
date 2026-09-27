@@ -191,6 +191,89 @@ func (processor *Processor) exitsFor(feed models.Feed) (pair [2]string, fallback
 	return pair, fallbacks
 }
 
+// batchSize caps ProcessBatch: enough episodes to amortise a key move
+// across several instead of paying it twice per episode, without holding
+// too many home downloads in memory at once (each capped at 512 MB by
+// episodes.Job.Fetch). A larger, disk-spooled batch is left for later if
+// this proves worth building on (docs/wip.md).
+const batchSize = 3
+
+// BatchSize reports whether the pair's exits are short of a tunnel each —
+// the same condition pair_downloads resolves to "in turn" for — and, if so,
+// offers a small batch of the feed's queued episodes at once: see
+// ProcessBatch. Recomputed per feed, like downloadsInTurn, since a feed may
+// override the exit pair.
+func (processor *Processor) BatchSize(feed models.Feed) (int, bool) {
+	if processor.options.Budgeter == nil {
+		return 0, false
+	}
+	pair, _ := processor.exitsFor(feed)
+	if fits, _ := processor.options.Budgeter.ExitsFit([]string{pair[0], pair[1]}); fits {
+		return 0, false
+	}
+	return batchSize, true
+}
+
+// ProcessBatch fetches every job's home download before any partner, so a
+// key short of a tunnel each moves once for the whole batch instead of
+// twice per episode; each job is then compared exactly as Process does
+// (finishPair). It always returns one outcome per job: a job whose own
+// home download failed, or that never got a turn because the batch's own
+// wait for a tunnel did, has just an error.
+func (processor *Processor) ProcessBatch(ctx context.Context, jobs []episodes.Job) []episodes.BatchOutcome {
+	outcomes := make([]episodes.BatchOutcome, len(jobs))
+	done, err := processor.waitForTurn(ctx)
+	if err != nil {
+		for i := range outcomes {
+			outcomes[i].Err = err
+		}
+		return outcomes
+	}
+	defer done()
+
+	type fetchedHome struct {
+		pair      [2]string
+		fallbacks []string
+		home      checkedDownload
+	}
+	homes := make([]*fetchedHome, len(jobs))
+	homeExit := ""
+	for i, job := range jobs {
+		pair, fallbacks := processor.exitsFor(job.Feed)
+		pair, fallbacks, err := processor.inDifferentCountries(pair, fallbacks)
+		if err != nil {
+			outcomes[i].Err = err
+			continue
+		}
+		download, fetchErr := job.Fetch(ctx, pair[0], job.Fresh)
+		if fetchErr != nil {
+			outcomes[i].Err = fmt.Errorf("download through exit %q: %w", pair[0], fetchErr)
+			continue
+		}
+		homes[i] = &fetchedHome{pair: pair, fallbacks: fallbacks, home: checkedDownload{Download: download}}
+		homeExit = pair[0]
+	}
+	// One key move for the whole batch: every home download is in, so the
+	// home exit's idle connection is closed once, right before the first
+	// partner fetch needs the tunnel — the same reason fetchPairInTurn does
+	// it for a single episode, just amortised.
+	if homeExit != "" {
+		closeIdle(jobs[0], homeExit)
+	}
+	for i, job := range jobs {
+		if homes[i] == nil {
+			continue
+		}
+		other, compared, left, err := processor.fetchPartner(ctx, job, homes[i].pair, homes[i].fallbacks)
+		if compared == "" {
+			outcomes[i].Err = err
+			continue
+		}
+		outcomes[i].Processed, outcomes[i].Err = processor.finishPair(ctx, job, homes[i].pair, left, homes[i].home, other, compared)
+	}
+	return outcomes
+}
+
 // Process downloads the episode through both exits at once and removes the
 // audio they don't share. When both carry the same audio, the fallback
 // exits are tried in turn; if every one agrees, the episode is kept as it
@@ -213,13 +296,22 @@ func (processor *Processor) Process(ctx context.Context, job episodes.Job) (epis
 	if err != nil {
 		return episodes.Processed{}, err
 	}
-	// The home exit's idle connection is closed already (fetchPairInTurn), so
-	// it doesn't block the partner's tunnel; the partner's (or the last
-	// fallback's) is closed here, once nothing more will be fetched through
-	// it, so it doesn't block the home exit's tunnel on the *next* episode —
-	// otherwise a single key would only work every other attempt, whichever
-	// one lands inside the other's idle timeout (found live testing a
-	// one-key setup, docs/wip.md).
+	return processor.finishPair(ctx, job, pair, fallbacks, home, other, compared)
+}
+
+// finishPair compares an already-fetched pair — home, and the exit named by
+// compared — and turns the result into what the pipeline caches. Process
+// calls it right after fetchPair; ProcessBatch, after fetching a whole
+// batch's homes and then this job's partner.
+//
+// The home exit's idle connection is closed already by whichever fetch got
+// it (fetchPairInTurn, or ProcessBatch's own home phase), so it doesn't
+// block the partner's tunnel; the partner's (or the last fallback's) is
+// closed here, once nothing more will be fetched through it, so it doesn't
+// block the home exit's tunnel on the *next* episode — otherwise a single
+// key would only work every other attempt, whichever one lands inside the
+// other's idle timeout (found live testing a one-key setup, docs/wip.md).
+func (processor *Processor) finishPair(ctx context.Context, job episodes.Job, pair [2]string, fallbacks []string, home, other checkedDownload, compared string) (episodes.Processed, error) {
 	defer func() { closeIdle(job, compared) }()
 	home.duration, other.duration = audioDuration(home.Data), audioDuration(other.Data)
 	home = processor.recheck(ctx, job, pair[0], home, other.duration)

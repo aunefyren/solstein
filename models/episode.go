@@ -72,10 +72,16 @@ type Episode struct {
 	// it, served as itunes:duration; zero keeps the source's.
 	CacheSeconds int        `json:"cache_seconds"`
 	CachedAt     *time.Time `json:"cached_at"`
+	// FullyServedAt is when a client first downloaded this cache copy in
+	// full; nil until then. Used by cache_evict_after_serve, and cleared
+	// along with the rest of the cache fields when the file is evicted or
+	// found missing, so a fresh copy starts unserved again.
+	FullyServedAt *time.Time `json:"fully_served_at"`
 }
 
 // ForgetCache clears the cache fields, after the cached file is deleted or
 // found missing.
 func (episode *Episode) ForgetCache() {
 	episode.CacheFile, episode.CacheSize, episode.CacheSeconds, episode.CachedAt = "", 0, 0, nil
+	episode.FullyServedAt = nil
 }

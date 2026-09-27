@@ -230,10 +230,37 @@ func (server *Server) serveCached(writer http.ResponseWriter, request *http.Requ
 		modified = *episode.CachedAt
 	}
 	writer.Header().Set("Content-Type", contentTypeFor(fullPath))
+	full := request.Method == http.MethodGet && request.Header.Get("Range") == ""
+	response := writer
+	recorder := &statusRecorder{ResponseWriter: writer, status: http.StatusOK}
+	if full {
+		response = recorder
+	}
 	// ServeContent handles Range, If-Range, If-Modified-Since and HEAD, and
 	// sets Content-Length and Accept-Ranges.
-	http.ServeContent(writer, request, "", modified, file)
+	http.ServeContent(response, request, "", modified, file)
+	// A full GET that got the whole file (status stayed 200, not 206 or an
+	// error) and whose connection wasn't cut counts as fully served. Not
+	// exact — a client could still discard what it got — but it's what
+	// cache_evict_after_serve has to go on.
+	if full && recorder.status == http.StatusOK && request.Context().Err() == nil {
+		if err := server.store.MarkFullyServed(context.WithoutCancel(request.Context()), episode.ID, server.options.Now().UTC()); err != nil {
+			logger.Log.Warn("Failed to record episode '" + episode.Title + "' as fully served. Error: " + err.Error())
+		}
+	}
 	return true, nil
+}
+
+// statusRecorder captures the status http.ServeContent answers with, without
+// changing what reaches the client.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (recorder *statusRecorder) WriteHeader(status int) {
+	recorder.status = status
+	recorder.ResponseWriter.WriteHeader(status)
 }
 
 func contentTypeFor(filePath string) string {

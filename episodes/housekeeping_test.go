@@ -22,7 +22,7 @@ func age(t *testing.T, path string, by time.Duration) {
 func TestSweepExpiresOldCacheEntries(t *testing.T) {
 	setup := newTestSetup(t)
 	ctx := context.Background()
-	housekeeper := NewHousekeeper(setup.store, setup.cache, 14*24*time.Hour, setup.clock.Now)
+	housekeeper := NewHousekeeper(setup.store, setup.cache, 14*24*time.Hour, 0, false, setup.clock.Now)
 
 	oldEpisode := setup.addEpisode(t, "/ok.mp3?old")
 	setup.processOne(t)
@@ -49,10 +49,66 @@ func TestSweepExpiresOldCacheEntries(t *testing.T) {
 	}
 }
 
+func TestSweepEnforcesSizeCap(t *testing.T) {
+	setup := newTestSetup(t)
+	ctx := context.Background()
+	// Retention long enough that expire() never fires; only the size cap
+	// should. Each /ok.mp3 download is len(audio) = 23 bytes; a cap of 50
+	// fits the two newest (46) but not all three (69).
+	housekeeper := NewHousekeeper(setup.store, setup.cache, 365*24*time.Hour, 50, false, setup.clock.Now)
+
+	oldest := setup.addEpisode(t, "/ok.mp3?1")
+	setup.processOne(t)
+	setup.clock.advance(time.Hour)
+	middle := setup.addEpisode(t, "/ok.mp3?2")
+	setup.processOne(t)
+	setup.clock.advance(time.Hour)
+	newest := setup.addEpisode(t, "/ok.mp3?3")
+	setup.processOne(t)
+
+	if err := housekeeper.Sweep(ctx); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if setup.reload(t, oldest).CacheFile != "" {
+		t.Error("oldest cache entry wasn't evicted over the size cap")
+	}
+	if setup.reload(t, middle).CacheFile == "" || setup.reload(t, newest).CacheFile == "" {
+		t.Error("entries under the cap were evicted")
+	}
+}
+
+func TestSweepEvictsFullyServedEpisodes(t *testing.T) {
+	setup := newTestSetup(t)
+	ctx := context.Background()
+	episode := setup.addEpisode(t, "/ok.mp3")
+	setup.processOne(t)
+	if err := setup.store.MarkFullyServed(ctx, episode.ID, setup.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Off by default: a fully served copy stays.
+	housekeeper := NewHousekeeper(setup.store, setup.cache, 365*24*time.Hour, 0, false, setup.clock.Now)
+	if err := housekeeper.Sweep(ctx); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if setup.reload(t, episode).CacheFile == "" {
+		t.Error("evicted although cache_evict_after_serve is off")
+	}
+
+	// On: it goes, and a fresh cache copy would start unserved again.
+	housekeeper = NewHousekeeper(setup.store, setup.cache, 365*24*time.Hour, 0, true, setup.clock.Now)
+	if err := housekeeper.Sweep(ctx); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if stored := setup.reload(t, episode); stored.CacheFile != "" || stored.FullyServedAt != nil {
+		t.Errorf("fully served episode wasn't evicted with cache_evict_after_serve on: %+v", stored)
+	}
+}
+
 func TestSweepRemovesStrayFiles(t *testing.T) {
 	setup := newTestSetup(t)
 	ctx := context.Background()
-	housekeeper := NewHousekeeper(setup.store, setup.cache, 14*24*time.Hour, nil)
+	housekeeper := NewHousekeeper(setup.store, setup.cache, 14*24*time.Hour, 0, false, nil)
 
 	episode := setup.addEpisode(t, "/ok.mp3")
 	setup.processOne(t)
@@ -111,7 +167,7 @@ func TestRemoveFeed(t *testing.T) {
 
 func TestHousekeeperRunStops(t *testing.T) {
 	setup := newTestSetup(t)
-	housekeeper := NewHousekeeper(setup.store, setup.cache, time.Hour, nil)
+	housekeeper := NewHousekeeper(setup.store, setup.cache, time.Hour, 0, false, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -136,7 +192,7 @@ func TestSweepErrors(t *testing.T) {
 
 	// Without the cache directory, stray files can't be looked for.
 	setup := newTestSetup(t)
-	housekeeper := NewHousekeeper(setup.store, setup.cache, time.Hour, setup.clock.Now)
+	housekeeper := NewHousekeeper(setup.store, setup.cache, time.Hour, 0, false, setup.clock.Now)
 	if err := os.RemoveAll(setup.cache.directory); err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +203,7 @@ func TestSweepErrors(t *testing.T) {
 	// A cached file that can't be deleted (here a non-empty directory) stays
 	// for the next sweep.
 	setup = newTestSetup(t)
-	housekeeper = NewHousekeeper(setup.store, setup.cache, time.Hour, setup.clock.Now)
+	housekeeper = NewHousekeeper(setup.store, setup.cache, time.Hour, 0, false, setup.clock.Now)
 	episode := setup.addEpisode(t, "/ok.mp3")
 	setup.processOne(t)
 	cached := setup.reload(t, episode)

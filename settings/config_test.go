@@ -166,6 +166,12 @@ func TestValidate(t *testing.T) {
 		{name: "bad delivery mode", modify: func(cfg *Config) { cfg.DeliveryMode = "carrier-pigeon" }, wantErr: true},
 		{name: "bad poll interval", modify: func(cfg *Config) { cfg.PollIntervalMinutes = -1 }, wantErr: true},
 		{name: "bad retention", modify: func(cfg *Config) { cfg.CacheRetentionDays = -3 }, wantErr: true},
+		{name: "cache max size zero means no cap", modify: func(cfg *Config) { cfg.CacheMaxSizeMB = 0 }, check: func(t *testing.T, cfg Config) {
+			if cfg.CacheMaxSizeMB != 0 {
+				t.Errorf("cache max size = %d, want 0", cfg.CacheMaxSizeMB)
+			}
+		}},
+		{name: "bad cache max size", modify: func(cfg *Config) { cfg.CacheMaxSizeMB = -1 }, wantErr: true},
 		{name: "processing wait default", modify: func(cfg *Config) {}, check: func(t *testing.T, cfg Config) {
 			if cfg.ProcessingWaitSeconds != 20 {
 				t.Errorf("processing wait = %d, want 20", cfg.ProcessingWaitSeconds)

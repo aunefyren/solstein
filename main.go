@@ -244,7 +244,7 @@ func run() int {
 
 	// The poller, pipeline and housekeeper stop with ctx; they are waited for before the
 	// database closes.
-	housekeeper := episodes.NewHousekeeper(store, cache, time.Duration(cfg.CacheRetentionDays)*24*time.Hour, nil)
+	housekeeper := episodes.NewHousekeeper(store, cache, time.Duration(cfg.CacheRetentionDays)*24*time.Hour, int64(cfg.CacheMaxSizeMB)<<20, cfg.CacheEvictAfterServe, nil)
 
 	var background sync.WaitGroup
 	background.Go(func() { pipeline.Run(ctx) })

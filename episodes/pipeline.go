@@ -236,8 +236,10 @@ func (pipeline *Pipeline) ProcessNext(ctx context.Context) (bool, error) {
 	now := pipeline.options.Now().UTC()
 	// New episodes first: they hold their feeds back until prepared.
 	episode, err := pipeline.store.ClaimNextEpisode(ctx, now, pipeline.options.DefaultDeliveryMode, processedFeeds)
+	queued := false
 	if errors.Is(err, database.ErrNoWork) {
 		episode, err = pipeline.store.ClaimQueuedEpisode(ctx, now, now.Add(queueLease), pipeline.options.DefaultDeliveryMode, processedFeeds)
+		queued = true
 	}
 	if errors.Is(err, database.ErrNoWork) {
 		return false, nil
@@ -260,7 +262,66 @@ func (pipeline *Pipeline) ProcessNext(ctx context.Context) (bool, error) {
 	if err != nil {
 		return true, err
 	}
+	// Batching is only for queued (background) work — a client waiting on
+	// request must never be delayed behind someone else's batch.
+	if queued {
+		if batcher, ok := pipeline.options.Processor.(BatchProcessor); ok {
+			if size, want := batcher.BatchSize(feed); want && size > 1 {
+				return true, pipeline.prepareBatch(ctx, batcher, feed, episode, size, now)
+			}
+		}
+	}
 	return true, pipeline.prepare(ctx, feed, episode)
+}
+
+// prepareBatch claims the rest of a batch (first is already claimed, and
+// its flight already registered by ProcessNext) and processes them
+// together through batcher, recording each one's outcome exactly as a
+// single prepare would. An episode another job claimed in the meantime (a
+// request racing in) is left out of the batch — it stays claimed and comes
+// due again after queueLease, the same as the equivalent race for a lone
+// claim.
+func (pipeline *Pipeline) prepareBatch(ctx context.Context, batcher BatchProcessor, feed models.Feed, first models.Episode, size int, now time.Time) error {
+	claimed := []models.Episode{first}
+	if size > 1 {
+		more, err := pipeline.store.ClaimQueuedEpisodesForFeed(ctx, now, now.Add(queueLease), feed.ID, first.ID, size-1)
+		if err != nil {
+			return err
+		}
+		for _, episode := range more {
+			if done, ok := pipeline.startFlight(episode.ID); ok {
+				defer pipeline.endFlight(episode.ID, done)
+				claimed = append(claimed, episode)
+			}
+		}
+	}
+	jobs := make([]Job, len(claimed))
+	for i, episode := range claimed {
+		jobs[i] = Job{
+			Feed:             feed,
+			Episode:          episode,
+			ExpectedDuration: time.Duration(episode.SourceSeconds) * time.Second,
+			Fresh:            episode.FailedAttempts > 0,
+			Fetch:            pipeline.fetchForJob(episode.SourceURL),
+			CloseIdle:        pipeline.closeIdle,
+		}
+	}
+	if len(claimed) > 1 {
+		logger.Log.Info(fmt.Sprintf("Preparing %d episodes of '%s' together, moving a key short of a tunnel per exit once instead of once each.", len(claimed), feed.Title))
+	}
+	outcomes := batcher.ProcessBatch(ctx, jobs)
+	var firstErr error
+	for i, episode := range claimed {
+		outcome := outcomes[i]
+		var prepared preparedEpisode
+		if outcome.Err == nil {
+			prepared, outcome.Err = pipeline.writeProcessed(feed, episode, outcome.Processed)
+		}
+		if err := pipeline.recordOutcome(ctx, feed, episode, true, prepared, outcome.Err); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // Prepare processes an episode now, because a client asked for it before
@@ -369,9 +430,6 @@ func (pipeline *Pipeline) endFlight(episodeID uuid.UUID, done chan struct{}) {
 //
 // The error is for database problems.
 func (pipeline *Pipeline) prepare(ctx context.Context, feed models.Feed, episode models.Episode) error {
-	claimed := episode.State == models.EpisodeAcquiring
-	late := episode.State == models.EpisodeFailed
-	recipe, failedRecipe := pipeline.recipe(feed), pipeline.failedRecipe(feed)
 	processor := pipeline.options.Processor
 	processing := processor != nil && processor.Handles(feed)
 	var prepared preparedEpisode
@@ -381,6 +439,20 @@ func (pipeline *Pipeline) prepare(ctx context.Context, feed models.Feed, episode
 	} else {
 		prepared, err = pipeline.download(ctx, feed, episode)
 	}
+	return pipeline.recordOutcome(ctx, feed, episode, processing, prepared, err)
+}
+
+// recordOutcome updates an episode's state, retry schedule and log after an
+// attempt to prepare it — a plain download, Process, or one job of a
+// ProcessBatch — whatever computed prepared and err. claimed and late come
+// from episode.State as it was at claim time, before the attempt; neither
+// process nor download (nor a batch's ProcessBatch) touch it themselves, so
+// reading it here, after the attempt, is the same value.
+func (pipeline *Pipeline) recordOutcome(ctx context.Context, feed models.Feed, episode models.Episode, processing bool, prepared preparedEpisode, err error) error {
+	claimed := episode.State == models.EpisodeAcquiring
+	late := episode.State == models.EpisodeFailed
+	recipe, failedRecipe := pipeline.recipe(feed), pipeline.failedRecipe(feed)
+	processor := pipeline.options.Processor
 	if ctx.Err() != nil {
 		// Shutting down: leave a claimed episode acquiring for Recover.
 		return nil
@@ -531,10 +603,15 @@ func (pipeline *Pipeline) process(ctx context.Context, feed models.Feed, episode
 	if err != nil {
 		return preparedEpisode{}, err
 	}
+	return pipeline.writeProcessed(feed, episode, processed)
+}
+
+// writeProcessed caches what a processor made of an episode — Process's own
+// result, or one job's from a BatchProcessor's ProcessBatch.
+func (pipeline *Pipeline) writeProcessed(feed models.Feed, episode models.Episode, processed Processed) (preparedEpisode, error) {
 	if len(processed.Audio) == 0 {
 		return preparedEpisode{}, errors.New("the processor returned no audio")
 	}
-
 	file, commit, discard, err := pipeline.cache.create(feed.ID, episode.ID, feeds.AudioExtension(episode.SourceURL, processed.ContentType))
 	if err != nil {
 		return preparedEpisode{}, err

@@ -107,6 +107,17 @@ type Config struct {
 	DeliveryMode        string `json:"delivery_mode"`
 	PollIntervalMinutes int    `json:"poll_interval_minutes"`
 	CacheRetentionDays  int    `json:"cache_retention_days"`
+	// CacheMaxSizeMB bounds the cache directory's total size; 0 (the
+	// default) means no cap. Over it, the oldest cached copies are evicted
+	// first, alongside the retention sweep.
+	CacheMaxSizeMB int `json:"cache_max_size_mb"`
+	// CacheEvictAfterServe evicts a cached episode once a client has
+	// downloaded it in full: it isn't needed for that any more, though a
+	// second client, or the same one asking again, then costs a fresh
+	// download (or, for a processed feed, reprocessing). Off by default,
+	// since Audiobookshelf is the only client this has been checked
+	// against, and it downloads each episode once.
+	CacheEvictAfterServe bool `json:"cache_evict_after_serve"`
 
 	// PrepareAhead keeps every episode that needs preparing — a download in
 	// cache mode, a processor's work — out of the feed until its file exists,
@@ -342,6 +353,9 @@ func (cfg *Config) Validate() error {
 	}
 	if cfg.CacheRetentionDays < 1 {
 		return fmt.Errorf("cache retention must be at least 1 day, got %d", cfg.CacheRetentionDays)
+	}
+	if cfg.CacheMaxSizeMB < 0 {
+		return fmt.Errorf("cache max size must not be negative, got %d", cfg.CacheMaxSizeMB)
 	}
 	// An hour is far more than any client allows; beyond it the setting is
 	// more likely a mistake (milliseconds, say) than an intention.

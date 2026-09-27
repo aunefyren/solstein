@@ -649,6 +649,109 @@ func TestProcessorRunsTogetherWhenTunnelsFit(t *testing.T) {
 	}
 }
 
+// BatchSize offers a batch exactly when the exits are short of a tunnel
+// each — the same condition pair_downloads resolves to "in turn" for.
+func TestProcessorBatchSize(t *testing.T) {
+	processor, err := NewProcessor(ProcessorOptions{Exits: [2]string{"norway", "sweden"}, Diff: DefaultOptions(), Budgeter: fakeBudgeter{fits: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size, ok := processor.BatchSize(models.Feed{}); ok || size != 0 {
+		t.Errorf("size %d, ok %v with a tunnel each; want no batch offered", size, ok)
+	}
+
+	processor, err = NewProcessor(ProcessorOptions{Exits: [2]string{"norway", "sweden"}, Diff: DefaultOptions(), Budgeter: fakeBudgeter{fits: false}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size, ok := processor.BatchSize(models.Feed{}); !ok || size < 2 {
+		t.Errorf("size %d, ok %v short of a tunnel each; want a real batch offered", size, ok)
+	}
+
+	processor, err = NewProcessor(ProcessorOptions{Exits: [2]string{"norway", "sweden"}, Diff: DefaultOptions()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := processor.BatchSize(models.Feed{}); ok {
+		t.Error("no budgeter at all: batching shouldn't be offered without knowing whether it's needed")
+	}
+}
+
+// ProcessBatch's whole point is amortising a key move across a batch: every
+// job's home download happens before any job's partner, and the home exit's
+// idle connection is closed once for the batch rather than once per job.
+func TestProcessorBatchFetchesAllHomesBeforeAnyPartner(t *testing.T) {
+	var mutex sync.Mutex
+	var order, closes []string
+
+	newJob := func(label string, home, other []byte) episodes.Job {
+		return episodes.Job{
+			Fetch: func(ctx context.Context, exit string, fresh bool) (episodes.Download, error) {
+				mutex.Lock()
+				order = append(order, label+":"+exit)
+				mutex.Unlock()
+				data := other
+				if exit == "norway" {
+					data = home
+				}
+				return episodes.Download{Data: data, ContentType: "audio/mpeg"}, nil
+			},
+			CloseIdle: func(exit string) {
+				mutex.Lock()
+				closes = append(closes, label+":"+exit)
+				mutex.Unlock()
+			},
+		}
+	}
+	jobs := []episodes.Job{
+		newJob("a", join(tag("a"), show1, audio(200, 1), show2), join(tag("a-other"), show1, audio(210, 2), show2)),
+		newJob("b", join(tag("b"), show1, audio(200, 3), show2), join(tag("b-other"), show1, audio(210, 4), show2)),
+		newJob("c", join(tag("c"), show1, audio(200, 5), show2), join(tag("c-other"), show1, audio(210, 6), show2)),
+	}
+
+	outcomes := newTestProcessor(t).ProcessBatch(context.Background(), jobs)
+	if len(outcomes) != 3 {
+		t.Fatalf("%d outcomes, want 3", len(outcomes))
+	}
+	for i, outcome := range outcomes {
+		if outcome.Err != nil {
+			t.Errorf("job %d: %v", i, outcome.Err)
+		}
+	}
+	if want := join(tag("a"), show1, show2); !bytes.Equal(outcomes[0].Processed.Audio, want) {
+		t.Errorf("job 0 output is %d bytes, want %d: its own show, ads removed", len(outcomes[0].Processed.Audio), len(want))
+	}
+
+	if len(order) != 6 {
+		t.Fatalf("fetch order = %v, want 6 fetches", order)
+	}
+	for i, call := range order[:3] {
+		if !strings.HasSuffix(call, ":norway") {
+			t.Errorf("fetch %d = %q, want every home fetched before any partner", i, call)
+		}
+	}
+	for _, call := range order[3:] {
+		if !strings.HasSuffix(call, ":sweden") {
+			t.Errorf("fetch after the homes = %q, want the partner", call)
+		}
+	}
+	homeCloses, partnerCloses := 0, 0
+	for _, call := range closes {
+		switch {
+		case strings.HasSuffix(call, ":norway"):
+			homeCloses++
+		case strings.HasSuffix(call, ":sweden"):
+			partnerCloses++
+		}
+	}
+	if homeCloses != 1 {
+		t.Errorf("home exit closed %d times, want exactly once for the whole batch", homeCloses)
+	}
+	if partnerCloses != len(jobs) {
+		t.Errorf("partner exit closed %d times, want once per job (%d)", partnerCloses, len(jobs))
+	}
+}
+
 // In turn, the two downloads never overlap, so one tunnel is enough — and the
 // result is the same as downloading them together.
 func TestProcessorDownloadsInTurn(t *testing.T) {

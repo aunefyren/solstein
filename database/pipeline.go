@@ -120,6 +120,54 @@ func (store *Store) ClaimQueuedEpisode(ctx context.Context, now, leaseUntil time
 	return episode, nil
 }
 
+// ClaimQueuedEpisodesForFeed claims up to limit more of one feed's queued
+// episodes, the same way ClaimQueuedEpisode claims one, for a processor
+// that wants several of a feed's episodes together (region diff, on a key
+// short of a tunnel per exit): the caller has already claimed except with
+// ClaimQueuedEpisode and asks for the rest of its batch here. limit of 0 or
+// less returns none; fewer than limit just means there weren't more. Never
+// returns ErrNoWork.
+func (store *Store) ClaimQueuedEpisodesForFeed(ctx context.Context, now, leaseUntil time.Time, feedID, except uuid.UUID, limit int) ([]models.Episode, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	var episodes []models.Episode
+	err := store.withContext(ctx).Transaction(func(tx *gorm.DB) error {
+		err := tx.Model(&models.Episode{}).
+			Where("feed_id = ? AND id <> ?", feedID, except).
+			Where("next_attempt_at IS NOT NULL AND next_attempt_at <= ?", now).
+			Where("state = ? OR (state = ? AND cache_file = '')", models.EpisodeFailed, models.EpisodeReady).
+			Order("next_attempt_at, published_at IS NULL, published_at DESC, created_at DESC").
+			Limit(limit).
+			Find(&episodes).Error
+		if err != nil {
+			return fmt.Errorf("find queued episodes for feed: %w", err)
+		}
+		if len(episodes) == 0 {
+			return nil
+		}
+		ids := make([]uuid.UUID, len(episodes))
+		for i, episode := range episodes {
+			ids[i] = episode.ID
+		}
+		// The transaction holds the write lock from the start (_txlock=
+		// immediate), so nothing else can claim one of these rows between
+		// the find above and this update.
+		if err := tx.Model(&models.Episode{}).Where("id IN ?", ids).
+			Updates(map[string]any{"next_attempt_at": leaseUntil, "updated_at": now}).Error; err != nil {
+			return fmt.Errorf("claim queued episodes for feed: %w", err)
+		}
+		for i := range episodes {
+			episodes[i].NextAttemptAt = &leaseUntil
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return episodes, nil
+}
+
 // ClaimEpisode marks one discovered episode as acquiring, whatever its retry
 // time: a client has asked for it, so it is prepared now. It returns
 // ErrNoWork when the episode isn't discovered (a worker has it, or it is
