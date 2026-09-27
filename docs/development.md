@@ -251,6 +251,7 @@ Secrets and variables:
 - `.gitattributes` forces LF for `*.sh`, since a CRLF checkout on Windows would break the entrypoint inside the container.
 - No `NET_ADMIN`, no `/dev/net/tun`, no `network_mode` — the WireGuard tunnels are userspace and in-process. If a change seems to need any of these, it's the wrong change.
 - Image: `ghcr.io/aunefyren/solstein` (GHCR only).
+- **Live testing against a real Audiobookshelf:** `docker-test/` has a reusable Compose harness (Solstein built from the checkout, plus ABS) for exactly this kind of run; see `docker-test/README.md`.
 
 
 ## Working notes

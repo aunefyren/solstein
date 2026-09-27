@@ -213,6 +213,14 @@ func (processor *Processor) Process(ctx context.Context, job episodes.Job) (epis
 	if err != nil {
 		return episodes.Processed{}, err
 	}
+	// The home exit's idle connection is closed already (fetchPairInTurn), so
+	// it doesn't block the partner's tunnel; the partner's (or the last
+	// fallback's) is closed here, once nothing more will be fetched through
+	// it, so it doesn't block the home exit's tunnel on the *next* episode —
+	// otherwise a single key would only work every other attempt, whichever
+	// one lands inside the other's idle timeout (found live testing a
+	// one-key setup, docs/wip.md).
+	defer func() { closeIdle(job, compared) }()
 	home.duration, other.duration = audioDuration(home.Data), audioDuration(other.Data)
 	home = processor.recheck(ctx, job, pair[0], home, other.duration)
 	other = processor.recheck(ctx, job, compared, other, home.duration)
@@ -232,6 +240,9 @@ func (processor *Processor) Process(ctx context.Context, job episodes.Job) (epis
 		if !errors.Is(err, ErrIdentical) {
 			break
 		}
+		// Done with the exit just compared: see fetchPairInTurn on why this
+		// has to happen before switching, not just after the attempt.
+		closeIdle(job, compared)
 		fallback, fetchErr := job.Fetch(ctx, exit, job.Fresh)
 		if ctx.Err() != nil {
 			return episodes.Processed{}, fmt.Errorf("download through fallback exit %q: %w", exit, ctx.Err())
@@ -469,6 +480,14 @@ func (processor *Processor) fetchPair(ctx context.Context, job episodes.Job, pai
 	return home, other, partner, left, nil
 }
 
+// closeIdle calls job.CloseIdle if the caller set one; tests and other
+// callers that don't care about idle connections can leave it nil.
+func closeIdle(job episodes.Job, exit string) {
+	if job.CloseIdle != nil {
+		job.CloseIdle(exit)
+	}
+}
+
 // fetchPairInTurn downloads through the home exit first and the partner after
 // it, so only one tunnel is needed at a time and one VPN key is enough. The
 // two downloads are then made at different moments as well as in different
@@ -478,12 +497,20 @@ func (processor *Processor) fetchPair(ctx context.Context, job episodes.Job, pai
 // the downloads don't overlap and a VPN key moved to another server may need
 // to settle, so an episode cleaned this way is rarely ready inside a client's
 // wait: it suits prepare_ahead (docs/episodes.md).
+//
+// The home download's connection is closed, not just released, before the
+// partner's: a pooled keep-alive connection stays open on its own, past the
+// exit's tunnel being handed back, for as long as the client's idle timeout —
+// which outlasts the tunnel pool's wait for one to free up on a single key.
+// Left open, every partner fetch would wait out that limit and fail with
+// "tunnel limit reached" (found live testing a one-key setup, docs/wip.md).
 func (processor *Processor) fetchPairInTurn(ctx context.Context, job episodes.Job, pair [2]string, fallbacks []string) (home, other checkedDownload, partner string, left []string, err error) {
 	download, homeErr := job.Fetch(ctx, pair[0], job.Fresh)
 	if homeErr != nil {
 		return checkedDownload{}, checkedDownload{}, "", nil, fmt.Errorf("download through exit %q: %w", pair[0], homeErr)
 	}
 	home = checkedDownload{Download: download}
+	closeIdle(job, pair[0])
 
 	other, partner, left, partnerErr := processor.fetchPartner(ctx, job, pair, fallbacks)
 	if partner == "" {

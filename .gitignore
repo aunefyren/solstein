@@ -27,3 +27,6 @@ go.work.sum
 # Solstein runtime data and binaries
 /config/
 /solstein
+
+# Docker test harness runtime data (docker-test/README.md)
+/docker-test/data/

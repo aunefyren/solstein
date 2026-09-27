@@ -1,0 +1,25 @@
+{
+  "external_url": "http://solstein:8080",
+  "default_exit": "mine",
+  "prepare_ahead": false,
+  "vpn": {
+    "providers": {
+      "proton": {
+        "type": "protonvpn",
+        "private_keys": ["env:PROTON_KEY_1"]
+      }
+    },
+    "exits": {
+      "mine": { "provider": "proton", "locations": ["NO"], "strict": true },
+      "abroad": { "provider": "proton", "locations": ["DE"], "strict": true }
+    }
+  },
+  "region_diff": {
+    "enabled": true,
+    "exits": ["mine", "abroad"],
+    "fallback_exits": [],
+    "pair_downloads": "auto",
+    "on_failure": "hide",
+    "keep_failed_downloads": true
+  }
+}

@@ -7,3 +7,4 @@ solstein.exe
 *.out
 .env
 *.env
+docker-test/data

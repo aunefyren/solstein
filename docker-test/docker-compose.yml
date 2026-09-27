@@ -1,0 +1,44 @@
+# Live test harness: Solstein built from this checkout, plus Audiobookshelf as
+# the client, on one Docker network. See README.md in this directory.
+name: soltest
+
+services:
+  solstein:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: solstein:test
+    container_name: st-solstein
+    env_file:
+      - ../.env # PROTON_KEY_1/2/3; never opened or printed, only referenced
+    environment:
+      SOLSTEIN_EXTERNAL_URL: http://solstein:8080
+      SOLSTEIN_TIMEZONE: Europe/Oslo
+      SOLSTEIN_LOG_LEVEL: debug
+      # Milliseconds vs. seconds bit both sides: keep PODCAST_DOWNLOAD_TIMEOUT
+      # below comfortably above SOLSTEIN_PROCESSING_WAIT * 1000 (docs/clients.md).
+      SOLSTEIN_PROCESSING_WAIT: "600"
+      PUID: "1000"
+      PGID: "1000"
+    volumes:
+      - ./data/solstein:/app/config
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  audiobookshelf:
+    image: ghcr.io/advplyr/audiobookshelf:latest
+    container_name: st-abs
+    environment:
+      # Audiobookshelf refuses private addresses unless the host is allowed.
+      SSRF_REQUEST_FILTER_WHITELIST: solstein
+      # Milliseconds. Must clear SOLSTEIN_PROCESSING_WAIT above with margin.
+      PODCAST_DOWNLOAD_TIMEOUT: "720000"
+      TZ: Europe/Oslo
+    volumes:
+      - ./data/abs/config:/config
+      - ./data/abs/metadata:/metadata
+      - ./data/abs/podcasts:/podcasts
+    ports:
+      - "13378:80"
+    restart: unless-stopped

@@ -525,6 +525,7 @@ func (pipeline *Pipeline) process(ctx context.Context, feed models.Feed, episode
 		ExpectedDuration: time.Duration(episode.SourceSeconds) * time.Second,
 		Fresh:            episode.FailedAttempts > 0,
 		Fetch:            pipeline.fetchForJob(episode.SourceURL),
+		CloseIdle:        pipeline.closeIdle,
 	}
 	processed, err := pipeline.options.Processor.Process(ctx, job)
 	if err != nil {
