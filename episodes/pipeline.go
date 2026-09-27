@@ -90,6 +90,10 @@ type Options struct {
 	// Processor, when set, prepares the episodes of the feeds it handles
 	// instead of a plain download.
 	Processor Processor
+	// MaxProcessBytes caps each download a processor asks for (home,
+	// partner, each fallback, each batched episode), held in memory whole;
+	// zero means the default 512 MB (settings.RegionDiff.MaxEpisodeMB).
+	MaxProcessBytes int64
 	// SkipTrackers requests episodes from the audio host directly, skipping
 	// the tracking redirects in front of their URLs (feeds.WithoutTrackers).
 	// Off, a tracking redirect is only skipped when it fails.
@@ -138,6 +142,9 @@ func NewPipeline(store *database.Store, exits *outbound.Manager, cache Cache, op
 	}
 	if options.RequestWorkers < 1 {
 		options.RequestWorkers = 2
+	}
+	if options.MaxProcessBytes <= 0 {
+		options.MaxProcessBytes = defaultMaxProcessBytes
 	}
 	return &Pipeline{
 		store: store, exits: exits, cache: cache, options: options,

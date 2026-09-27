@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"aunefyren/solstein/models"
@@ -126,5 +127,35 @@ func TestRequestFeedSkipsFailedTracker(t *testing.T) {
 	client, _ = feedChain(t)
 	if _, err := requestFeed(context.Background(), client, models.Feed{SourceURL: "https://dead.example/show.xml"}); !errors.Is(err, ErrFetchFailed) || !strings.Contains(err.Error(), "404") {
 		t.Errorf("gone: %v", err)
+	}
+}
+
+// TestRequestFeedRetriesDroppedConnection checks that a request getting no
+// response at all — a connection dropped, as a VPN tunnel shows a bare EOF —
+// is tried once more on a fresh connection, the same as episodes.requestOnce
+// already does for episode downloads (found missing here live, docs/wip.md).
+func TestRequestFeedRetriesDroppedConnection(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if hits.Add(1) == 1 {
+			connection, _, _ := writer.(http.Hijacker).Hijack()
+			connection.Close()
+			return
+		}
+		writer.Header().Set("Content-Type", "application/rss+xml")
+		writer.Write([]byte("<rss/>"))
+	}))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	feed := models.Feed{Title: "Show", SourceURL: server.URL + "/show.xml"}
+	response, err := requestFeed(context.Background(), client, feed)
+	if err != nil {
+		t.Fatalf("first request dropped, retry expected to succeed: %v", err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if string(body) != "<rss/>" || hits.Load() != 2 {
+		t.Errorf("body %q after %d requests, want the feed after exactly one retry", body, hits.Load())
 	}
 }

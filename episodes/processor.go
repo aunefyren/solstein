@@ -9,10 +9,11 @@ import (
 	"aunefyren/solstein/models"
 )
 
-// maxProcessBytes caps each download a processor asks for. Processors work
-// on whole files in memory; a three-hour episode at 128 kbit/s is under
-// 200 MB.
-const maxProcessBytes = 512 << 20
+// defaultMaxProcessBytes is Options.MaxProcessBytes when unset: processors
+// work on whole files in memory, and a three-hour episode at 128 kbit/s is
+// under 200 MB — too small for some real shows (docs/wip.md), which is why
+// it's a setting (settings.RegionDiff.MaxEpisodeMB) rather than fixed.
+const defaultMaxProcessBytes = 512 << 20
 
 // Processor turns an episode into the file served in its place — region diff
 // removing dynamic ads, for one. Processors are modules: main.go hands one to
@@ -114,7 +115,7 @@ func (pipeline *Pipeline) fetchForJob(sourceURL string) func(ctx context.Context
 	return func(ctx context.Context, exit string, fresh bool) (Download, error) {
 		var buffer bytes.Buffer
 		var download Download
-		err := pipeline.fetch(ctx, exit, sourceURL, fresh, maxProcessBytes, func(contentType string, body io.Reader) (int64, error) {
+		err := pipeline.fetch(ctx, exit, sourceURL, fresh, pipeline.options.MaxProcessBytes, func(contentType string, body io.Reader) (int64, error) {
 			download.ContentType = contentType
 			return buffer.ReadFrom(body)
 		})

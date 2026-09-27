@@ -22,6 +22,14 @@ const (
 	defaultMaxRemovedShare  = 0.3
 	defaultOnFailure        = "publish"
 	defaultPairDownloads    = "auto"
+	// defaultMaxEpisodeMB matches what the processor always used before this
+	// was a setting: "a three-hour episode at 128 kbit/s is under 200 MB"
+	// (docs/development.md) — too small for some real shows (docs/wip.md).
+	defaultMaxEpisodeMB = 512
+	// maxMaxEpisodeMB bounds the setting itself: past 2 GB, the plain
+	// (unprocessed) download path's own cap, raising it further buys
+	// nothing a processor couldn't already reach by not running.
+	maxMaxEpisodeMB = 2048
 )
 
 // RegionDiff is the region-diff module's block in config.json. Like VPN it
@@ -70,6 +78,14 @@ type RegionDiff struct {
 	// downloads fail as they did before it existed. A pointer so a missing
 	// field can default to on.
 	CompareByAudio *bool `json:"compare_by_audio"`
+	// MaxEpisodeMB caps each of a processor's own downloads (home, partner,
+	// each fallback and each batched episode), which are held in memory
+	// whole: raising it costs peak memory, roughly 2–2.5× this per pair
+	// compared by audio (docs/region-diff.md). Default 512; a show with
+	// longer or higher-bitrate episodes than that needs it raised, or those
+	// episodes are permanently withheld ("episode is larger than N MB",
+	// docs/wip.md).
+	MaxEpisodeMB int `json:"max_episode_mb"`
 }
 
 // ComparesByAudio is CompareByAudio, on when unset.
@@ -101,6 +117,9 @@ func (regionDiff *RegionDiff) applyDefaults() {
 		on := true
 		regionDiff.CompareByAudio = &on
 	}
+	if regionDiff.MaxEpisodeMB == 0 {
+		regionDiff.MaxEpisodeMB = defaultMaxEpisodeMB
+	}
 }
 
 // validate normalises the block and rejects values region diff can't run
@@ -126,6 +145,9 @@ func (regionDiff *RegionDiff) validate() error {
 	}
 	if regionDiff.Backlog < 0 {
 		return fmt.Errorf("region_diff.backlog must not be negative, got %d", regionDiff.Backlog)
+	}
+	if regionDiff.MaxEpisodeMB < 1 || regionDiff.MaxEpisodeMB > maxMaxEpisodeMB {
+		return fmt.Errorf("region_diff.max_episode_mb must be between 1 and %d, got %d", maxMaxEpisodeMB, regionDiff.MaxEpisodeMB)
 	}
 	return nil
 }

@@ -199,10 +199,17 @@ func TestValidate(t *testing.T) {
 		}},
 		{name: "bad direct exit", modify: func(cfg *Config) { cfg.DirectExit = "sometimes" }, wantErr: true},
 		{name: "bad pair downloads", modify: func(cfg *Config) { cfg.RegionDiff.PairDownloads = "sometimes" }, wantErr: true},
+		{name: "max episode mb raised", modify: func(cfg *Config) { cfg.RegionDiff.MaxEpisodeMB = 1024 }, check: func(t *testing.T, cfg Config) {
+			if cfg.RegionDiff.MaxEpisodeMB != 1024 {
+				t.Errorf("max episode mb = %d, want it kept", cfg.RegionDiff.MaxEpisodeMB)
+			}
+		}},
+		{name: "max episode mb negative", modify: func(cfg *Config) { cfg.RegionDiff.MaxEpisodeMB = -1 }, wantErr: true},
+		{name: "max episode mb too high", modify: func(cfg *Config) { cfg.RegionDiff.MaxEpisodeMB = 4096 }, wantErr: true},
 		{name: "region diff defaults", modify: func(cfg *Config) {}, check: func(t *testing.T, cfg Config) {
 			on := true
 			want := RegionDiff{Exits: []string{}, FallbackExits: []string{}, MinSharedSeconds: 2, MaxRemovedShare: 0.3,
-				OnFailure: "publish", PairDownloads: "auto", CompareByAudio: &on}
+				OnFailure: "publish", PairDownloads: "auto", CompareByAudio: &on, MaxEpisodeMB: 512}
 			if !reflect.DeepEqual(cfg.RegionDiff, want) {
 				t.Errorf("region diff = %+v", cfg.RegionDiff)
 			}

@@ -214,6 +214,36 @@ func TestPipelineRunsProcessor(t *testing.T) {
 	assertNoPartFiles(t, setup.cache)
 }
 
+// TestMaxProcessBytesIsConfigurable checks that Options.MaxProcessBytes (from
+// region_diff.max_episode_mb) is what a processor's Fetch is actually capped
+// at, not the fixed default, both raised and lowered.
+func TestMaxProcessBytesIsConfigurable(t *testing.T) {
+	setup := newTestSetup(t)
+	exits, err := outbound.New(outbound.Options{AllowPrivateDestinations: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Below the size of the test audio (len(audio) == 23 bytes): every fetch
+	// must fail as too large, not succeed as it would under the 512 MB
+	// default.
+	setup.pipeline = NewPipeline(setup.store, exits, setup.cache, Options{
+		DefaultDeliveryMode: "cache", MaxProcessBytes: 10, IdleTimeout: 200 * time.Millisecond, Now: setup.clock.Now,
+	})
+	fetch := setup.pipeline.fetchForJob(setup.host.URL + "/ok.mp3")
+	if _, err := fetch(context.Background(), outbound.DirectExit, false); !errors.Is(err, ErrPermanent) || !strings.Contains(err.Error(), "larger than") {
+		t.Errorf("lowered cap: err = %v, want a permanent 'larger than' failure", err)
+	}
+
+	// Zero means the default (512 MB): the same small test audio must fit.
+	setup.pipeline = NewPipeline(setup.store, exits, setup.cache, Options{
+		DefaultDeliveryMode: "cache", IdleTimeout: 200 * time.Millisecond, Now: setup.clock.Now,
+	})
+	fetch = setup.pipeline.fetchForJob(setup.host.URL + "/ok.mp3")
+	if download, err := fetch(context.Background(), outbound.DirectExit, false); err != nil || string(download.Data) != audio {
+		t.Errorf("default cap: %q, %v", download.Data, err)
+	}
+}
+
 func TestProcessorFetchHasDownloadChecks(t *testing.T) {
 	setup := newTestSetup(t)
 	fetch := setup.pipeline.fetchForJob(setup.host.URL + "/html.mp3")

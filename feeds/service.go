@@ -464,6 +464,11 @@ type fetchResult struct {
 	lastModified string
 }
 
+// fetchRetryDelay is the pause before retrying a request that got no
+// response at all, matching episodes' own retry for the same reason
+// (episodes.fetchRetryDelay, unexported there).
+const fetchRetryDelay = 500 * time.Millisecond
+
 // fetch downloads a feed's source through its exit, conditionally when the
 // feed has an ETag or Last-Modified from an earlier poll.
 // requestFeed requests a feed, conditionally, and returns a 2xx or 304
@@ -474,20 +479,38 @@ type fetchResult struct {
 func requestFeed(ctx context.Context, client *http.Client, feed models.Feed) (*http.Response, error) {
 	target := feed.SourceURL
 	for skipped := 0; ; skipped++ {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrFetchFailed, err)
-		}
-		request.Header.Set("Accept", "application/rss+xml, application/xml;q=0.9, text/xml;q=0.9, */*;q=0.8")
-		if feed.ETag != "" {
-			request.Header.Set("If-None-Match", feed.ETag)
-		}
-		if feed.LastModified != "" {
-			request.Header.Set("If-Modified-Since", feed.LastModified)
+		send := func() (*http.Response, error) {
+			request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %w", ErrFetchFailed, err)
+			}
+			request.Header.Set("Accept", "application/rss+xml, application/xml;q=0.9, text/xml;q=0.9, */*;q=0.8")
+			if feed.ETag != "" {
+				request.Header.Set("If-None-Match", feed.ETag)
+			}
+			if feed.LastModified != "" {
+				request.Header.Set("If-Modified-Since", feed.LastModified)
+			}
+			return client.Do(request)
 		}
 
 		failedAt := target
-		response, err := client.Do(request)
+		response, err := send()
+		// A request that gets no response at all — a connection dropped
+		// (seen through a VPN tunnel as a bare EOF), no headers in time — is
+		// tried once more on a fresh connection: nothing has been written
+		// anywhere yet, so this is safe, and an HTTP/2 connection to a host
+		// is shared by every request to it, so the retry must not go out on
+		// the one that just failed (episodes.requestOnce does the same for
+		// episode downloads; found missing here live, docs/wip.md).
+		if err != nil && !errors.Is(err, outbound.ErrDestinationBlocked) && !errors.Is(err, outbound.ErrExitUnavailable) && ctx.Err() == nil {
+			client.CloseIdleConnections()
+			select {
+			case <-time.After(fetchRetryDelay):
+				response, err = send()
+			case <-ctx.Done():
+			}
+		}
 		switch {
 		case err != nil:
 			err = fmt.Errorf("%w: %w", ErrFetchFailed, err)

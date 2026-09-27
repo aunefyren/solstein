@@ -205,6 +205,7 @@ func run() int {
 		Workers:             downloadWorkers,
 		Processor:           processor,
 		SkipTrackers:        cfg.SkipTrackingRedirects,
+		MaxProcessBytes:     int64(cfg.RegionDiff.MaxEpisodeMB) << 20,
 	})
 	if err := pipeline.Recover(ctx); err != nil {
 		logger.Log.Error("Failed to recover interrupted downloads. Error: " + err.Error())
