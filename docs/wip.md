@@ -31,9 +31,13 @@ Five of 115 "It Was A Sh*t Show" episodes failed as implausible in production wi
 
 **Tried and inconclusive (2026-09-27):** a comparable burst on `docker-test` — 31 backlog episodes queued at once, `keep_failed_downloads: true` — reproduced nothing: no implausible result, no failure that stuck, one mid-body break resumed cleanly by the fix built since (`region-diff.md`, Retried since). Doesn't confirm or rule out a specific cause for the original five; it does show the current code already handles the failure shape (a cut-off download) that would explain them, without needing to reproduce the exact cause. Left open: whether the original burst hit something this one didn't (more concurrency, a specific host state that evening) — watch for a recurrence in production rather than trying to force another one here.
 
+### `TestDiffLiveDownloads` fails on the local `config/live` pair (open)
+
+Found 2026-09-28 (it skips where those downloads aren't present, so CI never runs it): with `TrimBreakMarkers` it finds six break markers where it wants four (`36461-36548` and `72829-72916` extra, the chimes the test says are encoded into the show after the mid-rolls and should stay), so trimming removes 6 × 87 frames. Fails the same on `HEAD` without the 2026-09-28 duration-check change, so it predates it. Either the marker trimming changed since the test was written or the expectation is stale; not looked into.
+
 ### Open questions
 
-- **Other hosts:** Acast and Dovetail splice at frame level, RedCircle re-encodes (compared by audio). Megaphone serves MP3s the diff handles but with nothing regional to cut in 15 episodes ([`region-diff.md`](region-diff.md), 2026-09-26). Others are untested. Region diff refuses anything that isn't MP3 (e.g. AAC) rather than guessing.
+- **Other hosts:** Acast, Dovetail and Megaphone splice at frame level, RedCircle re-encodes (compared by audio); Megaphone inserts regional ads on some shows and not others ([`region-diff.md`](region-diff.md), 2026-09-26 and 2026-09-28). Others are untested. Region diff refuses anything that isn't MP3 (e.g. AAC) rather than guessing.
 - **Other variance in ads:** whether ad selection also depends on User-Agent, cookies or random rotation. Known so far: same region at the same moment gives byte-identical files (a show without dynamic ads on 2026-09-24, one with Norwegian ads on 2026-09-25); hours apart, and through a VPN exit instead of direct, the ads differ but the show audio doesn't. Not tested: different User-Agents, and how often the same campaign runs in several markets (which `fallback_exits` covers).
 - **Geolocation drift:** what picks the ads is how Acast geolocates the exit IP, not the country in the server list, and VPN IPs are sometimes misplaced. An optional IP-geolocation check through the tunnel (off by default, as it adds an external dependency)? The real test remains whether the two downloads differ.
 

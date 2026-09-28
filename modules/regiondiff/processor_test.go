@@ -269,6 +269,24 @@ func TestProcessorIdenticalEverywhereKeepsEpisode(t *testing.T) {
 	}
 }
 
+func TestProcessorHomeWithoutAdsIsKeptWhole(t *testing.T) {
+	// Only the other region gets ads, and the stated duration counts them.
+	home := join(show1, show2)
+	source := &fakeSource{downloads: map[string][]byte{"norway": home, "sweden": join(audio(250, 21), show1, audio(250, 22), show2)}}
+	job := source.job()
+	job.ExpectedDuration = 25 * time.Second
+	processed, err := newTestProcessor(t).Process(context.Background(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(processed.Audio, home) || processed.Duration != 0 {
+		t.Error("the home download wasn't kept whole")
+	}
+	if want := "no ads in the norway download: sweden's has 2 breaks (13s) more"; processed.Note != want {
+		t.Errorf("note %q, want %q", processed.Note, want)
+	}
+}
+
 func TestProcessorFailures(t *testing.T) {
 	good := join(show1, audio(200, 10), show2)
 	unavailable := errors.New("tunnel down")

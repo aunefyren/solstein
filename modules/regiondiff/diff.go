@@ -55,7 +55,8 @@ type Options struct {
 	// MaxRemovedShare is the most of the home download that may be removed.
 	MaxRemovedShare float64
 	// ExpectedDuration is the episode's stated duration (itunes:duration),
-	// zero if unknown. The result must be within DurationTolerance of it.
+	// zero if unknown. The result may be at most DurationTolerance shorter
+	// than it, or than the home download when that is shorter (see check).
 	ExpectedDuration  time.Duration
 	DurationTolerance float64
 	// CompareByAudio compares downloads that share no frame by their
@@ -95,7 +96,7 @@ type Result struct {
 	// because they share no frames (the host re-encodes).
 	ByAudio bool
 	// OtherExtra is how much audio the other download has that the home
-	// download doesn't, in OtherBreaks stretches; only known by audio.
+	// download doesn't, in OtherBreaks stretches of at least minAudioBreak.
 	OtherExtra  time.Duration
 	OtherBreaks int
 }
@@ -244,13 +245,35 @@ func frameDiff(homeFile, otherFile mp3.File, options Options) (Result, error) {
 			result.Markers = append(result.Markers, Segment{Start: marker.home, End: marker.home + marker.length, Duration: time.Duration(marker.length) * frameDuration})
 		}
 	}
+	result.OtherExtra, result.OtherBreaks = otherGaps(kept, len(otherFile.Frames), frameDuration)
 	if err := check(result, options); err != nil {
 		return result, err
+	}
+	if len(result.Removed) == 0 {
+		// The home download has no ads the other lacks: keep it whole.
+		result.Output = homeFile.Data
+		return result, nil
 	}
 	var carried time.Duration
 	result.Output, carried = write(homeFile, result.Kept)
 	result.Duration += carried
 	return result, nil
+}
+
+// otherGaps adds up what of the other download no kept run covers, in
+// stretches of at least minAudioBreak: its ads, as the audio comparison
+// counts them.
+func otherGaps(kept []run, frames int, frameDuration time.Duration) (time.Duration, int) {
+	var extra time.Duration
+	var breaks, position int
+	for _, segment := range append(kept, run{other: frames}) {
+		if gap := time.Duration(segment.other-position) * frameDuration; gap >= minAudioBreak {
+			extra += gap
+			breaks++
+		}
+		position = segment.other + segment.length
+	}
+	return extra, breaks
 }
 
 func frameHashes(file mp3.File, seed maphash.Seed) []uint64 {
@@ -606,9 +629,12 @@ func check(result Result, options Options) error {
 	// Only too short is implausible: that is a bad cut. The result can't be
 	// longer than the home download, so being longer than stated just means
 	// ads the same in both regions are left in — still better than all of
-	// them (the processor notes it).
-	if options.ExpectedDuration > 0 && options.DurationTolerance > 0 {
-		off := float64(result.Duration-options.ExpectedDuration) / float64(options.ExpectedDuration)
+	// them (the processor notes it). A home download already shorter than
+	// stated is measured against itself instead: the stated duration then
+	// counts ads this region doesn't get (Megaphone), so it says nothing
+	// about the cut, and a cut-off download is caught before the diff.
+	if expected := min(options.ExpectedDuration, result.HomeDuration); options.ExpectedDuration > 0 && options.DurationTolerance > 0 {
+		off := float64(result.Duration-expected) / float64(expected)
 		if off < -options.DurationTolerance {
 			return fmt.Errorf("%w: the result is %s long, but the feed says %s", ErrImplausible, result.Duration.Round(time.Second), options.ExpectedDuration.Round(time.Second))
 		}

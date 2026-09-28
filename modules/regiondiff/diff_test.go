@@ -103,6 +103,34 @@ func TestDiffRemovesAds(t *testing.T) {
 	}
 }
 
+func TestDiffHomeWithoutAds(t *testing.T) {
+	// Megaphone: no ads at home, breaks elsewhere, and a stated duration
+	// that counts the ads, so even the untouched home download is well
+	// short of it.
+	home := join(tag("h"), show1, show2)
+	other := join(tag("o"), audio(250, 21), show1, audio(250, 22), show2)
+	options := DefaultOptions()
+	options.ExpectedDuration = 25 * time.Second // show1 + show2 = 18.3 s
+	result, err := Diff(home, other, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(result.Output, home) || len(result.Removed) != 0 {
+		t.Errorf("output %d bytes, %d removed; want the home download whole", len(result.Output), len(result.Removed))
+	}
+	if want := 500 * 26122448 * time.Nanosecond; result.OtherBreaks != 2 || result.OtherExtra != want {
+		t.Errorf("other has %d breaks (%s), want 2 (%s)", result.OtherBreaks, result.OtherExtra, want)
+	}
+
+	// A cut is still measured: against the home download, as it is the
+	// shorter.
+	home = join(tag("h"), show1, audio(200, 12), show2)
+	other = join(tag("o"), show1, audio(250, 22), show2)
+	if _, err := Diff(home, other, options); !errors.Is(err, ErrImplausible) || !strings.Contains(err.Error(), "feed says") {
+		t.Errorf("cutting a fifth of a home download shorter than stated: err = %v", err)
+	}
+}
+
 func TestDiffSharedSilenceIsNotShow(t *testing.T) {
 	// Both regions' ad breaks end in the same 3 seconds of silence: longer
 	// than MinShared, so only the clean-start rule tells it from show audio.
@@ -143,15 +171,6 @@ func TestDiffIdentical(t *testing.T) {
 	// Same audio, different tags: still nothing to remove.
 	if _, err := Diff(episode, join(tag("other tag"), audio(50, 11), show1, show2), DefaultOptions()); !errors.Is(err, ErrIdentical) {
 		t.Errorf("same audio: err = %v", err)
-	}
-}
-
-func TestDiffHomeWithoutAds(t *testing.T) {
-	home := join(tag("h"), show1, show2)
-	other := join(tag("o"), audio(100, 21), show1, audio(80, 22), show2)
-	result := mustDiff(t, home, other)
-	if !bytes.Equal(result.Output, home) || len(result.Removed) != 0 {
-		t.Errorf("home without ads changed: removed %+v", result.Removed)
 	}
 }
 

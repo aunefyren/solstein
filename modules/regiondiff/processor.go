@@ -410,11 +410,13 @@ func (processor *Processor) finishPair(ctx context.Context, job episodes.Job, pa
 		return episodes.Processed{}, err
 	}
 
-	if result.ByAudio && len(result.Removed) == 0 {
-		// The host re-encodes around its ads, and the home download has none
-		// the other lacks: it is kept whole.
-		note := fmt.Sprintf("no ads in the %s download: %s's has %s (%s) more; compared by audio, as the host re-encodes",
+	if len(result.Removed) == 0 {
+		// The home download has no ads the other lacks: it is kept whole.
+		note := fmt.Sprintf("no ads in the %s download: %s's has %s (%s) more",
 			pair[0], compared, plural(result.OtherBreaks, "break"), result.OtherExtra.Round(time.Second))
+		if result.ByAudio {
+			note += "; compared by audio, as the host re-encodes"
+		}
 		processor.keepSuccessful(job, note, &result, map[string]checkedDownload{pair[0]: home, compared: against})
 		return episodes.Processed{Audio: result.Output, ContentType: home.ContentType, Note: note}, nil
 	}
