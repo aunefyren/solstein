@@ -230,7 +230,7 @@ func run() int {
 		// episode two attempts: held longer than that, the request fails on
 		// its side instead, which is worse than a 503 it can retry.
 		if cfg.ProcessingWaitSeconds > clientTimeoutHeadroomSeconds {
-			logger.Log.Warn(fmt.Sprintf("processing_wait_seconds is %d: longer than the 30 seconds Audiobookshelf allows a download by default, so raise its PODCAST_DOWNLOAD_TIMEOUT above %d (and any other client's timeout) — otherwise the request fails on the client's side before Solstein answers.", cfg.ProcessingWaitSeconds, cfg.ProcessingWaitSeconds))
+			logger.Log.Warn(fmt.Sprintf("processing_wait_seconds is %d: longer than the 30 seconds Audiobookshelf allows a download by default, so raise its PODCAST_DOWNLOAD_TIMEOUT (in milliseconds) above %d (and any other client's timeout) — otherwise the request fails on the client's side before Solstein answers.", cfg.ProcessingWaitSeconds, cfg.ProcessingWaitSeconds*1000))
 		}
 	}
 	if cfg.SkipTrackingRedirects {

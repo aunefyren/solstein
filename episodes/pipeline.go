@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"aunefyren/solstein/database"
@@ -32,6 +33,10 @@ const (
 	defaultIdleTimeout = 2 * time.Minute
 	// downloadTimeout bounds a whole download, however slowly it trickles.
 	downloadTimeout = time.Hour
+	// progressInterval is how often a download still running is logged, so
+	// one trickling in (which the idle timeout doesn't catch) is visible
+	// rather than looking stuck. Most downloads finish well inside it.
+	progressInterval = time.Minute
 	// maxRequestFailures is how many attempts in a row may fail for an
 	// episode prepared on request (already published, so without a retry
 	// schedule) before the failure policy applies. Without a limit, an
@@ -670,6 +675,8 @@ func (pipeline *Pipeline) fetch(ctx context.Context, exit, sourceURL string, fre
 
 	body := newIdleReader(source, pipeline.options.IdleTimeout, cancel)
 	defer body.stop()
+	stopProgress := logProgress(ctx, body, progressInterval, exit, hostOf(sourceURL), response.ContentLength)
+	defer stopProgress()
 	size, err := write(response.Header.Get("Content-Type"), io.LimitReader(body, limit+1))
 	switch {
 	case err != nil && body.timedOut():
@@ -714,6 +721,8 @@ type idleReader struct {
 	timer   *time.Timer
 	mutex   sync.Mutex
 	expired bool
+	// read counts the bytes through so far, for logProgress.
+	read atomic.Int64
 }
 
 func newIdleReader(reader io.Reader, timeout time.Duration, cancel context.CancelFunc) *idleReader {
@@ -731,6 +740,7 @@ func (idle *idleReader) Read(buffer []byte) (int, error) {
 	count, err := idle.reader.Read(buffer)
 	if count > 0 {
 		idle.timer.Reset(idle.timeout)
+		idle.read.Add(int64(count))
 	}
 	return count, err
 }
@@ -743,4 +753,40 @@ func (idle *idleReader) timedOut() bool {
 	idle.mutex.Lock()
 	defer idle.mutex.Unlock()
 	return idle.expired
+}
+
+// logProgress logs a download still running every interval: how
+// much has come, and how fast. Nothing else shows a download that trickles
+// in, since the idle timeout only catches one that stops (found live: a
+// fallback exit's 86 MB took 15 minutes at 95 KB/s with no line logged,
+// docs/region-diff.md). total is the announced length, or 0 if unknown. The
+// returned function stops it, and returns once it has stopped.
+func logProgress(ctx context.Context, body *idleReader, interval time.Duration, exit, host string, total int64) func() {
+	done, stopped := make(chan struct{}), make(chan struct{})
+	started := time.Now()
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				read, elapsed := body.read.Load(), time.Since(started)
+				of := ""
+				if total > 0 {
+					of = fmt.Sprintf(" of %.1f MB", float64(total)/(1<<20))
+				}
+				logger.Log.Info(fmt.Sprintf("Download from %s through %s still running: %.1f MB%s after %s (%.0f KB/s).",
+					host, exit, float64(read)/(1<<20), of, elapsed.Round(time.Second), float64(read)/1024/elapsed.Seconds()))
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
+	}
 }

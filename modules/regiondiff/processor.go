@@ -63,9 +63,29 @@ type Budgeter interface {
 	ExitsFit(exits []string) (fits bool, reason string)
 }
 
+const (
+	// fallbackMinRate and fallbackMinTime bound a fallback download: it may
+	// take the home download's size at this rate, and never less than the
+	// minimum time, before it is given up on (fallbackTimeout). A healthy
+	// tunnel does 5–9 MB/s (docs/exits.md); one fallback, US-AZ#108 to NRK,
+	// took 15 minutes for 86 MB and held the whole episode with it
+	// (docs/region-diff.md, 2026-09-28).
+	fallbackMinRate = 1 << 20 // bytes a second
+	fallbackMinTime = 30 * time.Second
+)
+
+// fallbackTimeout is how long a fallback download may take, given the home
+// download's size: that size at fallbackMinRate, and at least fallbackMinTime.
+func fallbackTimeout(size int) time.Duration {
+	return max(time.Duration(size)*time.Second/fallbackMinRate, fallbackMinTime)
+}
+
 // Processor is region diff as an episode processor for the pipeline.
 type Processor struct {
 	options ProcessorOptions
+	// fallbackTimeout is how long a fallback download of size bytes may
+	// take; a field so tests can shorten it.
+	fallbackTimeout func(size int) time.Duration
 	// oneAtATime holds attempts to one at a time when the exits they need
 	// can't all have a tunnel; nil when there is room for them all.
 	oneAtATime chan struct{}
@@ -84,7 +104,7 @@ func NewProcessor(options ProcessorOptions) (*Processor, error) {
 			return nil, fmt.Errorf("region diff: exit %q is listed more than once; each download must come from a different exit", exit)
 		}
 	}
-	processor := &Processor{options: options}
+	processor := &Processor{options: options, fallbackTimeout: fallbackTimeout}
 	if options.Budgeter != nil {
 		if fits, _ := options.Budgeter.ExitsFit(all); !fits {
 			processor.oneAtATime = make(chan struct{}, 1)
@@ -326,8 +346,10 @@ func (processor *Processor) finishPair(ctx context.Context, job episodes.Job, pa
 	result, err := comparison.With(ctx, other.Data)
 	// A fallback that can't be downloaded through is skipped: the pair
 	// already agrees, so it can only add certainty, and failing the attempt
-	// over it would repeat every download on the retry.
-	var unreachable []string
+	// over it would repeat every download on the retry. For the same reason
+	// a slow one is given up on rather than waited for: the episode is ready
+	// to publish as it is, and a client may be waiting on it.
+	var unreachable, slow []string
 	for _, exit := range fallbacks {
 		if !errors.Is(err, ErrIdentical) {
 			break
@@ -335,9 +357,22 @@ func (processor *Processor) finishPair(ctx context.Context, job episodes.Job, pa
 		// Done with the exit just compared: see fetchPairInTurn on why this
 		// has to happen before switching, not just after the attempt.
 		closeIdle(job, compared)
-		fallback, fetchErr := job.Fetch(ctx, exit, job.Fresh)
+		limit := processor.fallbackTimeout(len(home.Data))
+		fetchCtx, cancel := context.WithTimeout(ctx, limit)
+		fallback, fetchErr := job.Fetch(fetchCtx, exit, job.Fresh)
+		tooSlow := fetchErr != nil && errors.Is(fetchCtx.Err(), context.DeadlineExceeded)
+		cancel()
 		if ctx.Err() != nil {
 			return episodes.Processed{}, fmt.Errorf("download through fallback exit %q: %w", exit, ctx.Err())
+		}
+		if tooSlow {
+			// Its connection is left mid-transfer: drop it, so it doesn't
+			// hold the exit's tunnel open.
+			closeIdle(job, exit)
+			logger.Log.Warn(fmt.Sprintf("Region diff: the download of '%s' through fallback exit %s took longer than %s (under %d KB/s for %.1f MB); going on without it.",
+				job.Episode.Title, exit, limit.Round(time.Second), fallbackMinRate>>10, float64(len(home.Data))/(1<<20)))
+			slow = append(slow, exit)
+			continue
 		}
 		if fetchErr != nil {
 			logger.Log.Warn(fmt.Sprintf("Region diff: downloading '%s' through fallback exit %s failed; going on without it. Error: %s", job.Episode.Title, exit, fetchErr))
@@ -352,8 +387,15 @@ func (processor *Processor) finishPair(ctx context.Context, job episodes.Job, pa
 	switch {
 	case errors.Is(err, ErrIdentical):
 		note := identicalNote(home.Data, options)
+		var skipped []string
 		if len(unreachable) > 0 {
-			note += " (not compared through " + strings.Join(unreachable, ", ") + ": the download failed)"
+			skipped = append(skipped, strings.Join(unreachable, ", ")+": the download failed")
+		}
+		if len(slow) > 0 {
+			skipped = append(skipped, strings.Join(slow, ", ")+": the download was too slow")
+		}
+		if len(skipped) > 0 {
+			note += " (not compared through " + strings.Join(skipped, "; ") + ")"
 		}
 		processor.keepSuccessful(job, note, nil, map[string]checkedDownload{pair[0]: home, compared: against})
 		return episodes.Processed{Audio: home.Data, ContentType: home.ContentType, Note: note}, nil

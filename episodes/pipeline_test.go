@@ -2,6 +2,7 @@ package episodes
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -337,4 +338,28 @@ func assertNoPartFiles(t *testing.T, cache Cache) {
 		}
 		return nil
 	})
+}
+
+// TestLogProgressShowsASlowDownload makes sure a download that trickles in
+// (never idle, so never cut off) is logged while it runs, with how much has
+// come and how fast, and that stopping it ends the logging.
+func TestLogProgressShowsASlowDownload(t *testing.T) {
+	logs := captureLogs(t)
+	body := newIdleReader(strings.NewReader(strings.Repeat("x", 3<<20)), time.Minute, func() {})
+	defer body.stop()
+	if _, err := io.CopyN(io.Discard, body, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	stop := logProgress(context.Background(), body, 10*time.Millisecond, "us", "podkast.nrk.no", 3<<20)
+	time.Sleep(50 * time.Millisecond)
+	stop()
+	logged := logs.String()
+	if !strings.Contains(logged, "Download from podkast.nrk.no through us still running: 1.0 MB of 3.0 MB after") || !strings.Contains(logged, "KB/s)") {
+		t.Errorf("log = %q, want a progress line for the download", logged)
+	}
+	lines := strings.Count(logs.String(), "still running")
+	time.Sleep(30 * time.Millisecond)
+	if again := strings.Count(logs.String(), "still running"); again != lines {
+		t.Errorf("%d progress lines after stopping, want none", again-lines)
+	}
 }

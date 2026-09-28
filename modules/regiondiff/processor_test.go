@@ -155,6 +155,76 @@ func TestProcessorSkipsUnreachableFallbacks(t *testing.T) {
 	}
 }
 
+// TestProcessorGivesUpOnSlowFallbacks covers a fallback exit that answers
+// but crawls (seen live: US-AZ#108 took 15 minutes for NRK's 86 MB while the
+// pair had agreed in seconds). It is given up on after fallbackTimeout, like
+// one that fails: the next fallback is tried, and with none left the pair's
+// agreement stands, the note saying why.
+func TestProcessorGivesUpOnSlowFallbacks(t *testing.T) {
+	home := join(show1, audio(200, 10), show2)
+	slowFetch := func(fetch func(context.Context, string, bool) (episodes.Download, error), slowExit string) func(context.Context, string, bool) (episodes.Download, error) {
+		return func(ctx context.Context, exit string, fresh bool) (episodes.Download, error) {
+			if exit == slowExit {
+				select {
+				case <-ctx.Done():
+					return episodes.Download{}, ctx.Err()
+				case <-time.After(5 * time.Second):
+					return episodes.Download{}, errors.New("the fallback's download wasn't given up on")
+				}
+			}
+			return fetch(ctx, exit, fresh)
+		}
+	}
+	newProcessor := func(fallback ...string) *Processor {
+		processor := newTestProcessor(t, fallback...)
+		processor.fallbackTimeout = func(size int) time.Duration {
+			if size != len(home) {
+				t.Errorf("limit asked for %d bytes, want the home download's %d", size, len(home))
+			}
+			return 20 * time.Millisecond
+		}
+		return processor
+	}
+
+	source := &fakeSource{downloads: map[string][]byte{"norway": home, "sweden": home, "denmark": join(show1, audio(200, 12), show2)}}
+	job := source.job()
+	job.Fetch = slowFetch(job.Fetch, "us")
+	processed, err := newProcessor("us", "denmark").Process(context.Background(), job)
+	if err != nil {
+		t.Fatalf("with a later fallback working: %v", err)
+	}
+	if !bytes.Equal(processed.Audio, join(show1, show2)) {
+		t.Error("the ad wasn't removed by comparing with the fallback after the slow one")
+	}
+
+	source = &fakeSource{downloads: map[string][]byte{"norway": home, "sweden": home}, failures: map[string]error{"germany": errors.New("lookup timed out")}}
+	job = source.job()
+	job.Fetch = slowFetch(job.Fetch, "us")
+	processed, err = newProcessor("germany", "us").Process(context.Background(), job)
+	if err != nil {
+		t.Fatalf("with every fallback failing or slow: %v", err)
+	}
+	if want := "no dynamic ads found (not compared through germany: the download failed; us: the download was too slow)"; !bytes.Equal(processed.Audio, home) || processed.Note != want {
+		t.Errorf("got %d bytes, note %q; want the home download kept, note %q", len(processed.Audio), processed.Note, want)
+	}
+}
+
+func TestFallbackTimeout(t *testing.T) {
+	for _, test := range []struct {
+		size int
+		want time.Duration
+	}{
+		{0, fallbackMinTime},
+		{10 << 20, fallbackMinTime}, // 10 s at the rate: the minimum wins
+		{86 << 20, 86 * time.Second},
+		{512 << 20, 512 * time.Second},
+	} {
+		if got := fallbackTimeout(test.size); got != test.want {
+			t.Errorf("fallbackTimeout(%d MB) = %v, want %v", test.size>>20, got, test.want)
+		}
+	}
+}
+
 // TestProcessorFallbackStopsWhenCancelled makes sure a shutdown during a
 // fallback download fails the attempt instead of keeping the episode.
 func TestProcessorFallbackStopsWhenCancelled(t *testing.T) {

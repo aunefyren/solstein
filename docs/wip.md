@@ -15,6 +15,7 @@ Everything about Solstein that isn't finished: known issues, gaps, open question
 
 Built: one tunnel per Proton key, key affinity, and resuming broken downloads ([`exits.md`](exits.md), [`episodes.md`](episodes.md)). Left:
 - **`podkast.nrk.no` (Akamai) cutting requests** (`EOF` within 1–5 s, 4 of 18 through NO#23): the original measurement ran while production shared the probe's keys, which confounded it. Production and testing now confirmed on separate keys, so that confound is gone, but it hasn't actually been rechecked yet: `prod.log` (2026-09-27) shows no NRK activity, but a feed that polls cleanly with nothing new logs nothing at all (`feeds/poller.go`), so that's not evidence either way — NRK feeds are still subscribed in production. Watch the next time an NRK episode is actually downloaded.
+  - **Rechecked on `docker-test` (2026-09-28), two keys, nothing else on them:** 20 NRK episodes (two shows through ABS, [`clients.md`](clients.md)), each downloaded through `NO#23` and `DE#187` at the same moment — 40 downloads of 47–93 MB from `podkast.nrk.no`, **no `EOF`, no break, no resume, no retry**. Points strongly at the original 4 of 18 being the shared-key confound rather than Akamai. Not closed yet: that was a 1-request-a-second probe over minutes, this was 40 full downloads over 3 minutes, so a different load shape; the maintainer to decide whether this settles it (and the probe files below can go).
 - **Probe files** `modules/exits/live_dns_probe_test.go`, `live_stall_probe_test.go` and `live_keymove_repeat_test.go` (temporary, `live` tag): delete once the above is settled.
 
 Open question: should a tunnel DNS failure with a fresh handshake count against the server? The stalls turned out to be key conflicts, where switching servers moves the key and makes things worse, so probably not — and now settled that it's chance per session rather than a pause-length threshold (`exits.md`, keyMoveSettle), which only reinforces "probably not"; left open until the NRK/Akamai recheck above is settled too.
@@ -38,12 +39,13 @@ Five of 115 "It Was A Sh*t Show" episodes failed as implausible in production wi
 
 ### Deferred ideas
 
-- **Skip comparing a feed that never has ads at home** (`region-diff.md`, RedCircle, compared by audio): if a show's home download is reliably ad-free (RedCircle's "Safety Third", 15 of 15), the pair's second download costs bandwidth for a result that's already known. A cost optimization, not a correctness one — ad removal already works either way. Needs a way to notice it (some run count of clean results?) and to un-notice it if the host ever starts inserting ads again.
+- **Skip comparing a feed that never has ads at home** (`region-diff.md`, RedCircle, compared by audio): if a show's home download is reliably ad-free (RedCircle's "Safety Third", 15 of 15), the pair's second download costs bandwidth for a result that's already known. A cost optimization, not a correctness one — ad removal already works either way. Needs a way to notice it (some run count of clean results?) and to un-notice it if the host ever starts inserting ads again. NRK (public broadcaster, no ads at all) is the clearest case: 20 of 20 "no dynamic ads found" on 2026-09-28 (`clients.md`), each costing a second download of 47–93 MB. Simplest version for such hosts: switch region diff off for that feed (`region_diff: off`), which already exists; the question is only whether Solstein should notice it by itself.
 
 ## Exits
 
 ### Open questions
 
+- **Why US-AZ#108 → NRK crawls** (2026-09-28): 95 KB/s in production and ~160–200 KB/s on `docker-test`, while `DE#187` fetched the same files at several MB/s at the same moment, so it isn't NRK slowing every non-Norwegian address. That one server, the transatlantic path to Telenor's CDN edge, or NRK throttling the US specifically: untested (another US server, and a nearer fallback like `sweden`, would tell them apart). Region diff now gives up on a slow fallback ([`region-diff.md`](region-diff.md)), so it costs at most the limit; whether a slow exit should also count against its server (as a failed one does) is left open with the similar DNS question under Region diff.
 - **Proton connection counting:** one key holds several tunnels at once (verified), but whether Proton counts them as one connection or several against the plan limit (Free 1, Plus 10) is unknown.
 - **Server-list format:** the refresh accepts only format version 4. If gluetun-servers moves to a new version, Solstein keeps the last good copy and warns once it is 60 days old ([`exits.md`](exits.md)); reading the new format waits until there is one.
 
@@ -58,7 +60,7 @@ Five of 115 "It Was A Sh*t Show" episodes failed as implausible in production wi
 
 - **Publish immediately, swap later (idea, for clients other than ABS):** publish an episode of a processed feed at once with its ads, and swap in the processed file when ready. Useless for ABS, which downloads once and matches by GUID afterwards; only worth it for clients that re-download changed enclosures (unknown, see below).
 - **Chaining processors (idea):** the processor interface allows one processor per feed; chaining would let e.g. a loudness pass run after region diff.
-- **Web UI (idea):** there is none; feeds are managed through the API.
+- **Web UI (planned, discussed 2026-09-28):** there is none; feeds are managed through the API. Prompted by a production episode that looked stuck for 15 minutes (a slow fallback, [`region-diff.md`](region-diff.md)): the gap was seeing what's happening more than editing settings, so **a read-mostly status page first** — feeds, each episode's state and note, jobs in progress with exit, bytes so far and rate (what `logProgress` now logs) — and per-feed switches (`region_diff`, exits, fallbacks) second; the API already covers those. Agreed that per-feed tweaking isn't the fix for a slow exit: Solstein should handle that itself (the fallback limit, and possibly "Skip comparing a feed that never has ads", above). Open: how the frontend is built and served within `development.md`'s dependency rules (embedded static files, no build step?); auth for a browser (today it's a bearer token or signed URLs, `security.md`: a session/login, or the token once into a cookie?); whether it's a module that can be switched off like the others.
 
 ## Clients
 
