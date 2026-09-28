@@ -14,7 +14,8 @@ How to write code in Solstein: layout, conventions, dependencies, build, test an
 main.go            wiring only: resolve config, init logger, build core, register enabled modules, run server
 settings/          Config struct, config.json load/save, flag + env overrides, secret references
 logger/            logrus wrapper, logger.Log
-server/            Gin router, access checks, prefix feed route, feed API, episode route
+server/            Gin router, access checks, prefix feed route, feed API, episode route, web UI (ui.go)
+server/web/        the web UI's templates and stylesheet, embedded in the binary; built to docs/style-guide.md
 models/            persisted records (Base with UUID ID, Feed, Episode, FeedDocument) and their GORM mapping
 database/          SQLite via GORM: Store with named query functions, one file per model
 feeds/             core: source URLs, subscribe, refresh, poller, render (publish rules, signed URLs)
@@ -54,6 +55,7 @@ Keep the list short; every new dependency needs a reason.
 | IDs | `github.com/google/uuid` | In use |
 | Feed rewriting | Own `rss` package on `encoding/xml` `RawToken` + byte offsets; `golang.org/x/text/encoding/charmap` for Latin-1/Windows-1252 feeds | In use |
 | MP3 frames | Own `mp3` package | In use |
+| Web UI | Go's `html/template` and `embed`, one hand-written stylesheet; no JavaScript, framework or build step ([`style-guide.md`](style-guide.md)) | In use |
 | MP3 loudness | `mp3/spectrum`: Solstein's own, over a trimmed copy of `github.com/hajimehoshi/go-mp3` v0.3.4's frame decoding (Apache-2.0, licence and changes in `mp3/spectrum/`), not the Go module | In use |
 
 Notes:
@@ -90,6 +92,7 @@ Notes:
 - Three checks, in `server/access.go`: the **client network** check (every route but `/api/health`), the **subscribe token** (the `/api/rss/{token}/…` prefix route and the `/api/v1` feed API), and **URL signatures** (the feed and episode URLs Solstein writes out).
 - Tokens are compared with `subtle.ConstantTimeCompare`. Signatures are HMAC-SHA256 over the canonical path (`signing` package), URL-safe base64 in the `sig` query parameter; the handler checks the request path equals the canonical path, so a differently spelled path can't reuse a signature.
 - `disable_auth` turns off token and signature checks (the client network check stays). With it on, the token segment of the prefix route is optional.
+- **The web UI** (`server/ui.go`, off by default) has no sign-in yet: the client network check guards it, cross-origin POSTs are refused, and every page runs through `uiAuthenticator`, where sign-in goes ([`web-ui.md`](web-ui.md)).
 - `X-Forwarded-For` is only believed from `trusted_proxies` (via Gin's `SetTrustedProxies`), and `X-Forwarded-Proto`/`-Host` only from them too (for building links when `external_url` is unset).
 - **Never log secrets.** The request logger logs the path only (never the query string, which carries signatures and API tokens) and redacts the prefix route's token segment. Source URLs are logged without their query string, since private feeds often carry an access token there.
 

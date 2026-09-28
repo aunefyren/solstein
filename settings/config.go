@@ -142,6 +142,15 @@ type Config struct {
 	VPN VPN `json:"vpn"`
 	// RegionDiff configures the region-diff module.
 	RegionDiff RegionDiff `json:"region_diff"`
+	// WebUI configures the web interface (docs/web-ui.md).
+	WebUI WebUI `json:"web_ui"`
+}
+
+// WebUI configures the web interface served under /ui.
+type WebUI struct {
+	// Enabled serves the web UI. Off by default: it has no sign-in yet, so
+	// anyone who can reach Solstein could change feed settings through it.
+	Enabled bool `json:"enabled"`
 }
 
 // DirectExitSettings are the valid values for direct_exit.

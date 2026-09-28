@@ -182,6 +182,12 @@ func (service *Service) Processed(feed models.Feed) bool {
 	return service.options.Processed != nil && service.options.Processed(feed)
 }
 
+// RegionDiffAvailable reports whether the region-diff module is running, so
+// a feed's region_diff setting means something.
+func (service *Service) RegionDiffAvailable() bool {
+	return service.options.RegionDiffAvailable
+}
+
 // Subscribe returns the feed for a source URL, subscribing to it first if
 // needed. A new subscription fetches the source right away and is only
 // stored if it is a valid RSS feed, so a mistyped URL leaves nothing behind.

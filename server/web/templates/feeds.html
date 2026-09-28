@@ -1,0 +1,49 @@
+{{define "title"}}Feeds{{end}}
+{{define "content"}}{{with .Content}}
+<div class="page-heading">
+  <h1>Feeds</h1>
+  <p>Every feed Solstein proxies. A setting left at Default follows config.json.</p>
+</div>
+<table class="data-table">
+  <thead>
+    <tr>
+      <th scope="col">Feed</th>
+      {{if .RegionDiffAvailable}}<th scope="col">Region diff</th>{{end}}
+      <th scope="col">Prepare ahead</th>
+      <th scope="col">Settings</th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Feeds}}
+    <tr id="feed-{{.ID}}">
+      <td data-label="Feed">
+        <div class="data-table__title">{{.Title}}</div>
+        <p class="meta"><span class="mono">{{.SourceHost}}</span> · exit {{.Exit}} · {{.DeliveryMode}}</p>
+        <p class="meta">{{if .Failing}}<span class="badge badge--error">Failing</span> last poll {{.LastPolled}}; see the log{{else}}Last poll {{.LastPolled}}{{end}}</p>
+      </td>
+      {{if $.Content.RegionDiffAvailable}}<td data-label="Region diff">{{template "badge" .RegionDiff.InUse}}</td>{{end}}
+      <td data-label="Prepare ahead">{{template "badge" .PrepareAhead.InUse}}</td>
+      <td data-label="Settings">
+        <form class="data-table__form" method="post" action="/ui/feeds/{{.ID}}">
+          {{if $.Content.RegionDiffAvailable}}{{template "setting" (setting "region_diff" "Region diff" .ID .RegionDiff)}}{{end}}
+          {{template "setting" (setting "prepare_ahead" "Prepare ahead" .ID .PrepareAhead)}}
+          <button class="button button--primary" type="submit">Save</button>
+        </form>
+      </td>
+    </tr>
+  {{else}}
+    <tr><td class="data-table__empty" colspan="4">No feeds yet. Add one through the API (docs/feeds.md).</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}{{end}}
+
+{{define "badge"}}{{if .}}<span class="badge badge--on">On</span>{{else}}<span class="badge badge--off">Off</span>{{end}}{{end}}
+
+{{define "setting"}}<label class="setting" for="{{.Name}}-{{.FeedID}}">{{.Label}}
+  <select id="{{.Name}}-{{.FeedID}}" name="{{.Name}}">
+    <option value=""{{if eq .Value ""}} selected{{end}}>Default ({{if .DefaultOn}}on{{else}}off{{end}})</option>
+    <option value="on"{{if eq .Value "on"}} selected{{end}}>On</option>
+    <option value="off"{{if eq .Value "off"}} selected{{end}}>Off</option>
+  </select>
+</label>{{end}}

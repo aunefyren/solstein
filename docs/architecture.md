@@ -55,6 +55,8 @@ The dialer is looked up per connection, so a module can switch servers or restor
 
 A provider can also implement `outbound.Locator`, saying which countries an exit may come out in and which one its next connection uses; `Manager.ExitCountries` / `ExitCountry` pass that on (`direct` is always unknown). Region diff uses it to avoid comparing two exits in the same country.
 
+A provider can also implement `outbound.StatusReporter`, describing its exits and tunnels as they are right now (current server, open tunnels with their users, last handshake and key by number, benched servers); `Manager.Status` gathers it, plus the direct exit, for the web UI's exits page ([`web-ui.md`](web-ui.md)). It carries no key material by construction: its types have no field that could hold a key.
+
 ### Episode processors (`episodes`)
 
 The core hands a processor a job and caches what it returns. The processor downloads the source through any exit via the job, so region diff needs nothing else from the core.

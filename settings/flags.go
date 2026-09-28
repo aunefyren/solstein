@@ -238,6 +238,13 @@ var settings = []setting{
 		apply:   boolSetting(func(cfg *Config) *bool { return &cfg.PrepareAhead }),
 	},
 	{
+		flag:    "webui",
+		env:     "SOLSTEIN_WEB_UI",
+		usage:   "Serve the web UI under /ui. It has no sign-in yet: limit who can reach it with allowed_client_networks.",
+		boolean: true,
+		apply:   boolSetting(func(cfg *Config) *bool { return &cfg.WebUI.Enabled }),
+	},
+	{
 		flag:  "timezone",
 		env:   "SOLSTEIN_TIMEZONE",
 		usage: "IANA time zone, e.g. Europe/Oslo. Empty uses the system time zone (TZ).",

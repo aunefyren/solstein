@@ -40,6 +40,11 @@ tags:
     description: Managing feeds; needs the subscribe token.
   - name: Operations
     description: Health checks.
+  - name: Web UI
+    description: |
+      HTML pages for people (`docs/web-ui.md`), only when `web_ui.enabled`
+      is on. No sign-in yet: they are guarded by `allowed_client_networks`
+      alone, and a form posted from another site is refused with `403`.
 
 paths:
   /api/health:
@@ -494,6 +499,157 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  /:
+    get:
+      tags: [Web UI]
+      summary: Redirect to the web UI
+      operationId: getRoot
+      security: []
+      responses:
+        "302":
+          description: To `/ui/`.
+
+  /ui/:
+    get:
+      tags: [Web UI]
+      summary: Web UI start page
+      operationId: getUI
+      security: []
+      responses:
+        "302":
+          description: To `/ui/feeds`.
+
+  /ui/feeds:
+    get:
+      tags: [Web UI]
+      summary: Feed list page
+      description: |
+        Every feed with its region diff and prepare-ahead settings, each as
+        in use and as the feed's own override. After a save, `saved` names
+        the feed, for the page's notice.
+      operationId: getUIFeeds
+      security: []
+      parameters:
+        - name: saved
+          in: query
+          required: false
+          description: ID of the feed whose settings were just saved.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The page.
+          content:
+            text/html: {}
+        "500":
+          description: The feeds couldn't be loaded; an HTML error page.
+          content:
+            text/html: {}
+
+  /ui/instance:
+    get:
+      tags: [Web UI]
+      summary: Instance page
+      description: |
+        This Solstein as it runs: version, start time, the modules and how
+        they came up, the exits, the defaults feeds follow, and who may
+        reach it. Read-only; never a token, signing key or VPN key, nor the
+        `env:`/`file:` references to them.
+      operationId: getUIInstance
+      security: []
+      responses:
+        "200":
+          description: The page.
+          content:
+            text/html: {}
+
+  /ui/exits:
+    get:
+      tags: [Web UI]
+      summary: Exits page
+      description: |
+        The exits and VPN tunnels as they are right now: each exit's
+        locations, current server and tunnel (users, last handshake, which
+        key by number), what uses it, each provider's servers, keys, tunnel
+        limit, open tunnels and benched servers, the default and direct
+        exits, and start-up's check that every exit in use at once can have
+        a tunnel. Read-only; never a key or a reference to one.
+      operationId: getUIExits
+      security: []
+      responses:
+        "200":
+          description: The page.
+          content:
+            text/html: {}
+
+  /ui/feeds/{feedID}:
+    parameters:
+      - $ref: "#/components/parameters/FeedID"
+    post:
+      tags: [Web UI]
+      summary: Save a feed's settings from the feed list
+      description: |
+        Only the fields sent are changed; `region_diff` is ignored when the
+        region-diff module isn't running. Answered with a redirect back to
+        the list (post/redirect/get).
+      operationId: postUIFeedSettings
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                region_diff:
+                  type: string
+                  enum: ["", "on", "off"]
+                  description: Empty follows `region_diff.enabled`.
+                prepare_ahead:
+                  type: string
+                  enum: ["", "on", "off"]
+                  description: Empty follows `prepare_ahead`.
+      responses:
+        "303":
+          description: Saved; to `/ui/feeds?saved={feedID}`.
+        "400":
+          description: A value other than empty, `on` or `off`, or a setting the feed can't have; the list with an error notice.
+          content:
+            text/html: {}
+        "403":
+          description: Posted from another site, or from outside `allowed_client_networks`.
+        "404":
+          description: No such feed; an HTML error page.
+          content:
+            text/html: {}
+        "500":
+          description: The settings couldn't be saved; an HTML error page.
+          content:
+            text/html: {}
+
+  /ui/static/{file}:
+    parameters:
+      - name: file
+        in: path
+        required: true
+        description: "`style.css` or `icon.svg`."
+        schema:
+          type: string
+    get:
+      tags: [Web UI]
+      summary: The web UI's stylesheet and icon
+      operationId: getUIStatic
+      security: []
+      responses:
+        "200":
+          description: The file; cached for a day, as links carry the version.
+          content:
+            text/css: {}
+            image/svg+xml: {}
+        "404":
+          description: No such file.
 
 security:
   - bearerToken: []

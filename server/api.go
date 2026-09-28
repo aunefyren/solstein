@@ -145,7 +145,7 @@ func (handlers *handlers) apiUpdateFeed(context *gin.Context) {
 		feed.PrepareAhead = *request.PrepareAhead
 	}
 
-	err := handlers.feeds.Update(context.Request.Context(), &feed)
+	err := handlers.updateFeed(context.Request.Context(), &feed)
 	if errors.Is(err, feeds.ErrInvalidSettings) {
 		context.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		context.Abort()
@@ -157,21 +157,33 @@ func (handlers *handlers) apiUpdateFeed(context *gin.Context) {
 		context.Abort()
 		return
 	}
-	if handlers.episodes != nil {
-		// Cached files made with the old settings go; the settings are saved
-		// either way, and serving checks each episode again.
-		if err := handlers.episodes.FeedChanged(context.Request.Context(), feed.ID); err != nil {
-			logger.Log.Error("Failed to update the episodes of feed '" + feed.Title + "' to its new settings. Error: " + err.Error())
-		}
-		// Preparing ahead keeps episodes without a file out of the feed, so
-		// nothing would ask for them: they are queued instead.
-		if handlers.feeds.PreparesAhead(feed) {
-			if _, err := handlers.episodes.Queue(context.Request.Context(), feed.ID, 0); err != nil && !errors.Is(err, episodes.ErrNotPrepared) {
-				logger.Log.Error("Failed to queue the episodes of feed '" + feed.Title + "' to be prepared ahead. Error: " + err.Error())
-			}
+	context.JSON(http.StatusOK, handlers.feedResponse(context, feed))
+}
+
+// updateFeed saves a feed's changed settings and brings its episodes in line
+// with them. The API and the web UI both change feeds through it, so a
+// setting means the same whichever way it was changed. An invalid setting
+// returns feeds.ErrInvalidSettings, and nothing is saved.
+func (handlers *handlers) updateFeed(ctx stdcontext.Context, feed *models.Feed) error {
+	if err := handlers.feeds.Update(ctx, feed); err != nil {
+		return err
+	}
+	if handlers.episodes == nil {
+		return nil
+	}
+	// Cached files made with the old settings go; the settings are saved
+	// either way, and serving checks each episode again.
+	if err := handlers.episodes.FeedChanged(ctx, feed.ID); err != nil {
+		logger.Log.Error("Failed to update the episodes of feed '" + feed.Title + "' to its new settings. Error: " + err.Error())
+	}
+	// Preparing ahead keeps episodes without a file out of the feed, so
+	// nothing would ask for them: they are queued instead.
+	if handlers.feeds.PreparesAhead(*feed) {
+		if _, err := handlers.episodes.Queue(ctx, feed.ID, 0); err != nil && !errors.Is(err, episodes.ErrNotPrepared) {
+			logger.Log.Error("Failed to queue the episodes of feed '" + feed.Title + "' to be prepared ahead. Error: " + err.Error())
 		}
 	}
-	context.JSON(http.StatusOK, handlers.feedResponse(context, feed))
+	return nil
 }
 
 func (handlers *handlers) apiDeleteFeed(context *gin.Context) {

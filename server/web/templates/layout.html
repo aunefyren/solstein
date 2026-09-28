@@ -1,0 +1,30 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{template "title" .}} · Solstein</title>
+<link rel="stylesheet" href="/ui/static/style.css?v={{.Version}}">
+<link rel="icon" href="/ui/static/icon.svg?v={{.Version}}" type="image/svg+xml">
+</head>
+<body>
+<header class="site-header">
+  <div class="site-header__inner">
+    <a class="site-header__name" href="/ui/">Solstein</a>
+    <nav aria-label="Main">
+      <ul class="site-nav">
+        <li><a href="/ui/feeds"{{if eq .Nav "feeds"}} aria-current="page"{{end}}>Feeds</a></li>
+        <li><a href="/ui/exits"{{if eq .Nav "exits"}} aria-current="page"{{end}}>Exits</a></li>
+        <li><a href="/ui/instance"{{if eq .Nav "instance"}} aria-current="page"{{end}}>Instance</a></li>
+      </ul>
+    </nav>
+    <p class="site-user">{{if .User.Anonymous}}No sign-in{{else}}{{.User.Name}}{{end}}</p>
+  </div>
+</header>
+<main class="page">
+{{with .Notice}}<div class="notice notice--{{.Kind}}" role="{{if eq .Kind "error"}}alert{{else}}status{{end}}">{{.Text}}</div>
+{{end}}{{template "content" .}}
+</main>
+</body>
+</html>
+{{end}}

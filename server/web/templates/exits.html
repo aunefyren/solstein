@@ -1,0 +1,43 @@
+{{define "title"}}Exits{{end}}
+{{define "content"}}{{with .Content}}
+<div class="page-heading">
+  <h1>Exits</h1>
+  <p>Where Solstein's traffic goes out, as of {{.AsOf}}; reload for the latest. Change exits in config.json, then restart.</p>
+</div>
+<section class="section">
+  <h2>Exits</h2>
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th scope="col">Exit</th>
+        <th scope="col">Where</th>
+        <th scope="col">Server now</th>
+        <th scope="col">Tunnel</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range .Exits}}
+      <tr>
+        <td data-label="Exit">
+          <div class="data-table__title mono">{{.Name}}</div>
+          <p class="meta">{{if .Direct}}{{.Provider}}{{else}}Provider <span class="mono">{{.Provider}}</span>{{end}}</p>
+          {{with .Roles}}<p class="meta">{{range $i, $role := .}}{{if $i}} · {{end}}{{$role}}{{end}}</p>{{end}}
+        </td>
+        <td data-label="Where">{{.Where}}</td>
+        <td data-label="Server now"><span{{if not .Direct}} class="mono"{{end}}>{{.Server}}</span></td>
+        <td data-label="Tunnel">{{if .Direct}}<span class="badge badge--off">None</span> Not tunnelled{{else}}{{with .Tunnel}}<span class="badge badge--on">Open</span> {{.Use}}
+          <p class="meta">{{.Handshake}}{{with .Key}} · {{.}}{{end}}</p>{{else}}<span class="badge badge--off">Closed</span> Opens on first use{{end}}{{end}}</td>
+      </tr>
+    {{else}}
+      <tr><td class="data-table__empty" colspan="4">No exits.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+{{range .Sections}}
+<section class="section">
+  <h2>{{.Heading}}</h2>
+  {{template "facts" .Facts}}
+</section>
+{{end}}
+{{end}}{{end}}

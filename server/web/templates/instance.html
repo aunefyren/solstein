@@ -1,0 +1,13 @@
+{{define "title"}}Instance{{end}}
+{{define "content"}}
+<div class="page-heading">
+  <h1>Instance</h1>
+  <p>This Solstein as it runs now. Change it in config.json, then restart.</p>
+</div>
+{{range .Content.Sections}}
+<section class="section">
+  <h2>{{.Heading}}</h2>
+  {{template "facts" .Facts}}
+</section>
+{{end}}
+{{end}}

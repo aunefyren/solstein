@@ -1,0 +1,8 @@
+{{define "title"}}{{.Content.Heading}}{{end}}
+{{define "content"}}{{with .Content}}
+<div class="page-heading">
+  <h1>{{.Heading}}</h1>
+  <p>{{.Text}}</p>
+</div>
+<p><a href="/ui/feeds">Back to the feeds</a></p>
+{{end}}{{end}}

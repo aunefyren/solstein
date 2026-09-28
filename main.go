@@ -183,8 +183,9 @@ func run() int {
 
 	feedService := feeds.New(store, exitManager, feedOptions)
 	warnAboutFeedSettings(ctx, feedService, exitManager.Exits(), regionDiff != nil)
+	var tunnelBudget []string
 	if vpnModule != nil {
-		warnAboutTunnelBudget(ctx, feedService, vpnModule, cfg, exitManager.DefaultExit(), regionDiff != nil)
+		tunnelBudget = warnAboutTunnelBudget(ctx, feedService, vpnModule, cfg, exitManager.DefaultExit(), regionDiff != nil)
 	}
 	if regionDiff != nil {
 		warnAboutWithholding(ctx, feedService, cfg.RegionDiff.OnFailure == "hide", regionDiff.HideOnFailure)
@@ -237,7 +238,39 @@ func run() int {
 		logger.Log.Info("Tracking redirects in front of episode URLs are skipped: episodes are fetched from the audio host directly, and the shows' download counts don't see them.")
 	}
 
-	srv, err := server.New(server.Options{Config: cfg, Version: version, Feeds: feedService, Episodes: episodeServer})
+	if cfg.WebUI.Enabled {
+		// No sign-in yet: the client network check is all that stands in
+		// front of it, so say how open that is.
+		reach := "only from allowed_client_networks (" + strings.Join(cfg.AllowedClientNetworks, ", ") + ")"
+		if len(cfg.AllowedClientNetworks) == 0 {
+			reach = "from any address, as allowed_client_networks is empty"
+		}
+		logger.Log.Warn("Web UI on at <external URL>/ui/, without sign-in: anyone who can reach Solstein can change feed settings through it, and it can be reached " + reach + ". Set web_ui.enabled to false to switch it off.")
+	}
+
+	instance := server.Instance{
+		StartedAt:    time.Now(),
+		Exits:        exitManager.Exits(),
+		DefaultExit:  exitManager.DefaultExit(),
+		VPN:          vpnModule != nil,
+		TunnelBudget: tunnelBudget,
+		ExitStatus:   exitManager.Status,
+	}
+	vpnState := server.Module{Key: server.ModuleExits, Name: "Exits (VPN)", Summary: "Not set up: config.json has no vpn providers."}
+	if vpnModule != nil {
+		vpnState = server.Module{Key: server.ModuleExits, Name: "Exits (VPN)", On: true, Summary: sentence(vpnModule.Summary())}
+	} else if len(cfg.VPN.Providers) > 0 {
+		vpnState.Summary = "Off: no VPN provider could be loaded; the start-up log says why."
+	}
+	regionDiffState := server.Module{Key: server.ModuleRegionDiff, Name: "Region diff", Summary: "Not set up: region_diff has no exits."}
+	if regionDiff != nil {
+		regionDiffState = server.Module{Key: server.ModuleRegionDiff, Name: "Region diff", On: true, Summary: sentence(regionDiff.Summary())}
+	} else if len(cfg.RegionDiff.Exits) > 0 {
+		regionDiffState.Summary = "Off: its settings couldn't be used; the start-up log says why."
+	}
+	instance.Modules = []server.Module{vpnState, regionDiffState}
+
+	srv, err := server.New(server.Options{Config: cfg, Version: version, Feeds: feedService, Episodes: episodeServer, Instance: instance})
 	if err != nil {
 		logger.Log.Error("Failed to set up HTTP server. Error: " + err.Error())
 		return 1
@@ -338,7 +371,7 @@ func queueFeedsPreparedAhead(ctx context.Context, feedService *feeds.Service, pi
 // the default exit (feed polls, the server-list refresh) and every feed's own
 // exit. Several episodes through one exit share its tunnel, so the count
 // doesn't grow with the number of episodes being prepared.
-func warnAboutTunnelBudget(ctx context.Context, feedService *feeds.Service, vpnModule *exits.Module, cfg settings.Config, defaultExit string, regionDiffRunning bool) {
+func warnAboutTunnelBudget(ctx context.Context, feedService *feeds.Service, vpnModule *exits.Module, cfg settings.Config, defaultExit string, regionDiffRunning bool) []string {
 	var uses []exits.ExitUse
 	if defaultExit != "" {
 		uses = append(uses, exits.ExitUse{Exit: defaultExit, Reason: "the default exit for polls and the server-list refresh"})
@@ -375,9 +408,11 @@ func warnAboutTunnelBudget(ctx context.Context, feedService *feeds.Service, vpnM
 			uses = append(uses, exits.ExitUse{Exit: exit, Reason: reason})
 		}
 	}
-	for _, warning := range vpnModule.TunnelBudget(uses) {
+	warnings := vpnModule.TunnelBudget(uses)
+	for _, warning := range warnings {
 		logger.Log.Warn("VPN: " + warning)
 	}
+	return warnings
 }
 
 // warnAboutWithholding says, when any feed's region-diff failure policy is
@@ -409,4 +444,13 @@ func warnAboutWithholding(ctx context.Context, feedService *feeds.Service, globa
 	}
 	logger.Log.Warn("Region diff: for " + scope + ", episodes that can't be cleaned are kept out of the feed (on_failure: hide). " +
 		"They are tried again " + episodes.WithheldRetrySchedule + ", then stay out until POST /api/v1/feeds/<feed ID>/retry or a change of settings.")
+}
+
+// sentence makes a module's summary, written to follow "… on: " in the log,
+// a sentence of its own for the web UI.
+func sentence(summary string) string {
+	if summary == "" {
+		return summary
+	}
+	return strings.ToUpper(summary[:1]) + summary[1:] + "."
 }

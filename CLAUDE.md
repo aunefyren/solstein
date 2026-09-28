@@ -21,6 +21,7 @@ The name is the Viking sunstone (Iceland spar), which shows everything twice thr
 - **Add to `docs/wip.md` as you go:** issues, gaps, open questions, ideas and trade-offs, as soon as they are discovered or discussed. Record open questions there rather than silently picking an answer.
 - **When a WIP item is resolved** (built, decided, answered or dropped), remove it from `wip.md` and record the outcome in the document for that area. `wip.md` never holds finished items, and the other documents never hold unfinished ones.
 - Keep the documents current with the code: a change in behaviour updates the document that describes it in the same piece of work.
+- **Before any frontend work (the web UI), read `docs/style-guide.md` and follow it**; a change to the look or its rules updates the guide in the same piece of work.
 
 Never open, print or copy secret files (such as the maintainer's Proton key env file); refer to them only by path (`docker --env-file`) or through `env:` / `file:` references.
 

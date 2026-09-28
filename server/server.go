@@ -13,6 +13,7 @@ import (
 	"aunefyren/solstein/episodes"
 	"aunefyren/solstein/feeds"
 	"aunefyren/solstein/logger"
+	"aunefyren/solstein/outbound"
 	"aunefyren/solstein/settings"
 	"aunefyren/solstein/signing"
 
@@ -30,10 +31,52 @@ type Options struct {
 	Version  string
 	Feeds    *feeds.Service
 	Episodes *episodes.Server
+	// Instance is what start-up worked out, for the web UI's instance page.
+	Instance Instance
+}
+
+// Instance is what start-up worked out about this Solstein, beyond
+// config.json: what the modules came up as, and the exits in use. main.go
+// fills it in, so the server shows module state without importing a module.
+type Instance struct {
+	StartedAt time.Time
+	// Exits are the exits that exist, and DefaultExit the one used for
+	// everything that names none.
+	Exits       []string
+	DefaultExit string
+	Modules     []Module
+	// VPN is whether the exits module is on; TunnelBudget is its start-up
+	// check of whether every exit in use at once can have a tunnel, one
+	// warning per provider short of tunnels (empty when they fit).
+	VPN          bool
+	TunnelBudget []string
+	// ExitStatus reports the exits and tunnels as they are now
+	// (outbound.Manager.Status); nil shows none.
+	ExitStatus func() outbound.Status
+}
+
+// Module keys, for the pages that show a module in full.
+const (
+	ModuleExits      = "exits"
+	ModuleRegionDiff = "region-diff"
+)
+
+// Module is one optional module as it came up at start-up.
+type Module struct {
+	// Key identifies the module (ModuleExits, ModuleRegionDiff); Name is
+	// what people read.
+	Key  string
+	Name string
+	On   bool
+	// Summary is the module's own one-line description of how it runs, or
+	// why it's off; it never holds secrets.
+	Summary string
 }
 
 // handlers carries what the route handlers need.
 type handlers struct {
+	config      settings.Config
+	instance    Instance
 	feeds       *feeds.Service
 	episodes    *episodes.Server
 	access      access
@@ -71,6 +114,8 @@ func newRouter(options Options) (*gin.Engine, error) {
 		return nil, fmt.Errorf("trusted proxies: %w", err)
 	}
 	handlers := &handlers{
+		config:   cfg,
+		instance: options.Instance,
 		feeds:    options.Feeds,
 		episodes: options.Episodes,
 		access: access{
@@ -110,6 +155,12 @@ func newRouter(options Options) (*gin.Engine, error) {
 		api.POST("/feeds/:feedID/retry", handlers.apiRetryFailed)
 		api.POST("/retry", handlers.apiRetryAllFailed)
 		api.POST("/feeds/:feedID/prepare", handlers.apiPrepare)
+	}
+
+	if cfg.WebUI.Enabled {
+		if err := handlers.registerUI(router, options.Version, noSignIn{}); err != nil {
+			return nil, fmt.Errorf("web UI: %w", err)
+		}
 	}
 
 	return router, nil

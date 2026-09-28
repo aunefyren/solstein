@@ -1,0 +1,6 @@
+{{define "facts"}}<dl class="facts">
+  {{range .}}
+    <dt>{{.Label}}</dt>
+    <dd>{{if .Badge}}<span class="badge badge--{{.Badge}}">{{.BadgeText}}</span>{{end}}{{if .Href}}<a href="{{.Href}}">{{.Value}}</a>{{else if .Mono}}<span class="mono">{{.Value}}</span>{{else}}{{.Value}}{{end}}</dd>
+  {{end}}
+  </dl>{{end}}

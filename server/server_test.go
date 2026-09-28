@@ -694,6 +694,13 @@ func TestOpenAPICoversEveryRoute(t *testing.T) {
 		"/api/v1/feeds/:feedID/retry":   "/api/v1/feeds/{feedID}/retry",
 		"/api/v1/feeds/:feedID/prepare": "/api/v1/feeds/{feedID}/prepare",
 		"/api/v1/retry":                 "/api/v1/retry",
+		"/":                             "/",
+		"/ui/":                          "/ui/",
+		"/ui/feeds":                     "/ui/feeds",
+		"/ui/feeds/:feedID":             "/ui/feeds/{feedID}",
+		"/ui/instance":                  "/ui/instance",
+		"/ui/exits":                     "/ui/exits",
+		"/ui/static/:file":              "/ui/static/{file}",
 	}
 	spec, err := os.ReadFile(filepath.Join("..", "docs", "openapi.yaml"))
 	if err != nil {
@@ -717,7 +724,8 @@ func TestOpenAPICoversEveryRoute(t *testing.T) {
 		return rest[:end]
 	}
 
-	router, _ := newTestRouterWithDir(t, nil)
+	// With the web UI on, so its routes are checked too.
+	router, _ := newTestRouterWithDir(t, func(cfg *settings.Config) { cfg.WebUI.Enabled = true })
 	for _, route := range router.Routes() {
 		specPath, ok := documented[route.Path]
 		if !ok {

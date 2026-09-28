@@ -12,6 +12,10 @@ Clients generally can't send custom headers or cookies on feed and episode reque
 - `disable_auth` turns off the token and signature checks (the client network check stays), for private-network-only setups; it logs a warning at start-up. With it on, the token segment of the prefix route is optional.
 - **Logs never hold secrets:** the request log records the path only, never the query string (signatures, API tokens), with the prefix route's token shown as `***`; source URLs are logged without their query string, since private feeds often carry a token there.
 
+## Web UI
+
+Off by default (`web_ui.enabled`), because it has no sign-in yet: switched on, anyone allowed by `allowed_client_networks` can change feed settings through it, and start-up warns saying how widely it can be reached. It can't add or remove feeds, so it can't make Solstein fetch anything new on anyone's behalf, and it never shows a token, signed URL or a feed's full source URL. Cross-origin form posts are refused, and pages carry a strict content security policy. Details in [`web-ui.md`](web-ui.md).
+
 ## Network settings
 
 Inbound:
