@@ -52,7 +52,11 @@ type uiFeedPage struct {
 	Filter                 string
 	Failed, NotCached      int
 	Prepares               bool
+	// Live updates the episodes while some are queued or being prepared.
+	Live uiLive
 }
+
+func (page uiFeedPage) live() uiLive { return page.Live }
 
 // statusBadges gives each status its badge and word (style guide: Status
 // badge; the word carries the meaning).
@@ -124,6 +128,16 @@ func (ui *ui) showFeedPage(context *gin.Context, status int, notice *uiNotice) {
 		}
 	}
 	content.Summary = summarise(len(views), counts)
+	busy := counts[episodes.StatusQueued] + counts[episodes.StatusWorking]
+	liveURL := feedPagePath(feed)
+	if content.Filter == "all" || content.Filter == "problems" {
+		liveURL += "?show=" + content.Filter
+	}
+	verb := " are queued or working"
+	if busy == 1 {
+		verb = " is queued or working"
+	}
+	content.Live = newLive(context, liveURL, busy > 0, plural(busy, "episode")+verb)
 
 	for _, view := range views {
 		if content.Filter == "problems" && !problem(view) {

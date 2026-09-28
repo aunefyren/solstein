@@ -31,10 +31,11 @@ const (
 	uiPrefix = "/ui"
 	// uiUserKey is where the authenticated user is kept in the Gin context.
 	uiUserKey = "uiUser"
-	// uiContentSecurityPolicy allows the UI's own stylesheet and icon and
-	// nothing else: no scripts, no inline style, no framing, forms only back
-	// to Solstein.
-	uiContentSecurityPolicy = "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+	// uiContentSecurityPolicy allows the UI's own stylesheet, icon and
+	// script (live updates, which fetch Solstein's own pages) and nothing
+	// else: no inline script or style, no framing, forms only back to
+	// Solstein.
+	uiContentSecurityPolicy = "default-src 'none'; style-src 'self'; img-src 'self'; script-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
 )
 
 //go:embed web
@@ -88,6 +89,42 @@ type uiPage struct {
 	User    uiUser
 	Notice  *uiNotice
 	Content any
+	// Refresh is where the page refreshes itself to without JavaScript
+	// while its live region is active; empty for no refresh.
+	Refresh string
+}
+
+// liveInterval is how often a live region updates (style guide: Live
+// region); the <noscript> refresh uses it too, in seconds.
+const liveInterval = 5 * time.Second
+
+// uiLive is a page's live region: whether work is in progress, where to
+// fetch it from, and what the status line says is going on.
+type uiLive struct {
+	Active   bool
+	URL      string
+	StopURL  string
+	Note     string
+	Interval int // milliseconds, for live.js
+	Seconds  int
+}
+
+// newLive describes a live region at url (a path, with its query if any):
+// active only while busy says there is something in progress, and the
+// viewer hasn't stopped it (?live=off, the <noscript> Stop link).
+func newLive(context *gin.Context, url string, busy bool, note string) uiLive {
+	separator := "?"
+	if strings.Contains(url, "?") {
+		separator = "&"
+	}
+	return uiLive{
+		Active:   busy && context.Query("live") != "off",
+		URL:      url,
+		StopURL:  url + separator + "live=off",
+		Note:     note,
+		Interval: int(liveInterval / time.Millisecond),
+		Seconds:  int(liveInterval / time.Second),
+	}
 }
 
 // registerUI adds the web UI's routes, every page behind auth. Only called
@@ -144,7 +181,7 @@ func newUI(handlers *handlers, auth uiAuthenticator, version string) (*ui, error
 	funcs := template.FuncMap{"setting": newSettingField}
 	pages := map[string]*template.Template{}
 	for _, page := range []string{"feeds", "feed", "instance", "exits", "login", "account", "totp", "error"} {
-		parsed, err := template.New(page).Funcs(funcs).ParseFS(webFiles, "web/templates/layout.html", "web/templates/facts.html", "web/templates/settings.html", "web/templates/"+page+".html")
+		parsed, err := template.New(page).Funcs(funcs).ParseFS(webFiles, "web/templates/layout.html", "web/templates/facts.html", "web/templates/settings.html", "web/templates/live.html", "web/templates/"+page+".html")
 		if err != nil {
 			return nil, err
 		}
@@ -165,7 +202,11 @@ func (ui *ui) securityHeaders(context *gin.Context) {
 	header.Set("Content-Security-Policy", uiContentSecurityPolicy)
 	header.Set("X-Content-Type-Options", "nosniff")
 	header.Set("X-Frame-Options", "DENY")
-	header.Set("Referrer-Policy", "no-referrer")
+	// same-origin, not no-referrer: under no-referrer a browser sends
+	// "Origin: null" on a form post, and over plain HTTP (no Sec-Fetch-Site)
+	// the cross-origin check then refuses every form of the UI. A page's
+	// address still never goes to another site.
+	header.Set("Referrer-Policy", "same-origin")
 	context.Next()
 }
 
@@ -210,6 +251,9 @@ func (ui *ui) render(context *gin.Context, status int, page, nav string, notice 
 	current, _ := user.(uiUser)
 	var buffer bytes.Buffer
 	data := uiPage{Nav: nav, Version: ui.version, User: current, Notice: notice, Content: content}
+	if live, ok := content.(interface{ live() uiLive }); ok && live.live().Active {
+		data.Refresh = live.live().URL
+	}
 	if err := ui.pages[page].ExecuteTemplate(&buffer, "layout", data); err != nil {
 		logger.Log.Error("Failed to render the web UI's " + page + " page. Error: " + err.Error())
 		context.String(http.StatusInternalServerError, "Failed to show the page.")
@@ -578,7 +622,15 @@ type uiExitsPage struct {
 	AsOf     string
 	Exits    []uiExit
 	Sections []uiSection
+	// Setup is the part that doesn't change while Solstein runs; Sections
+	// (the providers) update live with the exits table while a tunnel is
+	// open.
+	Setup   uiSection
+	Summary string
+	Live    uiLive
 }
+
+func (page uiExitsPage) live() uiLive { return page.Live }
 
 // exitsPage shows the exits and VPN tunnels as they are right now: where
 // each exit comes out, its server and tunnel, what uses it, each provider's
@@ -678,12 +730,25 @@ func (ui *ui) exitsPage(context *gin.Context) {
 			setup = append(setup, warnFact("Tunnels", sentenceCase(warning)))
 		}
 	}
-	sections = append(sections, uiSection{Heading: "Setup", Facts: setup})
-
+	open := 0
+	for _, provider := range status.Providers {
+		open += len(provider.Tunnels)
+	}
+	summary := "No tunnels open."
+	if open > 0 {
+		summary = plural(open, "tunnel") + " open."
+	}
+	verb := " are open"
+	if open == 1 {
+		verb = " is open"
+	}
 	ui.render(context, http.StatusOK, "exits", "exits", nil, uiExitsPage{
 		AsOf:     now.Format("15:04:05"),
 		Exits:    rows,
 		Sections: sections,
+		Setup:    uiSection{Heading: "Setup", Facts: setup},
+		Summary:  summary,
+		Live:     newLive(context, uiPrefix+"/exits", open > 0, plural(open, "tunnel")+verb),
 	})
 }
 

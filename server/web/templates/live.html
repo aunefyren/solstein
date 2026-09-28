@@ -1,0 +1,2 @@
+{{define "live-status"}}<p class="live-status" data-live-status hidden></p>
+{{if .Active}}<noscript><p class="live-status">Updating every {{.Seconds}} s while {{.Note}}. <a href="{{.StopURL}}">Stop</a></p></noscript>{{end}}{{end}}

@@ -57,7 +57,7 @@ Keep the list short; every new dependency needs a reason.
 | IDs | `github.com/google/uuid` | In use |
 | Feed rewriting | Own `rss` package on `encoding/xml` `RawToken` + byte offsets; `golang.org/x/text/encoding/charmap` for Latin-1/Windows-1252 feeds | In use |
 | MP3 frames | Own `mp3` package | In use |
-| Web UI | Go's `html/template` and `embed`, one hand-written stylesheet; no JavaScript, framework or build step ([`style-guide.md`](style-guide.md)) | In use |
+| Web UI | Go's `html/template` and `embed`, one hand-written stylesheet, one small script for live updates (progressive enhancement); no framework or build step ([`style-guide.md`](style-guide.md)) | In use |
 | Sign-in | `golang.org/x/crypto/argon2` for passwords (the module was already a dependency); own TOTP (RFC 6238, a few dozen lines, tested against the RFC's vectors); `rsc.io/qr` (BSD, one pure-Go package) for the TOTP set-up QR code ([`sign-in.md`](sign-in.md)) | In use |
 | MP3 loudness | `mp3/spectrum`: Solstein's own, over a trimmed copy of `github.com/hajimehoshi/go-mp3` v0.3.4's frame decoding (Apache-2.0, licence and changes in `mp3/spectrum/`), not the Go module | In use |
 

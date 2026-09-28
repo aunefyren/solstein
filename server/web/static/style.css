@@ -502,3 +502,19 @@ code,
 .actions form {
   margin: 0;
 }
+
+/* Live region status line */
+
+.live-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin: 0 0 var(--space-3);
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+}
+
+.live-status[hidden] {
+  display: none;
+}

@@ -5,7 +5,7 @@ How the web UI ([`web-ui.md`](web-ui.md)) looks, reads and is built. **Every cha
 ## Principles
 
 - **Quiet and functional.** It's an admin page for a background service. It shows state and lets you change a few settings; it doesn't decorate. No illustrations, gradients, shadows or animation.
-- **Server-rendered, works without JavaScript.** Pages are Go `html/template`, changes are plain HTML forms. A page must work fully with scripts off.
+- **Server-rendered, works without JavaScript.** Pages are Go `html/template`, changes are plain HTML forms. A page must work fully with scripts off; the one script there is (live updates, below) only makes a working page smoother.
 - **Honest about state.** Show what Solstein will actually do (the value *in use*), not only what was configured, and say where an inherited value comes from ("Default (on)").
 - **Grows by adding pages, not by restyling.** A new page reuses the tokens and components here. A new component is added to this guide first.
 
@@ -62,6 +62,7 @@ Class names are `block`, `block__element`, `block--modifier` (BEM-style), all lo
 - **Button** (`button`, `button--primary`, `button--secondary`): `button--primary` for the one main action of a form (Save), `button--secondary` otherwise. Buttons say the action as a verb ("Save", not "OK" or "Submit").
 - **Meta line** (`meta`): small muted text for secondary facts (hostname, last poll).
 - **View links** (`view-links`): plain links that change what a list shows ("All 86 · Only problems 4 · Show all"), the current one marked `aria-current="true"`; a query parameter, so they work without JavaScript and can be bookmarked.
+- **Live region** (`data-live` on the part of a page that shows work in progress: a feed's episodes, the exits' tunnels; `live-status` for its status line): while the server marks it `active` (episodes queued or being prepared, tunnels open), `live.js` fetches the same page every 5 s and swaps in the new region, leaving everything outside it (a settings form being edited, the scroll position) alone. It never swaps while focus is inside the region, and doesn't poll while the tab is hidden. The status line says what's happening in words ("Updating every 5 s while 2 episodes are queued or working.") with a Pause/Resume button, remembered for the tab; its text is announced politely to screen readers only when the region's summary changes, not on every update. Once nothing is in progress it says "Up to date." and stops. Without JavaScript, the page refreshes itself through `<noscript>` instead, with a Stop link (`?live=off`).
 - **Actions** (`actions`): a row of buttons acting on a whole section ("Retry all failed", "Prepare all not cached"), `button--secondary`, each a form of its own; a button appears only when its action has something to do, and says how much ("Retry 3 failed").
 - **Section** (`section`): a titled group of content on a page, with an `h2` at `--text-lg`. A page with several groups uses one per group, in the order a reader needs them.
 - **Fact list** (`facts`): read-only settings or properties as a `<dl>`, the label (`<dt>`, muted) beside its value (`<dd>`), stacking below 44rem. A value can start with a status badge ("On", "Off", "Check"), still followed by words that say what it means. Values that are names from `config.json`, hostnames or paths are `mono`. A value that is simply absent says so in words ("Not set", "Any address"), never an empty cell or a dash. A value that has a page of its own links to it (`<a>`), rather than repeating it.
@@ -72,15 +73,15 @@ Class names are `block`, `block__element`, `block--modifier` (BEM-style), all lo
 - **Plain words, full sentences for messages**, naming the object, as the log does: "Saved the settings of 'Debatten'.", "Couldn't save the settings of 'Debatten': region diff can only be on or off."
 - Settings use the name from `config.json`, spelled out for people: `region_diff` is "Region diff", `prepare_ahead` is "Prepare ahead". A hint says what it does in one line.
 - Times as `28 Sep 2026 09:39`, in Solstein's time zone. "Never" for a time that hasn't happened yet. How long ago, or for how long, in the largest whole unit that fits: "40 s", "3 min", "2 h", "5 days" ("40 s ago", "idle 3 min").
-- A page showing live state (tunnels, jobs) says when it was taken ("As of 10:52:07; reload for the latest"); pages don't refresh themselves.
+- A page showing live state (tunnels, jobs) says when it was taken ("As of 10:52:07"). It updates itself only through a **live region** (below), only while something is in progress, and always visibly, with a way to pause.
 - No exclamation marks, no "Oops", no emoji.
 - **Never show a secret or an internal error.** No subscribe token, signing key, signed URL or VPN key; no raw error text (it can hold a feed's private URL): say what failed and point to the log, as the API does.
 
 ## Rules for building it
 
 - **Where things live:** templates in `server/web/templates/` (`layout.html` plus one file per page, which defines `title` and `content`), static files in `server/web/static/`, all embedded in the binary. The Go side is `server/ui.go`.
-- **One stylesheet, no inline style.** No `style=` attributes, `<style>` or `<script>` blocks: the content security policy (`style-src 'self'`, no scripts) refuses them.
-- **No JavaScript** for now. If a page ever needs it: its own file under `static/`, progressive enhancement only, and the page still works without it. This guide says so first.
+- **One stylesheet, no inline style.** No `style=` attributes, `<style>` or inline `<script>` blocks: the content security policy (`style-src 'self'`, `script-src 'self'`) refuses them.
+- **JavaScript only as progressive enhancement**, in files under `static/` (today one: `live.js`), loaded with `defer`; no inline script, no framework, no build step, no third-party code. Every page works without it. It builds DOM with `createElement`/`textContent`, never by inserting strings as HTML, except swapping in a region parsed from Solstein's own page. A new script, or new behaviour in one, goes into this guide first.
 - **No external resources:** no CDN, no web fonts, no remote images or analytics. Solstein must work offline and never tell a third party who opens its UI.
 - **No framework and no build step:** plain HTML templates and one hand-written CSS file.
 - **GET never changes anything.** A change is a `POST` form, answered with `303 See Other` to a page (post/redirect/get), so reloading never repeats it. Cross-origin POSTs are refused.

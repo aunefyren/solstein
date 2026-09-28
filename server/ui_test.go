@@ -319,6 +319,20 @@ func TestUIRefusesCrossOriginPosts(t *testing.T) {
 	if code, _, _ := postForm(router, "/ui/feeds/"+id, url.Values{"prepare_ahead": {"on"}}, map[string]string{"Sec-Fetch-Site": "same-origin"}); code != http.StatusSeeOther {
 		t.Errorf("same-origin POST = %d, want 303", code)
 	}
+	// Over plain HTTP a browser sends no Sec-Fetch-Site, only Origin: it
+	// must be accepted when it's Solstein's own (httptest's host is
+	// example.com).
+	if code, _, _ := postForm(router, "/ui/feeds/"+id, url.Values{"prepare_ahead": {"off"}}, map[string]string{"Origin": "http://example.com"}); code != http.StatusSeeOther {
+		t.Errorf("same-origin POST over plain HTTP = %d, want 303", code)
+	}
+	// And the page's referrer policy must let the browser send that Origin:
+	// under no-referrer it sends "Origin: null", which is refused.
+	if policy := do(router, http.MethodGet, "/ui/feeds", "", nil).Header().Get("Referrer-Policy"); policy != "same-origin" {
+		t.Errorf("Referrer-Policy %q, want same-origin", policy)
+	}
+	if code, _, _ := postForm(router, "/ui/feeds/"+id, url.Values{"prepare_ahead": {"off"}}, map[string]string{"Origin": "null"}); code != http.StatusForbidden {
+		t.Errorf("Origin: null = %d; the test above relies on it being refused", code)
+	}
 }
 
 func TestUIStaticFiles(t *testing.T) {
@@ -432,7 +446,9 @@ func TestUIExitsPage(t *testing.T) {
 	}
 	for _, want := range []string{
 		`href="/ui/exits" aria-current="page"`,
-		"as of ",
+		"As of ",
+		// A tunnel is open, so the page updates itself.
+		`data-live="active"`, `data-live-note="1 tunnel is open"`, "1 tunnel open.",
 		// The exits, with where they go out, their server and tunnel.
 		"This host&#39;s own connection", "Where this host is (NO)", "Not tunnelled",
 		"NO only", `<span class="mono">NO#23 (NO)</span>`, `<span class="badge badge--on">Open</span> 2 users`, "Handshake 40 s ago · Key 1",
@@ -910,5 +926,44 @@ func TestUIFeedPagePassThrough(t *testing.T) {
 	}
 	if recorder := do(router, http.MethodPost, "/ui/feeds/"+id+"/episodes/nope/queue", "", form); recorder.Code != http.StatusNotFound {
 		t.Errorf("queue a malformed episode ID: %d", recorder.Code)
+	}
+}
+
+// TestUILiveRegion: the feed page updates itself only while work is in
+// progress, and says so; ?live=off stops it.
+func TestUILiveRegion(t *testing.T) {
+	router, _ := newUITestRouter(t, nil)
+	id := createFeed(t, router, startPodcastHost(t).URL+"/feed")
+	form := map[string]string{"Content-Type": "application/x-www-form-urlencoded"}
+
+	recorder := do(router, http.MethodGet, "/ui/feeds/"+id, "", nil)
+	idle := recorder.Body.String()
+	if !strings.Contains(idle, `data-live="idle"`) || strings.Contains(idle, `http-equiv="refresh"`) || !strings.Contains(idle, `<script src="/ui/static/live.js?v=v1.2.3" defer></script>`) {
+		t.Errorf("nothing in progress, the page shouldn't refresh:\n%s", idle)
+	}
+	if csp := recorder.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'self'") || !strings.Contains(csp, "connect-src 'self'") || strings.Contains(csp, "unsafe-inline") {
+		t.Errorf("CSP %q", csp)
+	}
+
+	do(router, http.MethodPost, "/ui/feeds/"+id+"/prepare", "", form)
+	busy := do(router, http.MethodGet, "/ui/feeds/"+id+"?show=problems", "", nil).Body.String()
+	for _, want := range []string{
+		`data-live="active"`, `data-live-url="/ui/feeds/` + id + `?show=problems"`, `data-live-note="1 episode is queued or working"`, `data-live-interval="5000"`,
+		`<noscript><meta http-equiv="refresh" content="5; url=/ui/feeds/` + id + `?show=problems"></noscript>`,
+		`<a href="/ui/feeds/` + id + `?show=problems&amp;live=off">Stop</a>`,
+		`data-live-summary>1 episode: 1 queued.`,
+	} {
+		if !strings.Contains(busy, want) {
+			t.Errorf("with an episode queued, the page lacks %q", want)
+		}
+	}
+	stopped := do(router, http.MethodGet, "/ui/feeds/"+id+"?live=off", "", nil).Body.String()
+	if !strings.Contains(stopped, `data-live="idle"`) || strings.Contains(stopped, `http-equiv="refresh"`) {
+		t.Error("?live=off doesn't stop the updates")
+	}
+
+	recorder = do(router, http.MethodGet, "/ui/static/live.js", "", nil)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Header().Get("Content-Type"), "javascript") || !strings.Contains(recorder.Body.String(), "data-live") {
+		t.Errorf("live.js = %d %q", recorder.Code, recorder.Header().Get("Content-Type"))
 	}
 }

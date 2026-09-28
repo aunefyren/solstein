@@ -6,6 +6,8 @@
 <title>{{template "title" .}} · Solstein</title>
 <link rel="stylesheet" href="/ui/static/style.css?v={{.Version}}">
 <link rel="icon" href="/ui/static/icon.svg?v={{.Version}}" type="image/svg+xml">
+<script src="/ui/static/live.js?v={{.Version}}" defer></script>
+{{with .Refresh}}<noscript><meta http-equiv="refresh" content="5; url={{.}}"></noscript>{{end}}
 </head>
 <body>
 <header class="site-header">

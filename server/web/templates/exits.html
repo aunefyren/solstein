@@ -2,8 +2,11 @@
 {{define "content"}}{{with .Content}}
 <div class="page-heading">
   <h1>Exits</h1>
-  <p>Where Solstein's traffic goes out, as of {{.AsOf}}; reload for the latest. Change exits in config.json, then restart.</p>
+  <p>Where Solstein's traffic goes out. Change exits in config.json, then restart.</p>
 </div>
+{{template "live-status" .Live}}
+<div data-live="{{if .Live.Active}}active{{else}}idle{{end}}" data-live-url="{{.Live.URL}}" data-live-note="{{.Live.Note}}" data-live-interval="{{.Live.Interval}}">
+<p class="meta"><span data-live-summary>{{.Summary}}</span> As of {{.AsOf}}.</p>
 <section class="section">
   <h2>Exits</h2>
   <table class="data-table">
@@ -40,4 +43,9 @@
   {{template "facts" .Facts}}
 </section>
 {{end}}
+</div>
+<section class="section">
+  <h2>{{.Setup.Heading}}</h2>
+  {{template "facts" .Setup.Facts}}
+</section>
 {{end}}{{end}}
