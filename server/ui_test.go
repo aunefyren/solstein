@@ -691,3 +691,93 @@ func TestUIAccount(t *testing.T) {
 		t.Errorf("set-up page with nothing pending: %d %q", recorder.Code, recorder.Header().Get("Location"))
 	}
 }
+
+func TestUIFeedPage(t *testing.T) {
+	router, store := newUITestRouter(t, nil)
+	id := createFeed(t, router, startPodcastHost(t).URL+"/feed")
+	ctx := context.Background()
+	post := func(target string) *httptest.ResponseRecorder {
+		return do(router, http.MethodPost, target, "", map[string]string{"Content-Type": "application/x-www-form-urlencoded"})
+	}
+
+	if body := do(router, http.MethodGet, "/ui/feeds", "", nil).Body.String(); !strings.Contains(body, `<a href="/ui/feeds/`+id+`">Fake Show</a>`) {
+		t.Error("the feed list doesn't link to the feed page")
+	}
+	page := do(router, http.MethodGet, "/ui/feeds/"+id, "", nil).Body.String()
+	for _, want := range []string{
+		"<h1>Fake Show</h1>", "1 episode: 1 not cached.",
+		`<div class="data-table__title">One</div>`, "backlog",
+		`<span class="badge badge--off">Not cached</span>`, "Fetched when a client asks for it, or with Prepare.",
+		"Prepare 1 not cached", `>Prepare</button>`, `name="from" value="feed"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the feed page lacks %q", want)
+		}
+	}
+
+	// Preparing one episode: queued, and the page says so.
+	episodes, _ := store.ListEpisodes(ctx, uuid.MustParse(id))
+	episode := episodes[0]
+	recorder := post("/ui/feeds/" + id + "/episodes/" + episode.ID.String() + "/queue")
+	location := recorder.Header().Get("Location")
+	if recorder.Code != http.StatusSeeOther || !strings.HasPrefix(location, "/ui/feeds/"+id+"?done=queued&episode="+episode.ID.String()) {
+		t.Fatalf("queue: %d to %q", recorder.Code, location)
+	}
+	page, _, _ = strings.Cut(location, "#")
+	body := do(router, http.MethodGet, page, "", nil).Body.String()
+	if !strings.Contains(body, "Queued &#39;One&#39;. Reload to see how it goes.") || !strings.Contains(body, `<span class="badge badge--off">Queued</span>`) {
+		t.Errorf("after queueing:\n%s", body)
+	}
+	// A notice only ever names what the feed has: an unknown ID says nothing.
+	if body := do(router, http.MethodGet, "/ui/feeds/"+id+"?done=queued&episode="+uuid.NewString(), "", nil).Body.String(); strings.Contains(body, "Queued") && strings.Contains(body, "notice--ok") {
+		t.Error("a notice for an episode the feed doesn't have")
+	}
+
+	// A failed episode: its error shown without the URL's path and query,
+	// and a Retry.
+	stored, _ := store.GetEpisode(ctx, episode.FeedID, episode.ID)
+	stored.State, stored.Withheld, stored.NextAttemptAt, stored.LastError = models.EpisodeFailed, true, nil, `Get "https://cdn.example.com/private/ep.mp3?token=s3cret": EOF`
+	stored.LateRetries = 99
+	store.UpdateEpisode(ctx, &stored)
+	body = do(router, http.MethodGet, "/ui/feeds/"+id+"?show=problems", "", nil).Body.String()
+	if !strings.Contains(body, `<span class="badge badge--error">Given up</span>`) || !strings.Contains(body, "https://cdn.example.com/…") || strings.Contains(body, "s3cret") || !strings.Contains(body, ">Retry</button>") || !strings.Contains(body, "Retry 1 failed") {
+		t.Errorf("a given-up episode:\n%s", body)
+	}
+	if recorder := post("/ui/feeds/" + id + "/retry"); recorder.Header().Get("Location") != "/ui/feeds/"+id+"?done=retry&count=1" {
+		t.Errorf("retry all: %d %q", recorder.Code, recorder.Header().Get("Location"))
+	}
+	if body := do(router, http.MethodGet, "/ui/feeds/"+id+"?done=retry&count=1", "", nil).Body.String(); !strings.Contains(body, "Queued 1 failed episode to be tried again.") {
+		t.Error("no notice after retrying all")
+	}
+	if recorder := post("/ui/feeds/" + id + "/prepare"); recorder.Header().Get("Location") != "/ui/feeds/"+id+"?done=prepare&count=0" {
+		t.Errorf("prepare all: %d %q", recorder.Code, recorder.Header().Get("Location"))
+	}
+
+	// Settings saved from the feed page go back to it.
+	recorder = do(router, http.MethodPost, "/ui/feeds/"+id, url.Values{"prepare_ahead": {"on"}, "from": {"feed"}}.Encode(), map[string]string{"Content-Type": "application/x-www-form-urlencoded"})
+	if recorder.Header().Get("Location") != "/ui/feeds/"+id+"?done=saved" {
+		t.Errorf("save from the feed page: %d %q", recorder.Code, recorder.Header().Get("Location"))
+	}
+
+	for _, target := range []string{"/ui/feeds/" + uuid.NewString(), "/ui/feeds/nope"} {
+		if code := do(router, http.MethodGet, target, "", nil).Code; code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", target, code)
+		}
+	}
+	if code := post("/ui/feeds/" + id + "/episodes/" + uuid.NewString() + "/queue").Code; code != http.StatusNotFound {
+		t.Errorf("queue an unknown episode = %d, want 404", code)
+	}
+}
+
+func TestSummarise(t *testing.T) {
+	got := summarise(86, map[episodes.Status]int{episodes.StatusCleaned: 12, episodes.StatusNotCached: 70, episodes.StatusWithheld: 3, episodes.StatusQueued: 1})
+	if want := "86 episodes: 12 cleaned, 70 not cached, 1 queued, 3 withheld."; got != want {
+		t.Errorf("summarise = %q, want %q", got, want)
+	}
+	if got := formatLength(3773); got != "1:02:53" {
+		t.Errorf("formatLength = %q", got)
+	}
+	if got := formatLength(2340); got != "39:00" {
+		t.Errorf("formatLength = %q", got)
+	}
+}

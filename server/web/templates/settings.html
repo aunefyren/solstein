@@ -1,0 +1,9 @@
+{{define "badge"}}{{if .}}<span class="badge badge--on">On</span>{{else}}<span class="badge badge--off">Off</span>{{end}}{{end}}
+
+{{define "setting"}}<label class="setting" for="{{.Name}}-{{.FeedID}}">{{.Label}}
+  <select id="{{.Name}}-{{.FeedID}}" name="{{.Name}}">
+    <option value=""{{if eq .Value ""}} selected{{end}}>Default ({{if .DefaultOn}}on{{else}}off{{end}})</option>
+    <option value="on"{{if eq .Value "on"}} selected{{end}}>On</option>
+    <option value="off"{{if eq .Value "off"}} selected{{end}}>Off</option>
+  </select>
+</label>{{end}}

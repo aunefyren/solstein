@@ -61,6 +61,8 @@ Class names are `block`, `block__element`, `block--modifier` (BEM-style), all lo
 - **QR code** (`qr`): inline SVG made on the server, always dark on white (`--color-qr-*`) with its quiet zone, 12rem wide; always with the secret as text beside it, for typing in instead.
 - **Button** (`button`, `button--primary`, `button--secondary`): `button--primary` for the one main action of a form (Save), `button--secondary` otherwise. Buttons say the action as a verb ("Save", not "OK" or "Submit").
 - **Meta line** (`meta`): small muted text for secondary facts (hostname, last poll).
+- **View links** (`view-links`): plain links that change what a list shows ("All 86 · Only problems 4 · Show all"), the current one marked `aria-current="true"`; a query parameter, so they work without JavaScript and can be bookmarked.
+- **Actions** (`actions`): a row of buttons acting on a whole section ("Retry all failed", "Prepare all not cached"), `button--secondary`, each a form of its own; a button appears only when its action has something to do, and says how much ("Retry 3 failed").
 - **Section** (`section`): a titled group of content on a page, with an `h2` at `--text-lg`. A page with several groups uses one per group, in the order a reader needs them.
 - **Fact list** (`facts`): read-only settings or properties as a `<dl>`, the label (`<dt>`, muted) beside its value (`<dd>`), stacking below 44rem. A value can start with a status badge ("On", "Off", "Check"), still followed by words that say what it means. Values that are names from `config.json`, hostnames or paths are `mono`. A value that is simply absent says so in words ("Not set", "Any address"), never an empty cell or a dash. A value that has a page of its own links to it (`<a>`), rather than repeating it.
 
@@ -83,7 +85,7 @@ Class names are `block`, `block__element`, `block--modifier` (BEM-style), all lo
 - **No framework and no build step:** plain HTML templates and one hand-written CSS file.
 - **GET never changes anything.** A change is a `POST` form, answered with `303 See Other` to a page (post/redirect/get), so reloading never repeats it. Cross-origin POSTs are refused.
 - **Every page goes through the UI's authenticator** (`uiAuthenticator`, `web-ui.md`): the routes are registered on the `/ui` group that runs it, never directly on the router.
-- **Accessible by default:** every input has a `<label>`; everything works by keyboard with a visible focus ring (`--color-accent`, 2px outline); headings in order; tables have `<th scope>`; status never by colour alone.
+- **Accessible by default:** every input has a `<label>`; a column or control whose meaning is obvious to the eye but not in words gets text in `visually-hidden` (read out, not shown), never nothing; everything works by keyboard with a visible focus ring (`--color-accent`, 2px outline); headings in order; tables have `<th scope>`; status never by colour alone.
 
 ## Adding a page
 

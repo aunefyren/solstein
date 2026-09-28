@@ -304,6 +304,24 @@ func (server *Server) Queue(ctx context.Context, feedID uuid.UUID, newest int) (
 	return server.pipeline.Queue(ctx, feedID, newest)
 }
 
+// Episodes returns a feed's episodes with their status (see
+// Pipeline.Episodes).
+func (server *Server) Episodes(ctx context.Context, feedID uuid.UUID) ([]EpisodeView, error) {
+	if server.pipeline == nil {
+		return nil, ErrNotPrepared
+	}
+	return server.pipeline.Episodes(ctx, feedID)
+}
+
+// QueueEpisode queues one episode to be tried again or prepared (see
+// Pipeline.QueueEpisode).
+func (server *Server) QueueEpisode(ctx context.Context, feedID, episodeID uuid.UUID) (bool, error) {
+	if server.pipeline == nil {
+		return false, ErrNotPrepared
+	}
+	return server.pipeline.QueueEpisode(ctx, feedID, episodeID)
+}
+
 // RemoveFeed deletes a deleted feed's cached audio at once, instead of
 // leaving it for the hourly clean-up.
 func (server *Server) RemoveFeed(feedID uuid.UUID) error {

@@ -17,7 +17,7 @@
   {{range .Feeds}}
     <tr id="feed-{{.ID}}">
       <td data-label="Feed">
-        <div class="data-table__title">{{.Title}}</div>
+        <div class="data-table__title"><a href="/ui/feeds/{{.ID}}">{{.Title}}</a></div>
         <p class="meta"><span class="mono">{{.SourceHost}}</span> · exit {{.Exit}} · {{.DeliveryMode}}</p>
         <p class="meta">{{if .Failing}}<span class="badge badge--error">Failing</span> last poll {{.LastPolled}}; see the log{{else}}Last poll {{.LastPolled}}{{end}}</p>
       </td>
@@ -37,13 +37,3 @@
   </tbody>
 </table>
 {{end}}{{end}}
-
-{{define "badge"}}{{if .}}<span class="badge badge--on">On</span>{{else}}<span class="badge badge--off">Off</span>{{end}}{{end}}
-
-{{define "setting"}}<label class="setting" for="{{.Name}}-{{.FeedID}}">{{.Label}}
-  <select id="{{.Name}}-{{.FeedID}}" name="{{.Name}}">
-    <option value=""{{if eq .Value ""}} selected{{end}}>Default ({{if .DefaultOn}}on{{else}}off{{end}})</option>
-    <option value="on"{{if eq .Value "on"}} selected{{end}}>On</option>
-    <option value="off"{{if eq .Value "off"}} selected{{end}}>Off</option>
-  </select>
-</label>{{end}}

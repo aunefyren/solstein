@@ -120,6 +120,10 @@ func (handlers *handlers) registerUI(router *gin.Engine, version string, auth ui
 	})
 	pages.GET("/feeds", ui.feedList)
 	pages.POST("/feeds/:feedID", ui.feedSettings)
+	pages.GET("/feeds/:feedID", ui.feedPage)
+	pages.POST("/feeds/:feedID/retry", ui.retryFeed)
+	pages.POST("/feeds/:feedID/prepare", ui.prepareFeed)
+	pages.POST("/feeds/:feedID/episodes/:episodeID/queue", ui.queueEpisode)
 	pages.GET("/instance", ui.instancePage)
 	pages.GET("/exits", ui.exitsPage)
 	pages.GET("/account", ui.accountPage)
@@ -139,8 +143,8 @@ func newUI(handlers *handlers, auth uiAuthenticator, version string) (*ui, error
 	}
 	funcs := template.FuncMap{"setting": newSettingField}
 	pages := map[string]*template.Template{}
-	for _, page := range []string{"feeds", "instance", "exits", "login", "account", "totp", "error"} {
-		parsed, err := template.New(page).Funcs(funcs).ParseFS(webFiles, "web/templates/layout.html", "web/templates/facts.html", "web/templates/"+page+".html")
+	for _, page := range []string{"feeds", "feed", "instance", "exits", "login", "account", "totp", "error"} {
+		parsed, err := template.New(page).Funcs(funcs).ParseFS(webFiles, "web/templates/layout.html", "web/templates/facts.html", "web/templates/settings.html", "web/templates/"+page+".html")
 		if err != nil {
 			return nil, err
 		}
@@ -316,6 +320,16 @@ func uiFeedOf(service *feeds.Service, feed models.Feed) uiFeed {
 	}
 }
 
+// settingsFailed shows the page the settings form was on again, with what
+// went wrong.
+func (ui *ui) settingsFailed(context *gin.Context, notice *uiNotice) {
+	if context.PostForm("from") == "feed" {
+		ui.showFeedPage(context, http.StatusBadRequest, notice)
+		return
+	}
+	ui.showFeeds(context, http.StatusBadRequest, notice)
+}
+
 // uiFormField is one on/off override a form can set, and the feed field it
 // goes into.
 type uiFormField struct {
@@ -352,7 +366,7 @@ func (ui *ui) feedSettings(context *gin.Context) {
 			continue
 		}
 		if value != "" && value != "on" && value != "off" {
-			ui.showFeeds(context, http.StatusBadRequest, &uiNotice{Kind: "error", Text: "Couldn't save the settings of '" + feedTitle(feed) + "': a setting can only be Default, On or Off."})
+			ui.settingsFailed(context, &uiNotice{Kind: "error", Text: "Couldn't save the settings of '" + feedTitle(feed) + "': a setting can only be Default, On or Off."})
 			return
 		}
 		*field.target = value
@@ -360,7 +374,7 @@ func (ui *ui) feedSettings(context *gin.Context) {
 
 	err = ui.handlers.updateFeed(context.Request.Context(), &feed)
 	if errors.Is(err, feeds.ErrInvalidSettings) {
-		ui.showFeeds(context, http.StatusBadRequest, &uiNotice{Kind: "error", Text: "Couldn't save the settings of '" + feedTitle(feed) + "': " + err.Error() + "."})
+		ui.settingsFailed(context, &uiNotice{Kind: "error", Text: "Couldn't save the settings of '" + feedTitle(feed) + "': " + err.Error() + "."})
 		return
 	}
 	if err != nil {
@@ -369,6 +383,10 @@ func (ui *ui) feedSettings(context *gin.Context) {
 		return
 	}
 	logger.Log.Info("Changed the settings of feed '" + feed.Title + "' through the web UI (region diff: " + orDefault(feed.RegionDiff) + ", prepare ahead: " + orDefault(feed.PrepareAhead) + ").")
+	if context.PostForm("from") == "feed" {
+		context.Redirect(http.StatusSeeOther, feedPagePath(feed)+"?done=saved")
+		return
+	}
 	context.Redirect(http.StatusSeeOther, uiPrefix+"/feeds?saved="+feed.ID.String()+"#feed-"+feed.ID.String())
 }
 

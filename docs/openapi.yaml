@@ -552,6 +552,73 @@ paths:
           content:
             text/html: {}
 
+  /ui/feeds/{feedID}/retry:
+    parameters:
+      - $ref: "#/components/parameters/FeedID"
+    post:
+      tags: [Web UI]
+      summary: Retry a feed's failed episodes
+      description: |
+        As `POST /api/v1/feeds/{feedID}/retry`: every failed episode,
+        withheld or published unprocessed, is queued for another attempt.
+      operationId: postUIFeedRetry
+      security: []
+      responses:
+        "303":
+          description: To `/ui/feeds/{feedID}?done=retry&count=<queued>`.
+        "400":
+          description: The feed's episodes aren't prepared (stream or original mode).
+        "404":
+          description: No such feed.
+
+  /ui/feeds/{feedID}/prepare:
+    parameters:
+      - $ref: "#/components/parameters/FeedID"
+    post:
+      tags: [Web UI]
+      summary: Prepare a feed's episodes without their file
+      description: |
+        As `POST /api/v1/feeds/{feedID}/prepare` with no `newest`: every
+        episode published without its file is queued, newest first.
+      operationId: postUIFeedPrepare
+      security: []
+      responses:
+        "303":
+          description: To `/ui/feeds/{feedID}?done=prepare&count=<queued>`.
+        "400":
+          description: The feed's episodes aren't prepared (stream or original mode).
+        "404":
+          description: No such feed.
+
+  /ui/feeds/{feedID}/episodes/{episodeID}/queue:
+    parameters:
+      - $ref: "#/components/parameters/FeedID"
+      - name: episodeID
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [Web UI]
+      summary: Retry or prepare one episode
+      description: |
+        A failed episode is queued to be tried again, one published without
+        its file to be prepared, in the background.
+      operationId: postUIEpisodeQueue
+      security: []
+      responses:
+        "303":
+          description: Queued; to `/ui/feeds/{feedID}?done=queued&episode={episodeID}`.
+        "200":
+          description: Nothing to queue (it has its file, or is waiting already); the feed page with a notice.
+        "400":
+          description: The feed's episodes aren't prepared.
+        "404":
+          description: No such feed or episode.
+        "409":
+          description: The episode is being prepared right now.
+
   /ui/login:
     get:
       tags: [Web UI]
@@ -879,13 +946,59 @@ paths:
   /ui/feeds/{feedID}:
     parameters:
       - $ref: "#/components/parameters/FeedID"
+    get:
+      tags: [Web UI]
+      summary: Feed page
+      description: |
+        One feed: its settings, a count of its episodes by status, and its
+        episodes newest first (the newest 50 unless `show` says otherwise),
+        each with its status, what processing did or what went wrong (URLs
+        in errors cut down to their host), and Retry or Prepare where it
+        applies. `done` (with `episode` or `count`) names what was just
+        done, for the notice.
+      operationId: getUIFeed
+      security: []
+      parameters:
+        - name: show
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [all, problems]
+        - name: done
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [saved, queued, retry, prepare]
+        - name: episode
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: count
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: The page.
+          content:
+            text/html: {}
+        "404":
+          description: No such feed; an HTML error page.
+          content:
+            text/html: {}
     post:
       tags: [Web UI]
       summary: Save a feed's settings from the feed list
       description: |
         Only the fields sent are changed; `region_diff` is ignored when the
         region-diff module isn't running. Answered with a redirect back to
-        the list (post/redirect/get).
+        the list, or to the feed page when `from` is `feed`
+        (post/redirect/get).
       operationId: postUIFeedSettings
       security: []
       requestBody:
@@ -903,9 +1016,13 @@ paths:
                   type: string
                   enum: ["", "on", "off"]
                   description: Empty follows `prepare_ahead`.
+                from:
+                  type: string
+                  enum: [feed]
+                  description: Sent by the feed page, to come back to it.
       responses:
         "303":
-          description: Saved; to `/ui/feeds?saved={feedID}`.
+          description: Saved; to `/ui/feeds?saved={feedID}`, or `/ui/feeds/{feedID}?done=saved`.
         "400":
           description: A value other than empty, `on` or `off`, or a setting the feed can't have; the list with an error notice.
           content:

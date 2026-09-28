@@ -1,0 +1,69 @@
+{{define "title"}}{{.Content.Feed.Title}}{{end}}
+{{define "content"}}{{with .Content}}
+<div class="page-heading">
+  <h1>{{.Feed.Title}}</h1>
+  <p><span class="mono">{{.Feed.SourceHost}}</span> · exit {{.Feed.Exit}} · {{.Feed.DeliveryMode}} · {{if .Feed.Failing}}<span class="badge badge--error">Failing</span> last poll {{.Feed.LastPolled}}; see the log{{else}}last poll {{.Feed.LastPolled}}{{end}}</p>
+  <p>{{.Summary}}</p>
+</div>
+<section class="section">
+  <h2>Settings</h2>
+  <form class="data-table__form" method="post" action="/ui/feeds/{{.Feed.ID}}">
+    <input type="hidden" name="from" value="feed">
+    {{if .RegionDiffAvailable}}{{template "setting" (setting "region_diff" "Region diff" .Feed.ID .Feed.RegionDiff)}}{{end}}
+    {{template "setting" (setting "prepare_ahead" "Prepare ahead" .Feed.ID .Feed.PrepareAhead)}}
+    <button class="button button--primary" type="submit">Save</button>
+  </form>
+  <p class="meta">In use now: {{if .RegionDiffAvailable}}region diff {{if .Feed.RegionDiff.InUse}}on{{else}}off{{end}}, {{end}}prepare ahead {{if .Feed.PrepareAhead.InUse}}on{{else}}off{{end}}.</p>
+</section>
+<section class="section">
+  <h2>Episodes</h2>
+  <p class="view-links">
+    <a href="/ui/feeds/{{.Feed.ID}}"{{if eq .Filter ""}} aria-current="true"{{end}}>Newest {{if lt .Total 50}}{{.Total}}{{else}}50{{end}}</a>
+    {{if gt .Total 50}}<a href="/ui/feeds/{{.Feed.ID}}?show=all"{{if eq .Filter "all"}} aria-current="true"{{end}}>All {{.Total}}</a>{{end}}
+    <a href="/ui/feeds/{{.Feed.ID}}?show=problems"{{if eq .Filter "problems"}} aria-current="true"{{end}}>Only problems {{.Problems}}</a>
+  </p>
+  {{if .Prepares}}{{if or .Failed .NotCached}}<div class="actions">
+    {{if .Failed}}<form method="post" action="/ui/feeds/{{.Feed.ID}}/retry"><button class="button button--secondary" type="submit">Retry {{.Failed}} failed</button></form>{{end}}
+    {{if .NotCached}}<form method="post" action="/ui/feeds/{{.Feed.ID}}/prepare"><button class="button button--secondary" type="submit">Prepare {{.NotCached}} not cached</button></form>{{end}}
+  </div>{{end}}{{end}}
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th scope="col">Episode</th>
+        <th scope="col">Status</th>
+        <th scope="col">Result</th>
+        <th scope="col"><span class="visually-hidden">Action</span></th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range .Episodes}}
+      <tr id="episode-{{.ID}}">
+        <td data-label="Episode">
+          <div class="data-table__title">{{.Title}}</div>
+          <p class="meta">{{.Published}}{{with .Length}} · {{.}}{{end}}{{if .Backlog}} · backlog{{end}}</p>
+        </td>
+        <td data-label="Status">
+          <span class="badge badge--{{.Badge}}">{{.BadgeText}}</span>
+          <p class="meta">{{.Detail}}</p>
+          {{with .Served}}<p class="meta">{{.}}</p>{{end}}
+        </td>
+        <td data-label="Result">
+          {{with .Result}}<p>{{.}}</p>{{end}}
+          {{with .Error}}<p class="meta">{{.}}</p>{{end}}
+          {{if not (or .Result .Error)}}<p class="meta">Nothing yet.</p>{{end}}
+        </td>
+        <td{{if or .CanRetry .CanPrepare}} data-label="Action"{{end}}>
+          {{if or .CanRetry .CanPrepare}}<form method="post" action="/ui/feeds/{{$.Content.Feed.ID}}/episodes/{{.ID}}/queue">
+            <button class="button button--secondary" type="submit">{{if .CanRetry}}Retry{{else}}Prepare{{end}}</button>
+          </form>
+          {{if .ClientHasIt}}<p class="meta">A client already downloaded this episode; it won't fetch a cleaned copy.</p>{{end}}{{end}}
+        </td>
+      </tr>
+    {{else}}
+      <tr><td class="data-table__empty" colspan="4">{{if eq .Filter "problems"}}No problems: nothing failed or waiting on a retry.{{else}}No episodes found in the source feed.{{end}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{if and (eq .Filter "") (lt .Shown .Total)}}<p class="meta">Showing the newest {{.Shown}} of {{.Total}}. <a href="/ui/feeds/{{.Feed.ID}}?show=all">Show all</a></p>{{end}}
+</section>
+{{end}}{{end}}
