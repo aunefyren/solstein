@@ -25,10 +25,10 @@
     <a href="/ui/feeds/{{.Feed.ID}}?show=problems"{{if eq .Filter "problems"}} aria-current="true"{{end}}>Only problems {{.Problems}}</a>
   </p>
   {{if .Prepares}}{{if or .Failed .NotCached}}<div class="actions">
-    {{if .Failed}}<form method="post" action="/ui/feeds/{{.Feed.ID}}/retry"><button class="button button--secondary" type="submit">Retry {{.Failed}} failed</button></form>{{end}}
-    {{if .NotCached}}<form method="post" action="/ui/feeds/{{.Feed.ID}}/prepare"><button class="button button--secondary" type="submit">Prepare {{.NotCached}} not cached</button></form>{{end}}
+    {{if .Failed}}<form method="post" action="/ui/feeds/{{.Feed.ID}}/retry" data-live-submit><input type="hidden" name="show" value="{{.Filter}}"><button class="button button--secondary" type="submit">Retry {{.Failed}} failed</button></form>{{end}}
+    {{if .NotCached}}<form method="post" action="/ui/feeds/{{.Feed.ID}}/prepare" data-live-submit><input type="hidden" name="show" value="{{.Filter}}"><button class="button button--secondary" type="submit">Prepare {{.NotCached}} not cached</button></form>{{end}}
   </div>{{end}}{{end}}
-  <table class="data-table">
+  <table class="data-table data-table--fixed data-table--episodes">
     <thead>
       <tr>
         <th scope="col">Episode</th>
@@ -55,7 +55,8 @@
           {{if not (or .Result .Error)}}<p class="meta">Nothing yet.</p>{{end}}
         </td>
         <td{{if or .CanRetry .CanPrepare}} data-label="Action"{{end}}>
-          {{if or .CanRetry .CanPrepare}}<form method="post" action="/ui/feeds/{{$.Content.Feed.ID}}/episodes/{{.ID}}/queue">
+          {{if or .CanRetry .CanPrepare}}<form method="post" action="/ui/feeds/{{$.Content.Feed.ID}}/episodes/{{.ID}}/queue" data-live-submit>
+            <input type="hidden" name="show" value="{{$.Content.Filter}}">
             <button class="button button--secondary" type="submit">{{if .CanRetry}}Retry{{else}}Prepare{{end}}</button>
           </form>
           {{if .ClientHasIt}}<p class="meta">A client already downloaded this episode; it won't fetch a cleaned copy.</p>{{end}}{{end}}

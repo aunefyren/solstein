@@ -563,6 +563,17 @@ paths:
         withheld or published unprocessed, is queued for another attempt.
       operationId: postUIFeedRetry
       security: []
+      requestBody:
+        required: false
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                show:
+                  type: string
+                  enum: ["", all, problems]
+                  description: The view the action was taken in, to come back to.
       responses:
         "303":
           description: To `/ui/feeds/{feedID}?done=retry&count=<queued>`.
@@ -582,6 +593,17 @@ paths:
         episode published without its file is queued, newest first.
       operationId: postUIFeedPrepare
       security: []
+      requestBody:
+        required: false
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                show:
+                  type: string
+                  enum: ["", all, problems]
+                  description: The view the action was taken in, to come back to.
       responses:
         "303":
           description: To `/ui/feeds/{feedID}?done=prepare&count=<queued>`.
@@ -607,6 +629,17 @@ paths:
         its file to be prepared, in the background.
       operationId: postUIEpisodeQueue
       security: []
+      requestBody:
+        required: false
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                show:
+                  type: string
+                  enum: ["", all, problems]
+                  description: The view the action was taken in, to come back to.
       responses:
         "303":
           description: Queued; to `/ui/feeds/{feedID}?done=queued&episode={episodeID}`.

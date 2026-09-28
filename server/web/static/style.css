@@ -324,6 +324,25 @@ code,
   color: var(--color-muted);
 }
 
+/* Live tables keep their columns where they are while rows change. */
+.data-table--fixed {
+  table-layout: fixed;
+}
+
+.data-table--fixed td {
+  overflow-wrap: anywhere;
+}
+
+.data-table--episodes th:nth-child(1) { width: 32%; }
+.data-table--episodes th:nth-child(2) { width: 28%; }
+.data-table--episodes th:nth-child(3) { width: 28%; }
+.data-table--episodes th:nth-child(4) { width: 12%; }
+
+.data-table--exits th:nth-child(1) { width: 28%; }
+.data-table--exits th:nth-child(2) { width: 22%; }
+.data-table--exits th:nth-child(3) { width: 22%; }
+.data-table--exits th:nth-child(4) { width: 28%; }
+
 @media (max-width: 44rem) {
   .data-table,
   .data-table tbody,

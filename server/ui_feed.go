@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -221,7 +222,7 @@ func uiEpisodeOf(view episodes.EpisodeView) uiEpisode {
 	case episodes.StatusWorking:
 		row.Detail = "Being downloaded or cleaned right now."
 	case episodes.StatusQueued:
-		row.Detail = "Waiting for a worker; reload to see how it goes."
+		row.Detail = "Waiting for a worker."
 	case episodes.StatusRetrying:
 		row.Detail = "Attempt " + strconv.Itoa(view.FailedAttempts) + " failed; tried again at " + next + "."
 	case episodes.StatusWithheld:
@@ -247,13 +248,13 @@ func feedPageNotice(context *gin.Context, views []episodes.EpisodeView) *uiNotic
 	case "queued":
 		for _, view := range views {
 			if view.ID.String() == context.Query("episode") {
-				return &uiNotice{Kind: "ok", Text: "Queued '" + view.Title + "'. Reload to see how it goes."}
+				return &uiNotice{Kind: "ok", Text: "Queued '" + view.Title + "'."}
 			}
 		}
 	case "retry":
-		return &uiNotice{Kind: "ok", Text: "Queued " + plural(atoi(context.Query("count")), "failed episode") + " to be tried again. Reload to see how it goes."}
+		return &uiNotice{Kind: "ok", Text: "Queued " + plural(atoi(context.Query("count")), "failed episode") + " to be tried again."}
 	case "prepare":
-		return &uiNotice{Kind: "ok", Text: "Queued " + plural(atoi(context.Query("count")), "episode") + " to be prepared, newest first. Reload to see how it goes."}
+		return &uiNotice{Kind: "ok", Text: "Queued " + plural(atoi(context.Query("count")), "episode") + " to be prepared, newest first."}
 	}
 	return nil
 }
@@ -287,6 +288,17 @@ func feedPagePath(feed models.Feed) string {
 	return uiPrefix + "/feeds/" + feed.ID.String()
 }
 
+// feedPageURL is the feed page in a view ("", "all" or "problems"; anything
+// else is the default), with a query for the notice: an action comes back
+// to the view it was taken in, not the newest 50, where the episode may not
+// even be.
+func feedPageURL(feed models.Feed, show string, query url.Values) string {
+	if show == "all" || show == "problems" {
+		query.Set("show", show)
+	}
+	return feedPagePath(feed) + "?" + query.Encode()
+}
+
 // queueEpisode retries or prepares one episode.
 func (ui *ui) queueEpisode(context *gin.Context) {
 	feed, ok := ui.loadUIFeed(context)
@@ -303,7 +315,7 @@ func (ui *ui) queueEpisode(context *gin.Context) {
 	case errors.Is(err, database.ErrEpisodeNotFound):
 		ui.renderError(context, http.StatusNotFound, "No such episode", "This episode doesn't exist in this feed.")
 	case errors.Is(err, episodes.ErrEpisodeBusy):
-		ui.showFeedPage(context, http.StatusConflict, &uiNotice{Kind: "error", Text: "That episode is being prepared right now; reload to see how it goes."})
+		ui.showFeedPage(context, http.StatusConflict, &uiNotice{Kind: "error", Text: "That episode is being prepared right now."})
 	case errors.Is(err, episodes.ErrNotPrepared):
 		ui.showFeedPage(context, http.StatusBadRequest, &uiNotice{Kind: "error", Text: "This feed's episodes are served from the source, so there's nothing to prepare."})
 	case err != nil:
@@ -312,7 +324,8 @@ func (ui *ui) queueEpisode(context *gin.Context) {
 	case !queued:
 		ui.showFeedPage(context, http.StatusOK, &uiNotice{Kind: "ok", Text: "Nothing to queue: that episode has its file, or is waiting already."})
 	default:
-		context.Redirect(http.StatusSeeOther, feedPagePath(feed)+"?done=queued&episode="+episodeID.String()+"#episode-"+episodeID.String())
+		query := url.Values{"done": {"queued"}, "episode": {episodeID.String()}}
+		context.Redirect(http.StatusSeeOther, feedPageURL(feed, context.PostForm("show"), query)+"#episode-"+episodeID.String())
 	}
 }
 
@@ -347,7 +360,8 @@ func (ui *ui) queueFeed(context *gin.Context, done string, queue func(models.Fee
 		logger.Log.Error("Failed to queue the episodes of feed '" + feed.Title + "' from the web UI. Error: " + err.Error())
 		ui.renderError(context, http.StatusInternalServerError, "Couldn't queue the episodes", "Something went wrong; the log says what.")
 	default:
-		context.Redirect(http.StatusSeeOther, feedPagePath(feed)+"?done="+done+"&count="+strconv.Itoa(queued))
+		query := url.Values{"done": {done}, "count": {strconv.Itoa(queued)}}
+		context.Redirect(http.StatusSeeOther, feedPageURL(feed, context.PostForm("show"), query))
 	}
 }
 

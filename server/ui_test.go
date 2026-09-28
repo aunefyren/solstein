@@ -741,7 +741,7 @@ func TestUIFeedPage(t *testing.T) {
 	}
 	page, _, _ = strings.Cut(location, "#")
 	body := do(router, http.MethodGet, page, "", nil).Body.String()
-	if !strings.Contains(body, "Queued &#39;One&#39;. Reload to see how it goes.") || !strings.Contains(body, `<span class="badge badge--off">Queued</span>`) {
+	if !strings.Contains(body, "Queued &#39;One&#39;.") || !strings.Contains(body, `<span class="badge badge--off">Queued</span>`) {
 		t.Errorf("after queueing:\n%s", body)
 	}
 	// A notice only ever names what the feed has: an unknown ID says nothing.
@@ -759,13 +759,13 @@ func TestUIFeedPage(t *testing.T) {
 	if !strings.Contains(body, `<span class="badge badge--error">Given up</span>`) || !strings.Contains(body, "https://cdn.example.com/…") || strings.Contains(body, "s3cret") || !strings.Contains(body, ">Retry</button>") || !strings.Contains(body, "Retry 1 failed") {
 		t.Errorf("a given-up episode:\n%s", body)
 	}
-	if recorder := post("/ui/feeds/" + id + "/retry"); recorder.Header().Get("Location") != "/ui/feeds/"+id+"?done=retry&count=1" {
+	if recorder := post("/ui/feeds/" + id + "/retry"); recorder.Header().Get("Location") != "/ui/feeds/"+id+"?count=1&done=retry" {
 		t.Errorf("retry all: %d %q", recorder.Code, recorder.Header().Get("Location"))
 	}
 	if body := do(router, http.MethodGet, "/ui/feeds/"+id+"?done=retry&count=1", "", nil).Body.String(); !strings.Contains(body, "Queued 1 failed episode to be tried again.") {
 		t.Error("no notice after retrying all")
 	}
-	if recorder := post("/ui/feeds/" + id + "/prepare"); recorder.Header().Get("Location") != "/ui/feeds/"+id+"?done=prepare&count=0" {
+	if recorder := post("/ui/feeds/" + id + "/prepare"); recorder.Header().Get("Location") != "/ui/feeds/"+id+"?count=0&done=prepare" {
 		t.Errorf("prepare all: %d %q", recorder.Code, recorder.Header().Get("Location"))
 	}
 
@@ -965,5 +965,33 @@ func TestUILiveRegion(t *testing.T) {
 	recorder = do(router, http.MethodGet, "/ui/static/live.js", "", nil)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Header().Get("Content-Type"), "javascript") || !strings.Contains(recorder.Body.String(), "data-live") {
 		t.Errorf("live.js = %d %q", recorder.Code, recorder.Header().Get("Content-Type"))
+	}
+}
+
+// TestUIFeedActionsKeepTheView: an action taken in "Show all" or "Only
+// problems" comes back to it, at the episode, not to the newest 50 (where
+// the episode may not be, and the page would open at the top).
+func TestUIFeedActionsKeepTheView(t *testing.T) {
+	router, store := newUITestRouter(t, nil)
+	id := createFeed(t, router, startPodcastHost(t).URL+"/feed")
+	episodes, _ := store.ListEpisodes(context.Background(), uuid.MustParse(id))
+	form := map[string]string{"Content-Type": "application/x-www-form-urlencoded"}
+
+	page := do(router, http.MethodGet, "/ui/feeds/"+id+"?show=all", "", nil).Body.String()
+	if !strings.Contains(page, `<input type="hidden" name="show" value="all">`) || !strings.Contains(page, `data-live-submit`) || !strings.Contains(page, `data-table--fixed data-table--episodes`) {
+		t.Fatalf("the forms don't carry the view:\n%s", page)
+	}
+	recorder := do(router, http.MethodPost, "/ui/feeds/"+id+"/episodes/"+episodes[0].ID.String()+"/queue", url.Values{"show": {"all"}}.Encode(), form)
+	if want := "/ui/feeds/" + id + "?done=queued&episode=" + episodes[0].ID.String() + "&show=all#episode-" + episodes[0].ID.String(); recorder.Header().Get("Location") != want {
+		t.Errorf("queue from Show all: %q, want %q", recorder.Header().Get("Location"), want)
+	}
+	recorder = do(router, http.MethodPost, "/ui/feeds/"+id+"/prepare", url.Values{"show": {"problems"}}.Encode(), form)
+	if location := recorder.Header().Get("Location"); !strings.HasPrefix(location, "/ui/feeds/"+id+"?count=") || !strings.HasSuffix(location, "&done=prepare&show=problems") {
+		t.Errorf("prepare from Only problems: %q", location)
+	}
+	// Only the two views; anything else is the default.
+	recorder = do(router, http.MethodPost, "/ui/feeds/"+id+"/retry", url.Values{"show": {"https://evil.example"}}.Encode(), form)
+	if location := recorder.Header().Get("Location"); strings.Contains(location, "show=") || strings.Contains(location, "evil") {
+		t.Errorf("an unknown view: %q", location)
 	}
 }
