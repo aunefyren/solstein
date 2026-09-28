@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -46,47 +47,60 @@ func main() {
 	os.Exit(run())
 }
 
-// run holds the whole start-up and returns the exit code, so deferred cleanup
-// (closing the log file) runs before the process exits.
+// run runs Solstein until SIGINT or SIGTERM and returns the exit code, so
+// deferred cleanup (closing the log file) runs before the process exits.
 func run() int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return serve(ctx, os.Args[1:], os.Getenv, os.Stdout, os.Stderr)
+}
+
+// serve holds the whole start-up, then runs until ctx is cancelled. It takes
+// the process's arguments, environment and output rather than reaching for
+// os, so a test can start and stop Solstein.
+func serve(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	// `solstein user …` manages sign-in users on the console instead of
 	// running the app.
-	if len(os.Args) > 1 && os.Args[1] == "user" {
-		return console.Run(os.Args[2:], os.Getenv, os.Stdout, os.Stderr)
+	if len(args) > 0 && args[0] == "user" {
+		return console.Run(args[1:], getenv, stdout, stderr)
 	}
-	cfg, startup, err := settings.Resolve(os.Args[1:], os.Getenv, os.Stderr)
+	cfg, startup, err := settings.Resolve(args, getenv, stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		return 0
 	}
 	if err != nil {
 		// The logger isn't set up yet: its file lives in the config directory and
 		// its level comes from the config that just failed.
-		fmt.Fprintln(os.Stderr, "Failed to load configuration. Error: "+err.Error())
+		fmt.Fprintln(stderr, "Failed to load configuration. Error: "+err.Error())
 		return 1
 	}
 	if startup.ShowVersion {
-		fmt.Println("solstein " + version)
+		fmt.Fprintln(stdout, "solstein "+version)
 		return 0
 	}
 
 	// Set before the logger starts so log timestamps use the configured zone.
 	location, err := cfg.Location()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to load time zone. Error: "+err.Error())
+		fmt.Fprintln(stderr, "Failed to load time zone. Error: "+err.Error())
 		return 1
 	}
-	time.Local = location
+	// Only when it changes: with no time zone set, Location is time.Local
+	// already, and a needless write races with a test's clock reads.
+	if location != time.Local {
+		time.Local = location
+	}
 
 	logFile, err := logger.Init(startup.ConfigDir, cfg.LogLevel)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to initialise logger. Error: "+err.Error())
+		fmt.Fprintln(stderr, "Failed to initialise logger. Error: "+err.Error())
 		return 1
 	}
 	defer logFile.Close()
 
-	fmt.Println()
-	fmt.Println("S O L S T E I N")
-	fmt.Println()
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "S O L S T E I N")
+	fmt.Fprintln(stdout)
 	timezone := cfg.Timezone
 	if timezone == "" {
 		timezone = "system default"
@@ -106,7 +120,7 @@ func run() int {
 
 	// The VPN module is optional: with no usable providers it stays off and
 	// only "direct" exists.
-	vpnModule, vpnWarnings := exits.Setup(cfg.VPN, startup.ConfigDir, os.Getenv)
+	vpnModule, vpnWarnings := exits.Setup(cfg.VPN, startup.ConfigDir, getenv)
 	for _, warning := range vpnWarnings {
 		logger.Log.Warn("VPN: " + warning)
 	}
@@ -159,7 +173,9 @@ func run() int {
 		logger.Log.Warn("Private destinations are allowed; Solstein can fetch from loopback and internal network addresses.")
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// Cancelled on the way out too, so the background loops stop if the
+	// HTTP server fails.
+	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 
 	// Region diff is optional too: off unless region_diff names two exits

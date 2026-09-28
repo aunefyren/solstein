@@ -781,3 +781,134 @@ func TestSummarise(t *testing.T) {
 		t.Errorf("formatLength = %q", got)
 	}
 }
+
+// TestUIEpisodeRows checks what the feed page says for each status.
+func TestUIEpisodeRows(t *testing.T) {
+	now := time.Now()
+	later := now.Add(time.Hour)
+	served := now.Add(-time.Hour)
+	base := models.Episode{Title: "One", SourceSeconds: 3773, Backlog: true}
+	with := func(change func(*episodes.EpisodeView)) episodes.EpisodeView {
+		view := episodes.EpisodeView{Episode: base}
+		change(&view)
+		return view
+	}
+	for _, c := range []struct {
+		view  episodes.EpisodeView
+		badge string
+		want  string
+	}{
+		{with(func(v *episodes.EpisodeView) {
+			v.Status, v.CacheSize, v.CacheSeconds, v.ProcessNote = episodes.StatusCleaned, 90<<20, 3600, "removed 13m of ads in 3 breaks"
+		}), "Cleaned", "Cached, 90.0 MB, now 1:00:00."},
+		{with(func(v *episodes.EpisodeView) { v.Status, v.CacheSize = episodes.StatusCached, 1<<20 }), "Cached", "Cached, 1.0 MB."},
+		{with(func(v *episodes.EpisodeView) { v.Status = episodes.StatusNotCached }), "Not cached", "Fetched when a client asks for it, or with Prepare."},
+		{with(func(v *episodes.EpisodeView) {
+			v.Status, v.Backlog, v.FailedAttempts = episodes.StatusNotCached, false, 2
+		}), "Not cached", "Its cached copy expired; fetched again when a client asks. Failed 2 times on a client's request"},
+		{with(func(v *episodes.EpisodeView) { v.Status = episodes.StatusPassedThrough }), "Passed through", "Served from the source"},
+		{with(func(v *episodes.EpisodeView) { v.Status = episodes.StatusWorking }), "Working", "Being downloaded or cleaned right now."},
+		{with(func(v *episodes.EpisodeView) { v.Status = episodes.StatusQueued }), "Queued", "Waiting for a worker"},
+		{with(func(v *episodes.EpisodeView) {
+			v.Status, v.FailedAttempts, v.NextAttempt = episodes.StatusRetrying, 2, later
+		}), "Retrying", "Attempt 2 failed; tried again at " + later.Local().Format("2 Jan 15:04") + "."},
+		{with(func(v *episodes.EpisodeView) { v.Status, v.NextAttempt = episodes.StatusWithheld, later }), "Withheld", "next at " + later.Local().Format("2 Jan 15:04")},
+		{with(func(v *episodes.EpisodeView) { v.Status = episodes.StatusWithheld }), "Withheld", "from the next start-up"},
+		{with(func(v *episodes.EpisodeView) { v.Status = episodes.StatusGivenUp }), "Given up", "its retries are over"},
+		{with(func(v *episodes.EpisodeView) {
+			v.Status, v.CanRetry, v.FullyServedAt = episodes.StatusPublishedWithAds, true, &served
+		}), "Published with ads", "published with its ads"},
+	} {
+		row := uiEpisodeOf(c.view)
+		if row.BadgeText != c.badge || !strings.Contains(row.Detail, c.want) || row.Length != "1:02:53" {
+			t.Errorf("%s: badge %q, detail %q; want %q, %q", c.view.Status, row.BadgeText, row.Detail, c.badge, c.want)
+		}
+	}
+	row := uiEpisodeOf(with(func(v *episodes.EpisodeView) {
+		v.Status, v.CanRetry, v.FullyServedAt, v.Title = episodes.StatusPublishedWithAds, true, &served, ""
+	}))
+	if !row.ClientHasIt || !strings.HasPrefix(row.Served, "Downloaded by a client") || row.Title != "Untitled episode" {
+		t.Errorf("served, failed, untitled: %+v", row)
+	}
+	if row := uiEpisodeOf(with(func(v *episodes.EpisodeView) { v.Status = episodes.StatusCached })); row.Result != "Downloaded as it is." {
+		t.Errorf("cached result %q", row.Result)
+	}
+}
+
+// TestUISignInSteps covers the steps' own pages and what goes wrong in them.
+func TestUISignInSteps(t *testing.T) {
+	router, _, service, _ := newSignInTestRouter(t, nil, nil)
+	form := map[string]string{"Content-Type": "application/x-www-form-urlencoded"}
+	for target, want := range map[string]string{
+		"/ui/login/password": "Choose your password",
+		"/ui/login/totp":     "Enter your code",
+	} {
+		if body := do(router, http.MethodGet, target, "", nil).Body.String(); !strings.Contains(body, want) {
+			t.Errorf("GET %s lacks %q", target, want)
+		}
+	}
+	// Without a sign-in in progress, the steps send one back to the start.
+	for _, target := range []string{"/ui/login/password", "/ui/login/totp"} {
+		recorder := do(router, http.MethodPost, target, url.Values{"password": {"x"}, "repeat": {"x"}, "code": {"123456"}}.Encode(), form)
+		if recorder.Code != http.StatusUnauthorized || !strings.Contains(recorder.Body.String(), "That took too long. Sign in again.") {
+			t.Errorf("POST %s without a sign-in: %d", target, recorder.Code)
+		}
+	}
+
+	// The password rules, on the step and on the account page.
+	_, oneTime, _ := service.AddUser(context.Background(), "bob")
+	recorder := do(router, http.MethodPost, "/ui/login", url.Values{"username": {"bob"}, "password": {oneTime}}.Encode(), form)
+	signIn := cookieFrom(t, recorder, signInCookie)
+	withCookie := map[string]string{"Content-Type": "application/x-www-form-urlencoded", "Cookie": signInCookie + "=" + signIn.Value}
+	for _, values := range []url.Values{
+		{"password": {"short"}, "repeat": {"short"}},
+		{"password": {"long enough one"}, "repeat": {"long enough two"}},
+	} {
+		if recorder := do(router, http.MethodPost, "/ui/login/password", values.Encode(), withCookie); recorder.Code != http.StatusBadRequest {
+			t.Errorf("set password %v: %d", values, recorder.Code)
+		}
+	}
+	session := signInTester(t, service)
+	account := map[string]string{"Content-Type": "application/x-www-form-urlencoded", "Cookie": sessionCookie + "=" + session}
+	if recorder := do(router, http.MethodPost, "/ui/account/password", url.Values{"current": {testerPassword}, "password": {"short"}, "repeat": {"short"}}.Encode(), account); recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "A password is 10 to 256 characters.") {
+		t.Errorf("account password too short: %d", recorder.Code)
+	}
+	if recorder := do(router, http.MethodPost, "/ui/account/totp", url.Values{"code": {"123456"}}.Encode(), account); recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/ui/account" {
+		t.Errorf("confirm with nothing pending (a stale tab): %d %q, want back to the account", recorder.Code, recorder.Header().Get("Location"))
+	}
+	// A wrong confirmation code shows the set-up page again.
+	do(router, http.MethodPost, "/ui/account/totp/begin", "", account)
+	if recorder := do(router, http.MethodPost, "/ui/account/totp", url.Values{"code": {"000000"}}.Encode(), account); recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "That code doesn") {
+		t.Errorf("wrong confirmation code: %d", recorder.Code)
+	}
+}
+
+// TestUIFeedPagePassThrough: a feed in original mode has nothing to retry or
+// prepare, and the page and its actions say so.
+func TestUIFeedPagePassThrough(t *testing.T) {
+	router, store := newUITestRouter(t, nil)
+	id := createFeed(t, router, startPodcastHost(t).URL+"/feed")
+	ctx := context.Background()
+	feed, _ := store.GetFeed(ctx, uuid.MustParse(id))
+	feed.DeliveryMode = "original"
+	if err := store.UpdateFeed(ctx, &feed); err != nil {
+		t.Fatal(err)
+	}
+	body := do(router, http.MethodGet, "/ui/feeds/"+id, "", nil).Body.String()
+	if !strings.Contains(body, "1 passed through.") || !strings.Contains(body, `<span class="badge badge--off">Passed through</span>`) || strings.Contains(body, ">Prepare</button>") || strings.Contains(body, "not cached</button>") {
+		t.Errorf("an original-mode feed:\n%s", body)
+	}
+	episodes, _ := store.ListEpisodes(ctx, feed.ID)
+	form := map[string]string{"Content-Type": "application/x-www-form-urlencoded"}
+	for _, target := range []string{"/ui/feeds/" + id + "/retry", "/ui/feeds/" + id + "/prepare", "/ui/feeds/" + id + "/episodes/" + episodes[0].ID.String() + "/queue"} {
+		if recorder := do(router, http.MethodPost, target, "", form); recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "served from the source") {
+			t.Errorf("POST %s: %d", target, recorder.Code)
+		}
+	}
+	if recorder := do(router, http.MethodPost, "/ui/feeds/nope/retry", "", form); recorder.Code != http.StatusNotFound {
+		t.Errorf("retry an unknown feed: %d", recorder.Code)
+	}
+	if recorder := do(router, http.MethodPost, "/ui/feeds/"+id+"/episodes/nope/queue", "", form); recorder.Code != http.StatusNotFound {
+		t.Errorf("queue a malformed episode ID: %d", recorder.Code)
+	}
+}

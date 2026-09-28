@@ -328,6 +328,11 @@ func (ui *ui) confirmTOTP(context *gin.Context) {
 		ui.showTOTPSetup(context, http.StatusBadRequest, &uiNotice{Kind: "error", Text: "That code doesn't match. Check the app shows Solstein's newest code, and that your phone's clock is right."})
 		return
 	}
+	if errors.Is(err, auth.ErrNoPendingTOTP) {
+		// A stale tab: set up already, or never started.
+		context.Redirect(http.StatusSeeOther, uiPrefix+"/account")
+		return
+	}
 	if err != nil {
 		ui.accountFailed(context, err)
 		return

@@ -197,7 +197,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=v1.0.0" -o sols
 
 **Versioning:** `main.version` defaults to `dev` and is set at build time with `-ldflags "-X main.version=<tag>"` (the Dockerfile's `VERSION` build argument, the release workflow's tag). It is never written to `config.json` or into source files. (Pønskelisten `sed`s a placeholder in `config.go` and has a workflow that force-pushes rewritten tags; neither is needed here.)
 
-**Start-up and shutdown:** `main` calls `run()` and exits with its return code, so deferred cleanup runs. The HTTP server has a `ReadHeaderTimeout` but deliberately no `WriteTimeout` (large, slow episode downloads), and shuts down gracefully on SIGINT/SIGTERM with a 30-second grace period. `/api/health` reports `{"status":"ok","version":…}` for health checks.
+**Start-up and shutdown:** `main` calls `run()` and exits with its return code, so deferred cleanup runs. `run()` only turns SIGINT/SIGTERM into a cancelled context and hands it, with the arguments, environment and output streams, to `serve()`, which is the whole start-up and nothing else reaches for `os`: so `serve_test.go` starts Solstein for real (on a free port, with the web UI, a Proton provider and region diff, none of which connect until used) and stops it by cancelling. The HTTP server has a `ReadHeaderTimeout` but deliberately no `WriteTimeout` (large, slow episode downloads), and shuts down gracefully on SIGINT/SIGTERM with a 30-second grace period. `/api/health` reports `{"status":"ok","version":…}` for health checks.
 
 
 ## Testing

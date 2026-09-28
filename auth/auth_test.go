@@ -338,3 +338,62 @@ func TestSessionExpiry(t *testing.T) {
 		t.Errorf("the replacement session: %v", err)
 	}
 }
+
+// TestAccountErrors covers what goes wrong on the account side.
+func TestAccountErrors(t *testing.T) {
+	service, _, store := newTestService(t)
+	ctx := context.Background()
+	user, oneTime, _ := service.AddUser(ctx, "dave")
+	result, _ := service.SignIn(ctx, "dave", oneTime, "192.0.2.1")
+	service.SetPassword(ctx, result.Token, "dave's own password", "dave's own password")
+
+	if err := service.SignOut(ctx, "not-a-session"); err != nil {
+		t.Errorf("signing out an unknown session: %v", err)
+	}
+	if _, err := service.Session(ctx, ""); !errors.Is(err, ErrNoSession) {
+		t.Errorf("empty session: %v", err)
+	}
+	if _, err := service.ChangePassword(ctx, user.ID, "dave's own password", "short", "short"); !errors.Is(err, ErrPasswordRules) {
+		t.Errorf("a short new password: %v", err)
+	}
+	if err := service.DisableTOTP(ctx, user.ID, "wrong"); !errors.Is(err, ErrWrongPassword) {
+		t.Errorf("disable with a wrong password: %v", err)
+	}
+	if err := service.ConfirmTOTP(ctx, user.ID, "123456"); !errors.Is(err, ErrNoPendingTOTP) {
+		t.Errorf("confirm with nothing pending: %v", err)
+	}
+	if _, _, ok, err := service.PendingTOTP(ctx, user.ID); ok || err != nil {
+		t.Errorf("pending with nothing begun: %v, %v", ok, err)
+	}
+	if _, _, err := service.ResetPassword(ctx, "nobody"); !errors.Is(err, database.ErrUserNotFound) {
+		t.Errorf("reset an unknown user: %v", err)
+	}
+	if _, err := service.ResetTOTP(ctx, "Not Valid!"); !errors.Is(err, ErrInvalidUsername) {
+		t.Errorf("reset an invalid name: %v", err)
+	}
+	if err := service.DeleteUser(ctx, "nobody"); !errors.Is(err, database.ErrUserNotFound) {
+		t.Errorf("delete an unknown user: %v", err)
+	}
+	if got, err := service.User(ctx, user.ID); err != nil || got.Username != "dave" {
+		t.Errorf("User = %+v, %v", got, err)
+	}
+	if err := (TooManyAttempts{}).Error(); err != ErrTooManyAttempts.Error() {
+		t.Errorf("TooManyAttempts says %q", err)
+	}
+
+	// The store's own not-found answers.
+	missing := user
+	missing.ID = [16]byte{1}
+	if err := store.UpdateUser(ctx, &missing); !errors.Is(err, database.ErrUserNotFound) {
+		t.Errorf("update a missing user: %v", err)
+	}
+	if err := store.DeleteUser(ctx, missing.ID); !errors.Is(err, database.ErrUserNotFound) {
+		t.Errorf("delete a missing user: %v", err)
+	}
+	if err := store.TouchToken(ctx, missing.ID, time.Now(), time.Now()); !errors.Is(err, database.ErrTokenNotFound) {
+		t.Errorf("touch a missing token: %v", err)
+	}
+	if _, err := store.GetUser(ctx, missing.ID); !errors.Is(err, database.ErrUserNotFound) {
+		t.Errorf("get a missing user: %v", err)
+	}
+}
