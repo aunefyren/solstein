@@ -29,6 +29,8 @@ Defined once on `:root` in `style.css`, with a dark set under `prefers-color-sch
 | `--color-ok` | `#1d6f3a` | `#6bd08f` | "On", success notices |
 | `--color-warn` | `#8a5a00` | `#e8b04b` | Degraded, needs a look |
 | `--color-error` | `#b42318` | `#ff8f80` | Failures, errors |
+| `--color-qr-dark` | `#000000` | `#000000` | A QR code's modules: the same in both modes, so a phone can scan it |
+| `--color-qr-light` | `#ffffff` | `#ffffff` | A QR code's background and quiet zone |
 
 Every text/background pair meets WCAG AA (4.5:1 for body text). Check a new pair before adding it.
 
@@ -48,12 +50,15 @@ Every text/background pair meets WCAG AA (4.5:1 for body text). Check a new pair
 
 Class names are `block`, `block__element`, `block--modifier` (BEM-style), all lowercase with hyphens. Only these components exist; add a new one here before using it.
 
-- **Site header** (`site-header`): the product name, the nav (`site-nav`, the current page marked `aria-current="page"`), and on the right the user status (`site-user`): "No sign-in" today, the signed-in name later.
+- **Site header** (`site-header`): the product name, the nav (`site-nav`, the current page marked `aria-current="page"`), and on the right the user (`site-user`): the signed-in name, linking to Account, and a Sign out button (`button--secondary`, a form posting to `/ui/logout`). Signed out, the header has the name only: no nav, no user.
 - **Page heading** (`page-heading`): one `h1` per page, with an optional one-line description in `--color-muted` under it.
 - **Notice** (`notice`, `notice--ok`, `notice--error`): the outcome of the last action, at the top of the content, with `role="status"` (ok) or `role="alert"` (error). Says what happened, naming the object: "Saved the settings of 'Debatten'."
 - **Data table** (`data-table`, with `data-table__title` for a row's name, `data-table__form` for a row's settings form, `data-table__empty` for the "nothing yet" row): one row per thing (feed, exit); stacks into cards on narrow screens, each cell carrying its column name (`data-label`). The row's name comes first; secondary facts about it go in `meta` lines under it.
 - **Status badge** (`badge`, `badge--on`, `badge--off`, `badge--warn`, `badge--error`): a short word in a bordered pill, e.g. "On", "Off", "Check" (works, but worth a look), "Failing". **The word always carries the meaning**; the colour only reinforces it.
 - **Setting select** (`setting`): a labelled `<select>` for a per-feed override with three options: "Default (on)" or "Default (off)" (what the global setting gives), "On", "Off". The label is visible, not only a placeholder.
+- **Form** (`form-stack`): fields one under the other, each a `field`: a visible `<label>` above its `<input>`, with an optional hint (`field__hint`, muted) under it. Inputs get the right `type`, `autocomplete` (`username`, `current-password`, `new-password`, `one-time-code`) and, for codes, `inputmode="numeric"`, so password managers and phones do the right thing. The primary button last.
+- **Sign-in card** (`auth-card`): the sign-in steps, alone in a narrow centred column (24rem), one `h1` saying the step ("Sign in", "Choose your password", "Enter your code").
+- **QR code** (`qr`): inline SVG made on the server, always dark on white (`--color-qr-*`) with its quiet zone, 12rem wide; always with the secret as text beside it, for typing in instead.
 - **Button** (`button`, `button--primary`, `button--secondary`): `button--primary` for the one main action of a form (Save), `button--secondary` otherwise. Buttons say the action as a verb ("Save", not "OK" or "Submit").
 - **Meta line** (`meta`): small muted text for secondary facts (hostname, last poll).
 - **Section** (`section`): a titled group of content on a page, with an `h2` at `--text-lg`. A page with several groups uses one per group, in the order a reader needs them.

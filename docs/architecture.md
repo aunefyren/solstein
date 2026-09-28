@@ -57,6 +57,8 @@ A provider can also implement `outbound.Locator`, saying which countries an exit
 
 A provider can also implement `outbound.StatusReporter`, describing its exits and tunnels as they are right now (current server, open tunnels with their users, last handshake and key by number, benched servers); `Manager.Status` gathers it, plus the direct exit, for the web UI's exits page ([`web-ui.md`](web-ui.md)). It carries no key material by construction: its types have no field that could hold a key.
 
+**Sign-in** for the web UI is core too, not a module: `auth` holds users and the tokens Solstein issues (sessions today; personal access tokens and OIDC sign-in are planned on the same model), `console` manages users from the command line, and `server` checks sessions for every UI page ([`sign-in.md`](sign-in.md)).
+
 ### Episode processors (`episodes`)
 
 The core hands a processor a job and caches what it returns. The processor downloads the source through any exit via the job, so region diff needs nothing else from the core.

@@ -2,13 +2,21 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/base32"
+	"encoding/binary"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"aunefyren/solstein/auth"
 	"aunefyren/solstein/database"
 	"aunefyren/solstein/episodes"
 	"aunefyren/solstein/feeds"
@@ -21,13 +29,78 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// newUITestRouter is a router with the web UI on. processed, when set, stands
-// in for region diff (feeds.Options.Processed), so its setting is offered.
+// newUITestRouter is a router with the web UI on, signed in: every request
+// without a Cookie header gets a session of the user "tester". processed,
+// when set, stands in for region diff (feeds.Options.Processed), so its
+// setting is offered.
 func newUITestRouter(t *testing.T, processed func(models.Feed) bool) (http.Handler, *database.Store) {
+	t.Helper()
+	return newUITestRouterWith(t, processed, nil)
+}
+
+// newUITestRouterWith is newUITestRouter with config.json changed first.
+func newUITestRouterWith(t *testing.T, processed func(models.Feed) bool, modify func(cfg *settings.Config)) (http.Handler, *database.Store) {
+	t.Helper()
+	router, store, service, _ := newSignInTestRouter(t, processed, modify)
+	session := signInTester(t, service)
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Cookie") == "" {
+			request.AddCookie(&http.Cookie{Name: sessionCookie, Value: session})
+		}
+		router.ServeHTTP(writer, request)
+	}), store
+}
+
+const testerPassword = "tester's own password"
+
+// signInTester adds the user "tester" with testerPassword and returns a
+// session for them.
+func signInTester(t *testing.T, service *auth.Service) string {
+	t.Helper()
+	ctx := context.Background()
+	_, oneTime, err := service.AddUser(ctx, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.SignIn(ctx, "tester", oneTime, "192.0.2.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = service.SetPassword(ctx, result.Token, testerPassword, testerPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result.Token
+}
+
+// testClock is sign-in's clock in tests, so a test can wait out a TOTP step
+// without waiting.
+type testClock struct {
+	mutex sync.Mutex
+	now   time.Time
+}
+
+func (clock *testClock) Now() time.Time {
+	clock.mutex.Lock()
+	defer clock.mutex.Unlock()
+	return clock.now
+}
+
+func (clock *testClock) advance(by time.Duration) {
+	clock.mutex.Lock()
+	defer clock.mutex.Unlock()
+	clock.now = clock.now.Add(by)
+}
+
+// newSignInTestRouter is a router with the web UI on and nobody signed in.
+func newSignInTestRouter(t *testing.T, processed func(models.Feed) bool, modify func(cfg *settings.Config)) (http.Handler, *database.Store, *auth.Service, *testClock) {
 	t.Helper()
 	captureLog(t, logrus.DebugLevel)
 	cfg := testConfig()
 	cfg.WebUI.Enabled = true
+	if modify != nil {
+		modify(&cfg)
+	}
 	configDir := t.TempDir()
 	store, err := database.Open(configDir)
 	if err != nil {
@@ -45,11 +118,16 @@ func newUITestRouter(t *testing.T, processed func(models.Feed) bool) (http.Handl
 	}
 	pipeline := episodes.NewPipeline(store, exits, cache, episodes.Options{DefaultDeliveryMode: cfg.DeliveryMode})
 	episodeServer := episodes.NewServer(store, exits, cache, service, pipeline, episodes.Options{})
-	router, err := newRouter(Options{Config: cfg, Version: "v1.2.3", Feeds: service, Episodes: episodeServer, Instance: testInstance})
+	clock := &testClock{now: time.Now()}
+	signIn, err := auth.New(store, clock.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return router, store
+	router, err := newRouter(Options{Config: cfg, Version: "v1.2.3", Feeds: service, Episodes: episodeServer, Instance: testInstance, Auth: signIn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return router, store, signIn, clock
 }
 
 // testInstance is what start-up would hand the server.
@@ -105,7 +183,7 @@ func storedFeed(t *testing.T, store *database.Store, id string) models.Feed {
 
 func TestUIOffByDefault(t *testing.T) {
 	router := newTestRouter(t, nil)
-	for _, target := range []string{"/", "/ui/", "/ui/feeds", "/ui/static/style.css"} {
+	for _, target := range []string{"/", "/ui", "/ui/feeds", "/ui/login", "/ui/static/style.css"} {
 		if code := do(router, http.MethodGet, target, "", nil).Code; code != http.StatusNotFound {
 			t.Errorf("GET %s with the UI off = %d, want 404", target, code)
 		}
@@ -117,11 +195,14 @@ func TestUIListsFeeds(t *testing.T) {
 	host := startPodcastHost(t)
 	id := createFeed(t, router, host.URL+"/feed?key=private-token")
 
-	if location := do(router, http.MethodGet, "/", "", nil).Header().Get("Location"); location != "/ui/" {
-		t.Errorf("/ redirects to %q, want /ui/", location)
+	if location := do(router, http.MethodGet, "/", "", nil).Header().Get("Location"); location != "/ui" {
+		t.Errorf("/ redirects to %q, want /ui", location)
 	}
-	if location := do(router, http.MethodGet, "/ui/", "", nil).Header().Get("Location"); location != "/ui/feeds" {
-		t.Errorf("/ui/ redirects to %q, want /ui/feeds", location)
+	if location := do(router, http.MethodGet, "/ui", "", nil).Header().Get("Location"); location != "/ui/feeds" {
+		t.Errorf("/ui redirects to %q, want /ui/feeds", location)
+	}
+	if location := do(router, http.MethodGet, "/ui/", "", nil).Header().Get("Location"); location != "/ui" {
+		t.Errorf("/ui/ redirects to %q, want /ui", location)
 	}
 
 	recorder := do(router, http.MethodGet, "/ui/feeds", "", nil)
@@ -129,8 +210,8 @@ func TestUIListsFeeds(t *testing.T) {
 	if recorder.Code != http.StatusOK || !strings.Contains(body, "Fake Show") || !strings.Contains(body, `action="/ui/feeds/`+id+`"`) {
 		t.Fatalf("GET /ui/feeds = %d, want the feed and its settings form:\n%s", recorder.Code, body)
 	}
-	if !strings.Contains(body, "No sign-in") {
-		t.Error("the page doesn't say there is no sign-in")
+	if !strings.Contains(body, `<a href="/ui/account">tester</a>`) || !strings.Contains(body, `action="/ui/logout"`) {
+		t.Error("the header doesn't show who is signed in, and a way out")
 	}
 	if !strings.Contains(recorder.Header().Get("Content-Security-Policy"), "default-src 'none'") || recorder.Header().Get("Cache-Control") != "no-store" {
 		t.Errorf("headers = %v, want the UI's content security policy and no-store", recorder.Header())
@@ -272,7 +353,7 @@ func TestUIAuthenticatorGuardsPages(t *testing.T) {
 	}
 	checked := 0
 	for _, route := range router.Routes() {
-		if !strings.HasPrefix(route.Path, uiPrefix+"/") || strings.HasPrefix(route.Path, uiPrefix+"/static/") {
+		if !strings.HasPrefix(route.Path, uiPrefix) || strings.HasPrefix(route.Path, uiPrefix+"/static/") || strings.HasPrefix(route.Path, loginPath) {
 			continue
 		}
 		target := strings.ReplaceAll(route.Path, ":feedID", uuid.NewString())
@@ -331,8 +412,7 @@ func TestUIInstancePage(t *testing.T) {
 // TestUIInstancePageNeverShowsVPNKeys: neither a key nor the env:/file:
 // reference naming it reaches the page, whatever config.json holds.
 func TestUIInstancePageNeverShowsVPNKeys(t *testing.T) {
-	router := newTestRouter(t, func(cfg *settings.Config) {
-		cfg.WebUI.Enabled = true
+	router, _ := newUITestRouterWith(t, nil, func(cfg *settings.Config) {
 		cfg.VPN.Providers = map[string]settings.VPNProvider{"proton": {Type: "protonvpn", PrivateKeys: []string{"env:PROTON_KEY_1", "literal-private-key"}}}
 	})
 	body := do(router, http.MethodGet, "/ui/instance", "", nil).Body.String()
@@ -371,11 +451,21 @@ func TestUIExitsPage(t *testing.T) {
 }
 
 func TestUIExitsPageWithoutVPN(t *testing.T) {
-	router := newTestRouter(t, func(cfg *settings.Config) { cfg.WebUI.Enabled = true })
+	router, _ := newSignInTestRouterPlain(t)
 	body := do(router, http.MethodGet, "/ui/exits", "", nil).Body.String()
 	if !strings.Contains(body, "None set up") || !strings.Contains(body, "No exits.") || strings.Contains(body, "Tunnels") {
 		t.Errorf("without a VPN:\n%s", body)
 	}
+}
+
+// newSignInTestRouterPlain is a signed-in router whose Instance is empty, as
+// with no VPN.
+func newSignInTestRouterPlain(t *testing.T) (http.Handler, *database.Store) {
+	t.Helper()
+	saved := testInstance
+	testInstance = Instance{}
+	t.Cleanup(func() { testInstance = saved })
+	return newUITestRouter(t, nil)
 }
 
 func TestFormatDuration(t *testing.T) {
@@ -392,5 +482,212 @@ func TestFormatDuration(t *testing.T) {
 		if got := formatDuration(c.duration); got != c.want {
 			t.Errorf("formatDuration(%v) = %q, want %q", c.duration, got, c.want)
 		}
+	}
+}
+
+// totpAt is what an authenticator app shows for a base32 secret at a moment
+// (RFC 6238: HMAC-SHA1, 6 digits, 30 s).
+func totpAt(t *testing.T, secret string, at time.Time) string {
+	t.Helper()
+	key, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var counter [8]byte
+	binary.BigEndian.PutUint64(counter[:], uint64(at.Unix()/30))
+	mac := hmac.New(sha1.New, key)
+	mac.Write(counter[:])
+	sum := mac.Sum(nil)
+	offset := sum[len(sum)-1] & 0x0f
+	return fmt.Sprintf("%06d", (binary.BigEndian.Uint32(sum[offset:offset+4])&0x7fffffff)%1000000)
+}
+
+// cookieFrom is the value a response sets for a cookie, and the cookie.
+func cookieFrom(t *testing.T, recorder *httptest.ResponseRecorder, name string) *http.Cookie {
+	t.Helper()
+	for _, cookie := range recorder.Result().Cookies() {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
+	return nil
+}
+
+func TestUISignIn(t *testing.T) {
+	router, _, service, clock := newSignInTestRouter(t, nil, nil)
+	ctx := context.Background()
+
+	// Signed out, every page leads to signing in, and back afterwards.
+	recorder := do(router, http.MethodGet, "/ui/exits", "", nil)
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/ui/login?next=%2Fui%2Fexits" {
+		t.Fatalf("signed out: %d to %q", recorder.Code, recorder.Header().Get("Location"))
+	}
+	if body := do(router, http.MethodGet, "/ui/login", "", nil).Body.String(); !strings.Contains(body, "Nobody can sign in yet") || strings.Contains(body, `class="site-nav"`) {
+		t.Errorf("sign-in page with no users, or with the nav:\n%s", body)
+	}
+
+	_, oneTime, err := service.AddUser(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := func(values url.Values) string { return values.Encode() }
+	headers := func(cookies ...*http.Cookie) map[string]string {
+		h := map[string]string{"Content-Type": "application/x-www-form-urlencoded"}
+		var parts []string
+		for _, cookie := range cookies {
+			parts = append(parts, cookie.Name+"="+cookie.Value)
+		}
+		if len(parts) > 0 {
+			h["Cookie"] = strings.Join(parts, "; ")
+		}
+		return h
+	}
+
+	recorder = do(router, http.MethodPost, "/ui/login?next=%2Fui%2Fexits", form(url.Values{"username": {"alice"}, "password": {"wrong"}}), headers())
+	if recorder.Code != http.StatusUnauthorized || !strings.Contains(recorder.Body.String(), "Wrong username or password.") {
+		t.Errorf("wrong password: %d", recorder.Code)
+	}
+
+	// The one-time password: then choosing one's own.
+	recorder = do(router, http.MethodPost, "/ui/login?next=%2Fui%2Fexits", form(url.Values{"username": {"Alice"}, "password": {oneTime}}), headers())
+	signIn := cookieFrom(t, recorder, signInCookie)
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/ui/login/password?next=%2Fui%2Fexits" || signIn == nil {
+		t.Fatalf("one-time password: %d to %q", recorder.Code, recorder.Header().Get("Location"))
+	}
+	if !signIn.HttpOnly || signIn.SameSite != http.SameSiteLaxMode || signIn.Path != "/ui/login" || signIn.Secure {
+		t.Errorf("sign-in cookie %+v", signIn)
+	}
+	recorder = do(router, http.MethodPost, "/ui/login/password?next=%2Fui%2Fexits", form(url.Values{"password": {"alice's password"}, "repeat": {"alice's password"}}), headers(signIn))
+	session := cookieFrom(t, recorder, sessionCookie)
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/ui/exits" || session == nil || !session.HttpOnly || session.Path != "/ui" {
+		t.Fatalf("choosing a password: %d to %q, session %+v", recorder.Code, recorder.Header().Get("Location"), session)
+	}
+	if code := do(router, http.MethodGet, "/ui/exits", "", headers(session)).Code; code != http.StatusOK {
+		t.Errorf("signed in: %d", code)
+	}
+
+	// Setting up an authenticator: a POST starts it, the page shows it.
+	recorder = do(router, http.MethodPost, "/ui/account/totp/begin", "", headers(session))
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/ui/account/totp" {
+		t.Fatalf("begin: %d", recorder.Code)
+	}
+	page := do(router, http.MethodGet, "/ui/account/totp", "", headers(session)).Body.String()
+	user, _ := service.Users(ctx)
+	secret, _, _, _ := service.PendingTOTP(ctx, user[0].ID)
+	if !strings.Contains(page, `<svg class="qr"`) || !strings.Contains(page, `href="otpauth://totp/Solstein:alice?`) || strings.Contains(page, "ZgotmplZ") || !strings.Contains(page, secret[:4]+" "+secret[4:8]) {
+		t.Fatalf("set-up page:\n%s", page)
+	}
+	code := totpAt(t, secret, clock.Now())
+	if recorder := do(router, http.MethodPost, "/ui/account/totp", form(url.Values{"code": {code}}), headers(session)); recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/ui/account?done=totp-on" {
+		t.Fatalf("confirm: %d", recorder.Code)
+	}
+
+	// Signing out ends the session.
+	recorder = do(router, http.MethodPost, "/ui/logout", "", headers(session))
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/ui/login" || cookieFrom(t, recorder, sessionCookie).MaxAge >= 0 {
+		t.Fatalf("sign out: %d", recorder.Code)
+	}
+	if code := do(router, http.MethodGet, "/ui/feeds", "", headers(session)).Code; code != http.StatusSeeOther {
+		t.Errorf("after signing out: %d, want the redirect to sign in", code)
+	}
+
+	// Signing in again asks for a code; somewhere outside the UI isn't
+	// where it goes afterwards.
+	recorder = do(router, http.MethodPost, "/ui/login?next=https%3A%2F%2Fevil.example%2F", form(url.Values{"username": {"alice"}, "password": {"alice's password"}}), headers())
+	signIn = cookieFrom(t, recorder, signInCookie)
+	if recorder.Code != http.StatusSeeOther || !strings.HasPrefix(recorder.Header().Get("Location"), "/ui/login/totp?next=%2Fui%2Ffeeds") {
+		t.Fatalf("password with TOTP on: %d to %q", recorder.Code, recorder.Header().Get("Location"))
+	}
+	if recorder := do(router, http.MethodPost, "/ui/login/totp", form(url.Values{"code": {"000000"}}), headers(signIn)); recorder.Code != http.StatusUnauthorized {
+		t.Errorf("wrong code: %d", recorder.Code)
+	}
+	// The code used to confirm can't be used again: the next one.
+	if recorder := do(router, http.MethodPost, "/ui/login/totp", form(url.Values{"code": {code}}), headers(signIn)); recorder.Code != http.StatusUnauthorized {
+		t.Errorf("a code used again: %d", recorder.Code)
+	}
+	clock.advance(30 * time.Second)
+	next := totpAt(t, secret, clock.Now())
+	recorder = do(router, http.MethodPost, "/ui/login/totp", form(url.Values{"code": {next}}), headers(signIn))
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/ui/feeds" || cookieFrom(t, recorder, sessionCookie) == nil {
+		t.Fatalf("right code: %d to %q", recorder.Code, recorder.Header().Get("Location"))
+	}
+}
+
+func TestUISessionCookieSecureOverHTTPS(t *testing.T) {
+	router, _, service, _ := newSignInTestRouter(t, nil, nil)
+	_, oneTime, _ := service.AddUser(context.Background(), "alice")
+	request := httptest.NewRequest(http.MethodPost, "https://solstein.example/ui/login", strings.NewReader(url.Values{"username": {"alice"}, "password": {oneTime}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if cookie := cookieFrom(t, recorder, signInCookie); cookie == nil || !cookie.Secure {
+		t.Errorf("over HTTPS the cookie isn't Secure: %+v", cookie)
+	}
+}
+
+func TestSafeNext(t *testing.T) {
+	for next, want := range map[string]string{
+		"/ui/exits":            "/ui/exits",
+		"/ui/feeds?saved=x":    "/ui/feeds?saved=x",
+		"":                     "/ui/feeds",
+		"https://evil.example": "/ui/feeds",
+		"//evil.example/ui/":   "/ui/feeds",
+		"/ui/login":            "/ui/feeds",
+		"/ui/\\evil":           "/ui/feeds",
+		"/api/v1/feeds":        "/ui/feeds",
+	} {
+		if got := safeNext(next); got != want {
+			t.Errorf("safeNext(%q) = %q, want %q", next, got, want)
+		}
+	}
+}
+
+func TestUIAccount(t *testing.T) {
+	router, _, service, clock := newSignInTestRouter(t, nil, nil)
+	ctx := context.Background()
+	session := signInTester(t, service)
+	cookie := "solstein_session=" + session
+	post := func(target string, values url.Values, cookie string) *httptest.ResponseRecorder {
+		return do(router, http.MethodPost, target, values.Encode(), map[string]string{"Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie})
+	}
+
+	page := do(router, http.MethodGet, "/ui/account", "", map[string]string{"Cookie": cookie}).Body.String()
+	if !strings.Contains(page, "Signed in as <span class=\"mono\">tester</span>") || !strings.Contains(page, "Set up an authenticator") {
+		t.Fatalf("account page:\n%s", page)
+	}
+
+	if recorder := post("/ui/account/password", url.Values{"current": {"wrong"}, "password": {"a brand new one"}, "repeat": {"a brand new one"}}, cookie); recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "current password isn") {
+		t.Errorf("wrong current password: %d", recorder.Code)
+	}
+	recorder := post("/ui/account/password", url.Values{"current": {testerPassword}, "password": {"a brand new one"}, "repeat": {"a brand new one"}}, cookie)
+	replacement := cookieFrom(t, recorder, sessionCookie)
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/ui/account?done=password" || replacement == nil {
+		t.Fatalf("change password: %d", recorder.Code)
+	}
+	if code := do(router, http.MethodGet, "/ui/account", "", map[string]string{"Cookie": cookie}).Code; code != http.StatusSeeOther {
+		t.Error("the old session survives a password change")
+	}
+	cookie = "solstein_session=" + replacement.Value
+	if body := do(router, http.MethodGet, "/ui/account?done=password", "", map[string]string{"Cookie": cookie}).Body.String(); !strings.Contains(body, "Changed your password.") {
+		t.Error("no notice after changing the password")
+	}
+
+	// An authenticator, then removed again with the password.
+	post("/ui/account/totp/begin", nil, cookie)
+	users, _ := service.Users(ctx)
+	secret, _, _, _ := service.PendingTOTP(ctx, users[0].ID)
+	post("/ui/account/totp", url.Values{"code": {totpAt(t, secret, clock.Now())}}, cookie)
+	if body := do(router, http.MethodGet, "/ui/account", "", map[string]string{"Cookie": cookie}).Body.String(); !strings.Contains(body, "Remove authenticator") {
+		t.Fatal("the authenticator isn't on")
+	}
+	if recorder := post("/ui/account/totp/disable", url.Values{"password": {"wrong"}}, cookie); recorder.Code != http.StatusBadRequest {
+		t.Errorf("remove with a wrong password: %d", recorder.Code)
+	}
+	if recorder := post("/ui/account/totp/disable", url.Values{"password": {"a brand new one"}}, cookie); recorder.Header().Get("Location") != "/ui/account?done=totp-off" {
+		t.Errorf("remove: %d %q", recorder.Code, recorder.Header().Get("Location"))
+	}
+	// Without a pending set-up, its page goes back to the account.
+	if recorder := do(router, http.MethodGet, "/ui/account/totp", "", map[string]string{"Cookie": cookie}); recorder.Header().Get("Location") != "/ui/account" {
+		t.Errorf("set-up page with nothing pending: %d %q", recorder.Code, recorder.Header().Get("Location"))
 	}
 }

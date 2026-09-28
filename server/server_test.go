@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"aunefyren/solstein/auth"
 	"aunefyren/solstein/database"
 	"aunefyren/solstein/episodes"
 	"aunefyren/solstein/feeds"
@@ -126,7 +127,11 @@ func newTestRouterWithStore(t *testing.T, modify func(cfg *settings.Config)) (*g
 	}
 	pipeline := episodes.NewPipeline(store, exits, cache, episodes.Options{DefaultDeliveryMode: cfg.DeliveryMode})
 	episodeServer := episodes.NewServer(store, exits, cache, service, pipeline, episodes.Options{})
-	router, err := newRouter(Options{Config: cfg, Version: "v1.2.3", Feeds: service, Episodes: episodeServer})
+	signIn, err := auth.New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := newRouter(Options{Config: cfg, Version: "v1.2.3", Feeds: service, Episodes: episodeServer, Auth: signIn})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -695,11 +700,20 @@ func TestOpenAPICoversEveryRoute(t *testing.T) {
 		"/api/v1/feeds/:feedID/prepare": "/api/v1/feeds/{feedID}/prepare",
 		"/api/v1/retry":                 "/api/v1/retry",
 		"/":                             "/",
-		"/ui/":                          "/ui/",
+		"/ui":                           "/ui",
 		"/ui/feeds":                     "/ui/feeds",
 		"/ui/feeds/:feedID":             "/ui/feeds/{feedID}",
 		"/ui/instance":                  "/ui/instance",
 		"/ui/exits":                     "/ui/exits",
+		"/ui/login":                     "/ui/login",
+		"/ui/login/password":            "/ui/login/password",
+		"/ui/login/totp":                "/ui/login/totp",
+		"/ui/logout":                    "/ui/logout",
+		"/ui/account":                   "/ui/account",
+		"/ui/account/password":          "/ui/account/password",
+		"/ui/account/totp/begin":        "/ui/account/totp/begin",
+		"/ui/account/totp":              "/ui/account/totp",
+		"/ui/account/totp/disable":      "/ui/account/totp/disable",
 		"/ui/static/:file":              "/ui/static/{file}",
 	}
 	spec, err := os.ReadFile(filepath.Join("..", "docs", "openapi.yaml"))

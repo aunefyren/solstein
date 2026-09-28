@@ -16,6 +16,8 @@ settings/          Config struct, config.json load/save, flag + env overrides, s
 logger/            logrus wrapper, logger.Log
 server/            Gin router, access checks, prefix feed route, feed API, episode route, web UI (ui.go)
 server/web/        the web UI's templates and stylesheet, embedded in the binary; built to docs/style-guide.md
+auth/              core: sign-in users, argon2id passwords, TOTP, issued tokens (sessions), attempt limits
+console/           `solstein user …`: adding and resetting sign-in users on the console
 models/            persisted records (Base with UUID ID, Feed, Episode, FeedDocument) and their GORM mapping
 database/          SQLite via GORM: Store with named query functions, one file per model
 feeds/             core: source URLs, subscribe, refresh, poller, render (publish rules, signed URLs)
@@ -56,6 +58,7 @@ Keep the list short; every new dependency needs a reason.
 | Feed rewriting | Own `rss` package on `encoding/xml` `RawToken` + byte offsets; `golang.org/x/text/encoding/charmap` for Latin-1/Windows-1252 feeds | In use |
 | MP3 frames | Own `mp3` package | In use |
 | Web UI | Go's `html/template` and `embed`, one hand-written stylesheet; no JavaScript, framework or build step ([`style-guide.md`](style-guide.md)) | In use |
+| Sign-in | `golang.org/x/crypto/argon2` for passwords (the module was already a dependency); own TOTP (RFC 6238, a few dozen lines, tested against the RFC's vectors); `rsc.io/qr` (BSD, one pure-Go package) for the TOTP set-up QR code ([`sign-in.md`](sign-in.md)) | In use |
 | MP3 loudness | `mp3/spectrum`: Solstein's own, over a trimmed copy of `github.com/hajimehoshi/go-mp3` v0.3.4's frame decoding (Apache-2.0, licence and changes in `mp3/spectrum/`), not the Go module | In use |
 
 Notes:
@@ -92,7 +95,7 @@ Notes:
 - Three checks, in `server/access.go`: the **client network** check (every route but `/api/health`), the **subscribe token** (the `/api/rss/{token}/…` prefix route and the `/api/v1` feed API), and **URL signatures** (the feed and episode URLs Solstein writes out).
 - Tokens are compared with `subtle.ConstantTimeCompare`. Signatures are HMAC-SHA256 over the canonical path (`signing` package), URL-safe base64 in the `sig` query parameter; the handler checks the request path equals the canonical path, so a differently spelled path can't reuse a signature.
 - `disable_auth` turns off token and signature checks (the client network check stays). With it on, the token segment of the prefix route is optional.
-- **The web UI** (`server/ui.go`, off by default) has no sign-in yet: the client network check guards it, cross-origin POSTs are refused, and every page runs through `uiAuthenticator`, where sign-in goes ([`web-ui.md`](web-ui.md)).
+- **The web UI** (`server/ui.go`, off by default) needs a signed-in user on every page but the sign-in steps and static files: `uiAuthenticator` (`sessionAuth`) checks the session cookie; cross-origin POSTs are refused. Users and tokens live in `auth` ([`sign-in.md`](sign-in.md)); handlers reach them through `auth.Service`, never the database.
 - `X-Forwarded-For` is only believed from `trusted_proxies` (via Gin's `SetTrustedProxies`), and `X-Forwarded-Proto`/`-Host` only from them too (for building links when `external_url` is unset).
 - **Never log secrets.** The request logger logs the path only (never the query string, which carries signatures and API tokens) and redacts the prefix route's token segment. Source URLs are logged without their query string, since private feeds often carry an access token there.
 
@@ -159,6 +162,7 @@ Rules:
 - Defaults live in one place, `Config.applyDefaults`. `Config.Validate` runs after overrides, so a bad flag or env var stops start-up with a clear error.
 - **Adding a setting:** add the field to `Config` (snake_case JSON tag), a default in `applyDefaults` if it needs one, a check in `Validate`, and one entry in the `settings` table in `settings/flags.go`. That entry declares the flag and env var together, so they can't drift apart, and the help text lists both. Flag names are lowercase without separators (`externalurl`), env vars are `SOLSTEIN_` plus upper snake case (`SOLSTEIN_EXTERNAL_URL`).
 - **Time zone:** `timezone` / `-timezone` / `SOLSTEIN_TIMEZONE`, an IANA name. Empty means the system zone, so Docker's standard `TZ` also works. `main` sets `time.Local` from it before the logger starts; the binary embeds `time/tzdata`, so it works on hosts without a zone database. An unknown name fails validation rather than silently falling back (Pønskelisten resets to Europe/Paris).
+- **`solstein user …`** runs the console (`console.Run`) instead of the app: `main.go` hands it the arguments before any config is resolved. It finds the database through `settings.DefaultConfigDir`, as the app does.
 - Process-level options that can't live in `config.json` go in `Startup`: `-configdir` / `SOLSTEIN_CONFIG_DIR` (default `./config` locally, relative to the working directory; `/app/config` in Docker) and `-version`.
 - The resolved `Config` is a value passed explicitly to what needs it (`server.New(cfg, …)`); there is no mutable package-level config global, so tests don't need to restore shared state.
 - Each module gets its own nested block with an `enabled` switch when it is built; the exits module is also off whenever no VPN provider is configured. Per-feed overrides live with the feed's config.

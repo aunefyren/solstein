@@ -1,0 +1,45 @@
+{{define "title"}}Sign in{{end}}
+{{define "content"}}{{with .Content}}
+<div class="auth-card">
+{{if eq .Step "password"}}
+  <h1>Sign in</h1>
+  {{if .NoUsers}}<p class="meta">Nobody can sign in yet. Add a user on the console: <code>solstein user add &lt;name&gt;</code></p>{{end}}
+  <form class="form-stack" method="post" action="/ui/login?next={{.Next}}">
+    <div class="field">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+    </div>
+    <button class="button button--primary" type="submit">Sign in</button>
+  </form>
+  <p class="meta">Forgot your password or lost your authenticator? Whoever runs Solstein can reset it on the console.</p>
+{{else if eq .Step "set-password"}}
+  <h1>Choose your password</h1>
+  <p class="meta">You signed in with a one-time password. Choose your own, at least 10 characters; a few words work well.</p>
+  <form class="form-stack" method="post" action="/ui/login/password?next={{.Next}}">
+    <div class="field">
+      <label for="password">New password</label>
+      <input id="password" name="password" type="password" autocomplete="new-password" minlength="10" maxlength="256" required autofocus>
+    </div>
+    <div class="field">
+      <label for="repeat">New password again</label>
+      <input id="repeat" name="repeat" type="password" autocomplete="new-password" minlength="10" maxlength="256" required>
+    </div>
+    <button class="button button--primary" type="submit">Save and continue</button>
+  </form>
+{{else}}
+  <h1>Enter your code</h1>
+  <p class="meta">The six-digit code for Solstein in your authenticator app.</p>
+  <form class="form-stack" method="post" action="/ui/login/totp?next={{.Next}}">
+    <div class="field">
+      <label for="code">Code</label>
+      <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" maxlength="7" required autofocus>
+    </div>
+    <button class="button button--primary" type="submit">Sign in</button>
+  </form>
+{{end}}
+</div>
+{{end}}{{end}}

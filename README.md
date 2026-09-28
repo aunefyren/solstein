@@ -369,9 +369,23 @@ On first run Solstein creates `config.json` in its config directory (`/app/confi
 | `processing_wait_seconds` | `-processingwait` | `SOLSTEIN_PROCESSING_WAIT` | `20` | Seconds a client is held while an episode it asked for is being prepared, before it gets `503` and `Retry-After` (the work carries on either way). The default fits inside Audiobookshelf's 30-second download timeout. Raise it to let a client wait out a whole diff — and raise the client's own timeout to match (`PODCAST_DOWNLOAD_TIMEOUT` on Audiobookshelf), or the request fails on its side instead. At most 3600. |
 | `prepare_ahead` | `-prepareahead` | `SOLSTEIN_PREPARE_AHEAD` | `false` | Prepare every episode — download, or clean — before any client asks for it, and let it appear in the feed only once ready. Off by default: episodes are prepared when a feed is polled, and a backlog episode when it is first played. See **Operating styles**. |
 | `region_diff` | — | — | off | Ad removal; see **Removing ads**. Set in `config.json` only. |
-| `web_ui.enabled` | `-webui` | `SOLSTEIN_WEB_UI` | `false` | Serve a small web UI under `/ui` (and `/` redirecting to it) to see your feeds and switch their region diff and prepare ahead. It has **no sign-in yet**: anyone who can reach Solstein can change feed settings through it, so limit who can with `allowed_client_networks`. See `docs/web-ui.md`. |
+| `web_ui.enabled` | `-webui` | `SOLSTEIN_WEB_UI` | `false` | Serve a small web UI under `/ui` (and `/` redirecting to it): your feeds with their region diff and prepare ahead, the exits and tunnels, and this instance. Sign-in is required: add users on the console with `solstein user add <name>` (see **Web UI users**). See `docs/web-ui.md`. |
 | — | `-configdir` | `SOLSTEIN_CONFIG_DIR` | `config` (`/app/config` in Docker) | Directory for `config.json`, the database, logs and cache. |
 | — | `-version` | — | — | Print the version and exit. |
+
+### Web UI users
+
+With `web_ui.enabled` on, people sign in with a username and password, and can add an authenticator app (TOTP) under Account. Users are managed on the console only:
+
+```
+docker exec <container> /app/solstein user add <name>              # prints a one-time password
+docker exec <container> /app/solstein user reset-password <name>   # forgotten password: a new one-time password
+docker exec <container> /app/solstein user reset-mfa <name>        # lost phone: removes the authenticator
+docker exec <container> /app/solstein user list
+docker exec <container> /app/solstein user delete <name>
+```
+
+A one-time password works once, within 24 hours; at sign-in the user chooses their own. Resets sign the user out everywhere. Outside Docker, the same with `solstein user …` (`-configdir` if the config isn't in `./config`). Details: `docs/sign-in.md`.
 
 ### User and group (Docker)
 

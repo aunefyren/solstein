@@ -1,0 +1,45 @@
+{{define "title"}}Account{{end}}
+{{define "content"}}{{with .Content}}
+<div class="page-heading">
+  <h1>Account</h1>
+  <p>Signed in as <span class="mono">{{.Username}}</span>.</p>
+</div>
+<section class="section">
+  <h2>Authenticator</h2>
+  {{if .TOTPEnabled}}
+  <p><span class="badge badge--on">On</span> Signing in asks for a code from your authenticator app.</p>
+  <form class="form-stack" method="post" action="/ui/account/totp/disable">
+    <div class="field">
+      <label for="totp-password">Password</label>
+      <input id="totp-password" name="password" type="password" autocomplete="current-password" required>
+      <p class="field__hint">To remove your authenticator, confirm with your password.</p>
+    </div>
+    <button class="button button--secondary" type="submit">Remove authenticator</button>
+  </form>
+  {{else}}
+  <p><span class="badge badge--off">Off</span> Signing in asks for your password alone. An authenticator app (such as Aegis, 2FAS or Google Authenticator) adds a code only your phone has.</p>
+  <form method="post" action="/ui/account/totp/begin">
+    <button class="button button--primary" type="submit">{{if .Pending}}Continue setting up{{else}}Set up an authenticator{{end}}</button>
+  </form>
+  {{end}}
+</section>
+<section class="section">
+  <h2>Password</h2>
+  <form class="form-stack" method="post" action="/ui/account/password">
+    <div class="field">
+      <label for="current">Current password</label>
+      <input id="current" name="current" type="password" autocomplete="current-password" required>
+    </div>
+    <div class="field">
+      <label for="password">New password</label>
+      <input id="password" name="password" type="password" autocomplete="new-password" minlength="10" maxlength="256" required>
+      <p class="field__hint">At least 10 characters. Other browsers are signed out.</p>
+    </div>
+    <div class="field">
+      <label for="repeat">New password again</label>
+      <input id="repeat" name="repeat" type="password" autocomplete="new-password" minlength="10" maxlength="256" required>
+    </div>
+    <button class="button button--primary" type="submit">Change password</button>
+  </form>
+</section>
+{{end}}{{end}}

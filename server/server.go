@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"aunefyren/solstein/auth"
 	"aunefyren/solstein/episodes"
 	"aunefyren/solstein/feeds"
 	"aunefyren/solstein/logger"
@@ -33,6 +34,8 @@ type Options struct {
 	Episodes *episodes.Server
 	// Instance is what start-up worked out, for the web UI's instance page.
 	Instance Instance
+	// Auth signs people in to the web UI; required when web_ui.enabled.
+	Auth *auth.Service
 }
 
 // Instance is what start-up worked out about this Solstein, beyond
@@ -75,6 +78,7 @@ type Module struct {
 
 // handlers carries what the route handlers need.
 type handlers struct {
+	auth        *auth.Service
 	config      settings.Config
 	instance    Instance
 	feeds       *feeds.Service
@@ -114,6 +118,7 @@ func newRouter(options Options) (*gin.Engine, error) {
 		return nil, fmt.Errorf("trusted proxies: %w", err)
 	}
 	handlers := &handlers{
+		auth:     options.Auth,
 		config:   cfg,
 		instance: options.Instance,
 		feeds:    options.Feeds,
@@ -158,7 +163,10 @@ func newRouter(options Options) (*gin.Engine, error) {
 	}
 
 	if cfg.WebUI.Enabled {
-		if err := handlers.registerUI(router, options.Version, noSignIn{}); err != nil {
+		if options.Auth == nil {
+			return nil, errors.New("web UI: no sign-in service")
+		}
+		if err := handlers.registerUI(router, options.Version, sessionAuth{auth: options.Auth}); err != nil {
 			return nil, fmt.Errorf("web UI: %w", err)
 		}
 	}

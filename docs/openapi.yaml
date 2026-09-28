@@ -43,8 +43,10 @@ tags:
   - name: Web UI
     description: |
       HTML pages for people (`docs/web-ui.md`), only when `web_ui.enabled`
-      is on. No sign-in yet: they are guarded by `allowed_client_networks`
-      alone, and a form posted from another site is refused with `403`.
+      is on. Every page but the sign-in steps and static files needs a
+      session (`docs/sign-in.md`): without one, the answer is `303` to
+      `/ui/login?next=<page>`. A form posted from another site is refused
+      with `403`, as is anything from outside `allowed_client_networks`.
 
 paths:
   /api/health:
@@ -508,12 +510,14 @@ paths:
       security: []
       responses:
         "302":
-          description: To `/ui/`.
+          description: To `/ui`.
 
-  /ui/:
+  /ui:
     get:
       tags: [Web UI]
       summary: Web UI start page
+      description: |
+        `/ui/` redirects here (`301`).
       operationId: getUI
       security: []
       responses:
@@ -547,6 +551,294 @@ paths:
           description: The feeds couldn't be loaded; an HTML error page.
           content:
             text/html: {}
+
+  /ui/login:
+    get:
+      tags: [Web UI]
+      summary: Sign-in page
+      description: |
+        Username and password. Says so when no user exists yet (they are added on
+        the console, `solstein user add`).
+      operationId: getUILogin
+      security: []
+      parameters:
+        - name: next
+          in: query
+          required: false
+          description: Where to go once signed in; a path under `/ui/` only, otherwise the feed list.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The page.
+          content:
+            text/html: {}
+    post:
+      tags: [Web UI]
+      summary: Sign in with username and password
+      description: |
+        On success: `303` to the next step (`/ui/login/password` after a one-time
+        password, `/ui/login/totp` with an authenticator) with a `solstein_sign_in`
+        cookie, or straight to `next` with the `solstein_session` cookie.
+        Failed attempts are limited per username and per address.
+      operationId: postUILogin
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                  description: The username; case doesn't matter.
+                password:
+                  type: string
+                  description: The password, or a one-time password from the console.
+      responses:
+        "303":
+          description: To the next step, or signed in.
+        "401":
+          description: Wrong username or password; the page again.
+        "429":
+          description: Too many failed attempts; the page again, saying until when.
+
+  /ui/login/password:
+    get:
+      tags: [Web UI]
+      summary: Choose-a-password step
+      description: |
+        After signing in with a one-time password.
+      operationId: getUILoginPassword
+      security: []
+      parameters:
+        - name: next
+          in: query
+          required: false
+          description: Where to go once signed in; a path under `/ui/` only, otherwise the feed list.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The page.
+          content:
+            text/html: {}
+    post:
+      tags: [Web UI]
+      summary: Choose one's own password
+      description: |
+        Needs the `solstein_sign_in` cookie from the step before.
+      operationId: postUILoginPassword
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [password, repeat]
+              properties:
+                password:
+                  type: string
+                  description: The new password, 10 to 256 characters.
+                repeat:
+                  type: string
+                  description: The same again.
+      responses:
+        "303":
+          description: To the TOTP step, or signed in.
+        "400":
+          description: The two differ, it's too short, or it is the one-time password.
+        "401":
+          description: The sign-in took too long; back to the first step.
+
+  /ui/login/totp:
+    get:
+      tags: [Web UI]
+      summary: TOTP code step
+      description: |
+        For a user with an authenticator.
+      operationId: getUILoginTOTP
+      security: []
+      parameters:
+        - name: next
+          in: query
+          required: false
+          description: Where to go once signed in; a path under `/ui/` only, otherwise the feed list.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The page.
+          content:
+            text/html: {}
+    post:
+      tags: [Web UI]
+      summary: Sign in with a TOTP code
+      description: |
+        Needs the `solstein_sign_in` cookie. A code works once.
+      operationId: postUILoginTOTP
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+                  description: The six digits from the authenticator app.
+      responses:
+        "303":
+          description: "Signed in: to `next`, with the `solstein_session` cookie."
+        "401":
+          description: Wrong or already used code, or the sign-in took too long.
+        "429":
+          description: Too many failed attempts.
+
+  /ui/logout:
+    post:
+      tags: [Web UI]
+      summary: Sign out
+      description: |
+        Ends the session and clears its cookie.
+      operationId: postUILogout
+      security: []
+      responses:
+        "303":
+          description: To `/ui/login`.
+
+  /ui/account:
+    get:
+      tags: [Web UI]
+      summary: Account page
+      description: |
+        The signed-in user's password and authenticator. `done` names what was
+        just changed, for the notice.
+      operationId: getUIAccount
+      security: []
+      parameters:
+        - name: done
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [password, totp-on, totp-off]
+      responses:
+        "200":
+          description: The page.
+          content:
+            text/html: {}
+
+  /ui/account/password:
+    post:
+      tags: [Web UI]
+      summary: Change one's password
+      description: |
+        Other sessions end; a new session cookie replaces the current one.
+      operationId: postUIAccountPassword
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [current, password, repeat]
+              properties:
+                current:
+                  type: string
+                  description: The current password.
+                password:
+                  type: string
+                  description: The new password, 10 to 256 characters.
+                repeat:
+                  type: string
+                  description: The same again.
+      responses:
+        "303":
+          description: To `/ui/account?done=password`.
+        "400":
+          description: Wrong current password, or the new one doesn't fit the rules.
+
+  /ui/account/totp/begin:
+    post:
+      tags: [Web UI]
+      summary: Start setting up an authenticator
+      description: |
+        Makes a pending secret (or keeps the one already pending).
+      operationId: postUIAccountTOTPBegin
+      security: []
+      responses:
+        "303":
+          description: To `/ui/account/totp`.
+
+  /ui/account/totp:
+    get:
+      tags: [Web UI]
+      summary: Authenticator set-up page
+      description: |
+        The pending secret as a QR code (inline SVG), as text, and as an
+        `otpauth://` link. With nothing pending, `303` to `/ui/account`.
+      operationId: getUIAccountTOTP
+      security: []
+      responses:
+        "200":
+          description: The page.
+          content:
+            text/html: {}
+    post:
+      tags: [Web UI]
+      summary: Turn the authenticator on
+      description: |
+        Given a code from it.
+      operationId: postUIAccountTOTP
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+                  description: The six digits the app shows.
+      responses:
+        "303":
+          description: To `/ui/account?done=totp-on`.
+        "400":
+          description: The code doesn't match; the set-up page again.
+
+  /ui/account/totp/disable:
+    post:
+      tags: [Web UI]
+      summary: Remove the authenticator
+      description: |
+        Given the password.
+      operationId: postUIAccountTOTPDisable
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+                  description: The password.
+      responses:
+        "303":
+          description: To `/ui/account?done=totp-off`.
+        "400":
+          description: Wrong password.
 
   /ui/instance:
     get:

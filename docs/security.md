@@ -14,7 +14,7 @@ Clients generally can't send custom headers or cookies on feed and episode reque
 
 ## Web UI
 
-Off by default (`web_ui.enabled`), because it has no sign-in yet: switched on, anyone allowed by `allowed_client_networks` can change feed settings through it, and start-up warns saying how widely it can be reached. It can't add or remove feeds, so it can't make Solstein fetch anything new on anyone's behalf, and it never shows a token, signed URL or a feed's full source URL. Cross-origin form posts are refused, and pages carry a strict content security policy. Details in [`web-ui.md`](web-ui.md).
+Off by default (`web_ui.enabled`). Switched on, every page needs a signed-in user: password (argon2id) and optional TOTP, sessions as hashed opaque tokens in an `HttpOnly`, `SameSite=Lax` cookie, `Secure` over HTTPS, failed attempts limited per username and per address; users are added and reset on the console only ([`sign-in.md`](sign-in.md)). It can't add or remove feeds, so it can't make Solstein fetch anything new, and it never shows a token, signed URL or a feed's full source URL. Cross-origin form posts are refused, and pages carry a strict content security policy ([`web-ui.md`](web-ui.md)). The feed API keeps the subscribe token.
 
 ## Network settings
 

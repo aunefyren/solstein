@@ -10,15 +10,18 @@
 <body>
 <header class="site-header">
   <div class="site-header__inner">
-    <a class="site-header__name" href="/ui/">Solstein</a>
-    <nav aria-label="Main">
+    <a class="site-header__name" href="/ui/feeds">Solstein</a>
+    {{if not .User.Anonymous}}<nav aria-label="Main">
       <ul class="site-nav">
         <li><a href="/ui/feeds"{{if eq .Nav "feeds"}} aria-current="page"{{end}}>Feeds</a></li>
         <li><a href="/ui/exits"{{if eq .Nav "exits"}} aria-current="page"{{end}}>Exits</a></li>
         <li><a href="/ui/instance"{{if eq .Nav "instance"}} aria-current="page"{{end}}>Instance</a></li>
       </ul>
     </nav>
-    <p class="site-user">{{if .User.Anonymous}}No sign-in{{else}}{{.User.Name}}{{end}}</p>
+    <div class="site-user">
+      <a href="/ui/account"{{if eq .Nav "account"}} aria-current="page"{{end}}>{{.User.Name}}</a>
+      <form method="post" action="/ui/logout"><button class="button button--secondary" type="submit">Sign out</button></form>
+    </div>{{end}}
   </div>
 </header>
 <main class="page">

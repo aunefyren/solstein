@@ -12,6 +12,8 @@
   --color-ok: #1d6f3a;
   --color-warn: #8a5a00;
   --color-error: #b42318;
+  --color-qr-dark: #000000;
+  --color-qr-light: #ffffff;
 
   --font-body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Consolas, monospace;
@@ -120,9 +122,16 @@ code,
 }
 
 .site-user {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
   margin-left: auto;
   color: var(--color-muted);
   font-size: var(--text-sm);
+}
+
+.site-user form {
+  margin: 0;
 }
 
 /* Page */
@@ -382,4 +391,72 @@ code,
 .button--secondary {
   background: var(--color-surface);
   color: var(--color-text);
+}
+
+/* Form */
+
+.form-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  align-items: flex-start;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+  max-width: 24rem;
+}
+
+.field label {
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+}
+
+.field input {
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font: inherit;
+}
+
+.field__hint {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+}
+
+/* Sign-in card */
+
+.auth-card {
+  max-width: 24rem;
+  margin: var(--space-6) auto 0;
+  padding: var(--space-5);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.auth-card h1 {
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-xl);
+  font-weight: 600;
+}
+
+/* QR code */
+
+.qr {
+  display: block;
+  width: 12rem;
+  height: 12rem;
+  background: var(--color-qr-light);
+  border-radius: var(--radius);
+}
+
+.qr path {
+  fill: var(--color-qr-dark);
 }

@@ -65,14 +65,6 @@ type uiAuthenticator interface {
 	authenticate(context *gin.Context) (uiUser, bool)
 }
 
-// noSignIn is the authenticator while the UI has no sign-in: everyone is
-// anonymous, and allowed_client_networks is the only guard.
-type noSignIn struct{}
-
-func (noSignIn) authenticate(*gin.Context) (uiUser, bool) {
-	return uiUser{}, true
-}
-
 // ui serves the web UI's pages.
 type ui struct {
 	handlers    *handlers
@@ -107,19 +99,36 @@ func (handlers *handlers) registerUI(router *gin.Engine, version string, auth ui
 		return err
 	}
 	router.GET("/", func(context *gin.Context) {
-		context.Redirect(http.StatusFound, uiPrefix+"/")
+		context.Redirect(http.StatusFound, uiPrefix)
 	})
 	// The stylesheet and icon need no user: a sign-in page may need them.
 	router.GET(uiPrefix+"/static/:file", ui.securityHeaders, ui.staticFile)
 
-	pages := router.Group(uiPrefix, ui.securityHeaders, ui.requireUser, ui.sameOrigin)
-	pages.GET("/", func(context *gin.Context) {
+	// Signing in: the only pages without a user.
+	signIn := router.Group(loginPath, ui.securityHeaders, ui.sameOrigin)
+	signIn.GET("", ui.loginForm)
+	signIn.POST("", ui.loginSubmit)
+	signIn.GET("/password", ui.setPasswordForm)
+	signIn.POST("/password", ui.setPasswordSubmit)
+	signIn.GET("/totp", ui.totpForm)
+	signIn.POST("/totp", ui.totpSubmit)
+
+	pages := router.Group(uiPrefix, ui.securityHeaders, ui.sameOrigin, ui.requireUser)
+	// "/ui" rather than "/ui/": Gin sends "/ui/" here anyway.
+	pages.GET("", func(context *gin.Context) {
 		context.Redirect(http.StatusFound, uiPrefix+"/feeds")
 	})
 	pages.GET("/feeds", ui.feedList)
 	pages.POST("/feeds/:feedID", ui.feedSettings)
 	pages.GET("/instance", ui.instancePage)
 	pages.GET("/exits", ui.exitsPage)
+	pages.GET("/account", ui.accountPage)
+	pages.POST("/account/password", ui.changePassword)
+	pages.POST("/account/totp/begin", ui.beginTOTP)
+	pages.GET("/account/totp", ui.totpSetupPage)
+	pages.POST("/account/totp", ui.confirmTOTP)
+	pages.POST("/account/totp/disable", ui.disableTOTP)
+	pages.POST("/logout", ui.logout)
 	return nil
 }
 
@@ -130,7 +139,7 @@ func newUI(handlers *handlers, auth uiAuthenticator, version string) (*ui, error
 	}
 	funcs := template.FuncMap{"setting": newSettingField}
 	pages := map[string]*template.Template{}
-	for _, page := range []string{"feeds", "instance", "exits", "error"} {
+	for _, page := range []string{"feeds", "instance", "exits", "login", "account", "totp", "error"} {
 		parsed, err := template.New(page).Funcs(funcs).ParseFS(webFiles, "web/templates/layout.html", "web/templates/facts.html", "web/templates/"+page+".html")
 		if err != nil {
 			return nil, err
@@ -471,7 +480,7 @@ func (ui *ui) instancePage(context *gin.Context) {
 		}
 		modules = append(modules, fact)
 	}
-	modules = append(modules, warnFact("Web UI", "On, without sign-in: anyone allowed by allowed_client_networks can change feed settings here."))
+	modules = append(modules, ui.webUIFact(context))
 
 	defaults := []uiFact{
 		{Label: "Delivery mode", Value: cfg.DeliveryMode, Mono: true},
@@ -758,4 +767,20 @@ func sentenceCase(message string) string {
 		return message
 	}
 	return strings.ToUpper(message[:1]) + message[1:]
+}
+
+// webUIFact is the web UI's own line on the instance page: who can sign in.
+func (ui *ui) webUIFact(context *gin.Context) uiFact {
+	users, err := ui.handlers.auth.Users(context.Request.Context())
+	if err != nil {
+		logger.Log.Error("Failed to list web UI users. Error: " + err.Error())
+		return uiFact{Label: "Web UI", Badge: "on", BadgeText: "On", Value: "With sign-in; the users couldn't be counted (the log says why)."}
+	}
+	withTOTP := 0
+	for _, user := range users {
+		if user.TOTPEnabled {
+			withTOTP++
+		}
+	}
+	return uiFact{Label: "Web UI", Badge: "on", BadgeText: "On", Value: "With sign-in: " + plural(len(users), "user") + ", " + strconv.Itoa(withTOTP) + " with an authenticator. Users are added and reset on the console (solstein user)."}
 }

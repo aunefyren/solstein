@@ -22,6 +22,16 @@ type Startup struct {
 	ShowVersion bool
 }
 
+// DefaultConfigDir is the config directory when -configdir isn't given:
+// SOLSTEIN_CONFIG_DIR, or ./config. The console commands use it too, so they
+// find the same database as the app.
+func DefaultConfigDir(getenv func(string) string) string {
+	if dir := getenv(configDirEnv); dir != "" {
+		return dir
+	}
+	return defaultConfigDir
+}
+
 // setting is one config.json field that can be changed by a flag or an
 // environment variable. Declaring both names in one table keeps them in sync,
 // and means entrypoint.sh doesn't need to map every variable to a flag.
@@ -281,11 +291,7 @@ func Resolve(args []string, getenv func(string) string, output io.Writer) (Confi
 	}
 
 	var startup Startup
-	configDirDefault := getenv(configDirEnv)
-	if configDirDefault == "" {
-		configDirDefault = defaultConfigDir
-	}
-	fs.StringVar(&startup.ConfigDir, "configdir", configDirDefault, "Directory for config.json, logs and cached episodes. Env: "+configDirEnv+".")
+	fs.StringVar(&startup.ConfigDir, "configdir", DefaultConfigDir(getenv), "Directory for config.json, logs and cached episodes. Env: "+configDirEnv+".")
 	fs.BoolVar(&startup.ShowVersion, "version", false, "Print the version and exit.")
 
 	if err := fs.Parse(args); err != nil {

@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"aunefyren/solstein/auth"
+	"aunefyren/solstein/console"
 	"aunefyren/solstein/database"
 	"aunefyren/solstein/episodes"
 	"aunefyren/solstein/feeds"
@@ -47,6 +49,11 @@ func main() {
 // run holds the whole start-up and returns the exit code, so deferred cleanup
 // (closing the log file) runs before the process exits.
 func run() int {
+	// `solstein user …` manages sign-in users on the console instead of
+	// running the app.
+	if len(os.Args) > 1 && os.Args[1] == "user" {
+		return console.Run(os.Args[2:], os.Getenv, os.Stdout, os.Stderr)
+	}
 	cfg, startup, err := settings.Resolve(os.Args[1:], os.Getenv, os.Stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		return 0
@@ -238,14 +245,24 @@ func run() int {
 		logger.Log.Info("Tracking redirects in front of episode URLs are skipped: episodes are fetched from the audio host directly, and the shows' download counts don't see them.")
 	}
 
+	var signIn *auth.Service
 	if cfg.WebUI.Enabled {
-		// No sign-in yet: the client network check is all that stands in
-		// front of it, so say how open that is.
-		reach := "only from allowed_client_networks (" + strings.Join(cfg.AllowedClientNetworks, ", ") + ")"
-		if len(cfg.AllowedClientNetworks) == 0 {
-			reach = "from any address, as allowed_client_networks is empty"
+		if signIn, err = auth.New(store, nil); err != nil {
+			logger.Log.Error("Failed to set up sign-in for the web UI. Error: " + err.Error())
+			return 1
 		}
-		logger.Log.Warn("Web UI on at <external URL>/ui/, without sign-in: anyone who can reach Solstein can change feed settings through it, and it can be reached " + reach + ". Set web_ui.enabled to false to switch it off.")
+		switch users, err := signIn.Users(ctx); {
+		case err != nil:
+			logger.Log.Error("Failed to list web UI users. Error: " + err.Error())
+		case len(users) == 0:
+			logger.Log.Warn("Web UI on at <external URL>/ui, but nobody can sign in yet: add a user on the console with `solstein user add <name>` (in Docker: docker exec <container> /app/solstein user add <name>).")
+		default:
+			count := fmt.Sprintf("%d users", len(users))
+			if len(users) == 1 {
+				count = "1 user"
+			}
+			logger.Log.Info("Web UI on at <external URL>/ui, with sign-in for " + count + ". Users are added and reset with `solstein user`.")
+		}
 	}
 
 	instance := server.Instance{
@@ -270,7 +287,7 @@ func run() int {
 	}
 	instance.Modules = []server.Module{vpnState, regionDiffState}
 
-	srv, err := server.New(server.Options{Config: cfg, Version: version, Feeds: feedService, Episodes: episodeServer, Instance: instance})
+	srv, err := server.New(server.Options{Config: cfg, Version: version, Feeds: feedService, Episodes: episodeServer, Instance: instance, Auth: signIn})
 	if err != nil {
 		logger.Log.Error("Failed to set up HTTP server. Error: " + err.Error())
 		return 1

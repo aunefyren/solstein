@@ -1,0 +1,22 @@
+{{define "title"}}Set up an authenticator{{end}}
+{{define "content"}}{{with .Content}}
+<div class="page-heading">
+  <h1>Set up an authenticator</h1>
+  <p>Scan the code with your authenticator app, then enter the code it shows.</p>
+</div>
+<section class="section">
+  {{.QR}}
+  <p class="meta">Can't scan it? Enter this key in the app instead (time-based, 6 digits):</p>
+  <p class="mono">{{.Secret}}</p>
+  <p class="meta">On a phone: <a href="{{.URI}}">open in your authenticator app</a>.</p>
+</section>
+<section class="section">
+  <form class="form-stack" method="post" action="/ui/account/totp">
+    <div class="field">
+      <label for="code">Code from the app</label>
+      <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" maxlength="7" required autofocus>
+    </div>
+    <button class="button button--primary" type="submit">Turn on</button>
+  </form>
+</section>
+{{end}}{{end}}

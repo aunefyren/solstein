@@ -1,6 +1,6 @@
 # Web UI
 
-A small web interface for people, next to the API: server-rendered pages under `/ui`, built to the [style guide](style-guide.md). Three pages so far: the feeds with their simple settings, the exits, and the instance; more pages are added the same way (style guide, "Adding a page").
+A small web interface for people, next to the API: server-rendered pages under `/ui`, built to the [style guide](style-guide.md). Pages so far: the feeds with their simple settings, the exits, the instance, and Account (with the sign-in steps, [`sign-in.md`](sign-in.md)); more pages are added the same way (style guide, "Adding a page").
 
 ## Switching it on
 
@@ -10,9 +10,9 @@ A small web interface for people, next to the API: server-rendered pages under `
 }
 ```
 
-Also `-webui` / `SOLSTEIN_WEB_UI`. **Off by default**, because it has no sign-in yet (below): switched on, anyone who can reach Solstein can change feed settings through it. Switched off, it costs nothing: no templates are parsed and none of its routes exist (`/ui/...` and `/` answer `404`). Start-up warns while it's on, saying how widely it can be reached ("…from any address, as allowed_client_networks is empty").
+Also `-webui` / `SOLSTEIN_WEB_UI`. **Off by default.** Switched on, every page needs someone signed in ([`sign-in.md`](sign-in.md)); there is no way to run it without sign-in. Users are added on the console (`solstein user add <name>`); until there is one, start-up warns that nobody can sign in yet, and says how to add a user. Switched off, it costs nothing: no templates are parsed and none of its routes exist (`/ui/...` and `/` answer `404`).
 
-With it on, `/` redirects to `/ui/`, and `/ui/` to the feed list.
+With it on, `/` redirects to `/ui`, and `/ui` to the feed list (`/ui/` redirects to `/ui`). The header shows the signed-in user, linking to **Account** (their password and authenticator, [`sign-in.md`](sign-in.md)), and a Sign out button.
 
 ## Pages
 
@@ -22,7 +22,7 @@ A change goes through the same code as `PATCH /api/v1/feeds/{id}` (`handlers.upd
 
 **Exits** (`/ui/exits`): where Solstein's traffic goes out, as of when the page was loaded (it doesn't refresh itself; it says the time). A table of every exit: its provider (or "This host's own connection" for `direct`), what uses it (default exit, region diff home, partner or fallback, how many feeds name it), where it goes out ("NO only" when strict, otherwise the list it works down), the server its next connection goes to, and its tunnel: "Open" with its users (or how long it's been idle), the last handshake and which key by number, or "Closed" (tunnels open on first use). Then one section per VPN provider: type, servers and where the list came from, how many keys, the tunnel limit, the open tunnels, and benched servers (marked "Check", with how much longer). Last, **Setup**: the default exit, the direct exit, and start-up's check that every exit in use at once can have its own tunnel, either "Enough" or the same warning as the log, marked "Check". Live data comes from `outbound.Manager.Status` (`outbound.StatusReporter`, implemented by the exits module, [`exits.md`](exits.md)), so the server shows tunnels without importing the module.
 
-**Instance** (`/ui/instance`): this Solstein as it runs, read-only, in four sections. **Solstein:** version, running since, time zone, external URL, number of feeds. **Modules:** exits (VPN) and region diff, each "On" or "Off" with the module's own summary of how it came up (or why it's off); the VPN line links to the exits page instead of repeating it ("3 exits, default mine: see Exits."); the web UI itself is marked "Check" while it has no sign-in. **Defaults for feeds:** delivery mode, polling, prepare ahead, region diff and its failure policy (only while the module runs), the client wait, the cache, tracking redirects. **Access:** token and signed URLs, allowed client networks, trusted proxies, allowed source hosts, private destinations. Anything worth a look carries a "Check" badge: no external URL, any address allowed, auth or the private-address block off. Nothing on it can be changed there: it says to change `config.json` and restart.
+**Instance** (`/ui/instance`): this Solstein as it runs, read-only, in four sections. **Solstein:** version, running since, time zone, external URL, number of feeds. **Modules:** exits (VPN) and region diff, each "On" or "Off" with the module's own summary of how it came up (or why it's off); the VPN line links to the exits page instead of repeating it ("3 exits, default mine: see Exits."); the web UI itself with how many users can sign in, and how many have an authenticator. **Defaults for feeds:** delivery mode, polling, prepare ahead, region diff and its failure policy (only while the module runs), the client wait, the cache, tracking redirects. **Access:** token and signed URLs, allowed client networks, trusted proxies, allowed source hosts, private destinations. Anything worth a look carries a "Check" badge: no external URL, any address allowed, auth or the private-address block off. Nothing on it can be changed there: it says to change `config.json` and restart.
 
 What start-up works out beyond `config.json` (module state, the resolved default exit) comes in as `server.Instance`, filled in by `main.go`, so the server shows it without importing a module. The page never shows the subscribe token, the signing key, a VPN key or the `env:`/`file:` references naming one (tested).
 
@@ -36,11 +36,11 @@ What isn't there yet, on purpose, is in [`wip.md`](wip.md) (Web UI).
 
 ## Security
 
-- **Behind `allowed_client_networks`** like every other route. That's the only guard while there's no sign-in, which is why the UI is off by default and start-up warns.
+- **Sign-in on every page** but the sign-in steps and the static files ([`sign-in.md`](sign-in.md)), and behind `allowed_client_networks` like every other route.
 - **Cross-origin posts are refused** (`403`, logged): Go's `http.CrossOriginProtection` checks `Sec-Fetch-Site`, falling back to `Origin` against `Host`. Without it, a page on another site could change settings through the browser of someone on an allowed network; with a session cookie later, it's the CSRF protection sign-in needs anyway.
 - **Headers:** a content security policy allowing only the UI's own stylesheet and icon (`default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`: no scripts, no inline style, no framing), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`; pages are `Cache-Control: no-store`.
 - **Nothing secret on a page:** no subscribe token, signed feed URL or key; a feed's source shows only its host, since the path or query of a private feed's URL can carry its access token; a failed poll shows "Failing", not the error text, which can contain that URL (tested).
-- **One place for sign-in:** every page is registered on the `/ui` group that runs `uiAuthenticator` (static files aside, which a sign-in page may need). Today that's `noSignIn`: everyone is anonymous, and the header says "No sign-in". A test swaps in an authenticator that refuses everyone and checks that every UI route answers with its `401`, so a page added later can't miss it. `uiUser` carries a `Subject` (OAuth 2.0/OpenID Connect `sub`) and a name for when sign-in exists.
+- **One place for sign-in:** every page is registered on the `/ui` group that runs `uiAuthenticator`; the sign-in steps and static files are the only routes outside it. `sessionAuth` checks the session cookie and otherwise redirects to `/ui/login?next=<page>` (a form post goes back to the feed list, since it can't be replayed). A test swaps in an authenticator that refuses everyone and checks that every UI route answers with its `401`, so a page added later can't miss it. `uiUser` carries a `Subject` (the user's ID, as an OAuth 2.0/OpenID Connect `sub`) and a name.
 
 ## Verified live (2026-09-28, `docker-test`)
 

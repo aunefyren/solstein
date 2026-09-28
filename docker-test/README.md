@@ -93,6 +93,18 @@ library** (folder `/podcasts` is already mounted) **→ Add Podcast → paste
 prepared or cleaned; select episodes explicitly to control how many run
 through region diff at once (the point of this harness is usually 10–20).
 
+## The web UI
+
+Off in `config.template.json`; set `"web_ui": {"enabled": true}` in
+`data/solstein/config.json` and restart to try it at
+`http://localhost:8080/ui`. It needs a user, added on the console:
+
+```
+docker exec st-solstein /app/solstein user add <name>   # prints a one-time password
+```
+
+See `docs/web-ui.md` and `docs/sign-in.md`.
+
 ## Watching it work
 
 ```
