@@ -7,6 +7,7 @@ import (
 	"encoding/base32"
 	"encoding/binary"
 	"fmt"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -993,5 +994,145 @@ func TestUIFeedActionsKeepTheView(t *testing.T) {
 	recorder = do(router, http.MethodPost, "/ui/feeds/"+id+"/retry", url.Values{"show": {"https://evil.example"}}.Encode(), form)
 	if location := recorder.Header().Get("Location"); strings.Contains(location, "show=") || strings.Contains(location, "evil") {
 		t.Errorf("an unknown view: %q", location)
+	}
+}
+
+func TestUIRuleEditor(t *testing.T) {
+	router, store := newUITestRouter(t, nil)
+	id := createFeed(t, router, startPodcastHost(t).URL+"/feed")
+	ctx := context.Background()
+	feedID := uuid.MustParse(id)
+
+	page := do(router, http.MethodGet, "/ui/feeds/"+id, "", nil).Body.String()
+	for _, want := range []string{
+		`<section class="section" id="rules">`, "No rules yet", `name="rules" value="1"`,
+		`<th scope="rowgroup" colspan="7">Add a rule</th>`, `<option value="1" selected>At the end</option>`, `<option value="" selected>Choose an action</option>`,
+		`<option value="tag:bonus">Tag as bonus</option>`, `for="rule-0-title"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the editor lacks %q", want)
+		}
+	}
+
+	// A new rule from the empty row.
+	code, location, body := postForm(router, "/ui/feeds/"+id+"/rules", url.Values{
+		"rules": {"1"}, "rule-0-position": {"1"}, "rule-0-title": {"^one$"}, "rule-0-action": {"tag:bonus"},
+	}, nil)
+	if code != http.StatusSeeOther || location != "/ui/feeds/"+id+"?done=rules#rules" {
+		t.Fatalf("save = %d to %q:\n%s", code, location, body)
+	}
+	rules, _ := store.ListFeedRules(ctx, feedID)
+	if len(rules) != 1 || rules[0].Action != "tag" || rules[0].EpisodeType != "bonus" || rules[0].TitleMatches != "^one$" {
+		t.Fatalf("stored %+v", rules)
+	}
+	page = do(router, http.MethodGet, "/ui/feeds/"+id+"?done=rules", "", nil).Body.String()
+	for _, want := range []string{
+		"Saved the rules.", `name="rules" value="2"`, `value="^one$"`, `<option value="tag:bonus" selected>`, "<td data-label=\"Matches\">1 episode</td>", "Remove<span",
+		`<option value="1">Before rule 1</option>`, `<option value="2" selected>At the end</option>`, " · tagged bonus by rule 1</p>",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("after saving, the page lacks %q", want)
+		}
+	}
+
+	// A second one put before the first, with lengths.
+	code, _, body = postForm(router, "/ui/feeds/"+id+"/rules", url.Values{
+		"rules":           {"2"},
+		"rule-0-position": {"1"}, "rule-0-title": {"^one$"}, "rule-0-action": {"tag:bonus"},
+		"rule-1-position": {"1"}, "rule-1-at-least": {"1:00"}, "rule-1-at-most": {"1:30:00"}, "rule-1-action": {"hide"},
+	}, nil)
+	if code != http.StatusSeeOther {
+		t.Fatalf("save two = %d:\n%s", code, body)
+	}
+	rules, _ = store.ListFeedRules(ctx, feedID)
+	if len(rules) != 2 || rules[0].Action != "hide" || rules[1].Action != "tag" || rules[0].MinSeconds != 60 || rules[0].MaxSeconds != 5400 {
+		t.Fatalf("the new rule goes before rule 1: stored %+v", rules)
+	}
+	// Moved: the second to 1; a tie with the first keeps the rows' order.
+	code, _, _ = postForm(router, "/ui/feeds/"+id+"/rules", url.Values{
+		"rules":           {"3"},
+		"rule-0-position": {"2"}, "rule-0-at-least": {"1:00"}, "rule-0-at-most": {"1:30:00"}, "rule-0-action": {"hide"},
+		"rule-1-position": {"1"}, "rule-1-title": {"^one$"}, "rule-1-action": {"tag:bonus"},
+		"rule-2-position": {"3"},
+	}, nil)
+	rules, _ = store.ListFeedRules(ctx, feedID)
+	if code != http.StatusSeeOther || len(rules) != 2 || rules[0].Action != "tag" || rules[1].Action != "hide" {
+		t.Fatalf("reorder = %d, stored %+v", code, rules)
+	}
+	code, _, _ = postForm(router, "/ui/feeds/"+id+"/rules", url.Values{
+		"rules":           {"3"},
+		"rule-0-position": {"1"}, "rule-0-title": {"^one$"}, "rule-0-action": {"tag:bonus"},
+		"rule-1-position": {"1"}, "rule-1-at-least": {"1:00"}, "rule-1-at-most": {"1:30:00"}, "rule-1-action": {"hide"},
+		"rule-2-position": {"3"},
+	}, nil)
+	if rules, _ = store.ListFeedRules(ctx, feedID); code != http.StatusSeeOther || rules[0].Action != "tag" {
+		t.Fatalf("tie = %d, stored %+v", code, rules)
+	}
+	page = do(router, http.MethodGet, "/ui/feeds/"+id, "", nil).Body.String()
+	if !strings.Contains(page, `value="1:00"`) || !strings.Contains(page, `value="1:30:00"`) {
+		t.Error("lengths aren't shown as they were written")
+	}
+
+	// Refused: the page again, with what is wrong and what was typed.
+	cases := []struct {
+		name   string
+		values url.Values
+		want   string
+	}{
+		{"no action", url.Values{"rules": {"1"}, "rule-0-title": {"bonus"}}, "Rule 1: choose an action."},
+		{"bare number", url.Values{"rules": {"1"}, "rule-0-at-most": {"60"}, "rule-0-action": {"hide"}}, "write lengths as 20:00 or 1:00:00."},
+		{"min over max", url.Values{"rules": {"1"}, "rule-0-at-least": {"2:00"}, "rule-0-at-most": {"1:00"}, "rule-0-action": {"hide"}}, "at least is longer than at most"},
+		{"bad pattern", url.Values{"rules": {"1"}, "rule-0-title": {"(unclosed"}, "rule-0-action": {"hide"}}, "the title pattern isn&#39;t valid (missing closing ))."},
+		{"made-up action", url.Values{"rules": {"1"}, "rule-0-action": {"tag:extra"}}, "isn&#39;t one of the choices"},
+	}
+	for _, c := range cases {
+		code, _, body := postForm(router, "/ui/feeds/"+id+"/rules", c.values, nil)
+		if code != http.StatusBadRequest || !strings.Contains(body, c.want) || !strings.Contains(body, "Couldn&#39;t save the rules of &#39;Fake Show&#39;.") {
+			t.Errorf("%s: %d, want 400 saying %q", c.name, code, c.want)
+		}
+		if title := c.values.Get("rule-0-title"); title != "" && !strings.Contains(body, `value="`+template.HTMLEscapeString(title)+`"`) {
+			t.Errorf("%s: what was typed is lost", c.name)
+		}
+	}
+	if rules, _ := store.ListFeedRules(ctx, feedID); len(rules) != 2 {
+		t.Errorf("a refused save changed the rules: %+v", rules)
+	}
+
+	// A hiding rule shows on the episode it hides.
+	code, _, _ = postForm(router, "/ui/feeds/"+id+"/rules", url.Values{
+		"rules": {"3"}, "rule-0-position": {"1"}, "rule-0-title": {"^one$"}, "rule-0-action": {"hide"},
+		"rule-1-position": {"2"}, "rule-1-action": {"tag:bonus"}, "rule-2-position": {"3"},
+	}, nil)
+	page = do(router, http.MethodGet, "/ui/feeds/"+id, "", nil).Body.String()
+	if code != http.StatusSeeOther || !strings.Contains(page, " · hidden by rule 1</p>") || !strings.Contains(page, "Left out of the feed by rule 1; not prepared.") {
+		t.Errorf("hidden episode row = %d:\n%s", code, page)
+	}
+
+	// Removing both leaves none; the empty new row is ignored.
+	code, _, _ = postForm(router, "/ui/feeds/"+id+"/rules", url.Values{
+		"rules": {"3"}, "rule-0-remove": {"on"}, "rule-0-action": {"hide"}, "rule-1-remove": {"on"}, "rule-1-action": {"tag:bonus"},
+	}, nil)
+	if rules, _ := store.ListFeedRules(ctx, feedID); code != http.StatusSeeOther || len(rules) != 0 {
+		t.Errorf("remove all = %d, stored %+v", code, rules)
+	}
+
+	if code, _, _ := postForm(router, "/ui/feeds/"+uuid.NewString()+"/rules", url.Values{"rules": {"0"}}, nil); code != http.StatusNotFound {
+		t.Errorf("unknown feed = %d, want 404", code)
+	}
+}
+
+func TestParseLength(t *testing.T) {
+	cases := []struct {
+		text    string
+		seconds int
+		ok      bool
+	}{
+		{"", 0, true}, {"20:00", 1200, true}, {"1:00:00", 3600, true}, {"0:30", 30, true},
+		{"60", 0, false}, {"1:75", 0, false}, {"abc", 0, false}, {"-1:00", 0, false},
+	}
+	for _, c := range cases {
+		if seconds, ok := parseLength(c.text); seconds != c.seconds || ok != c.ok {
+			t.Errorf("parseLength(%q) = %d, %v; want %d, %v", c.text, seconds, ok, c.seconds, c.ok)
+		}
 	}
 }

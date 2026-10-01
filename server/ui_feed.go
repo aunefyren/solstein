@@ -10,6 +10,7 @@ import (
 
 	"aunefyren/solstein/database"
 	"aunefyren/solstein/episodes"
+	"aunefyren/solstein/feeds"
 	"aunefyren/solstein/logger"
 	"aunefyren/solstein/models"
 
@@ -35,8 +36,11 @@ type uiEpisode struct {
 	// Result is what processing did (the note), Error what went wrong.
 	Result, Error string
 	Served        string // "Downloaded by a client 28 Sep 2026 10:01", or empty
-	CanRetry      bool
-	CanPrepare    bool
+	// Rule says which of the feed's rules decides for the episode
+	// ("tagged bonus by rule 1"), or is empty.
+	Rule       string
+	CanRetry   bool
+	CanPrepare bool
 	// ClientHasIt warns that a retry won't reach a client that already
 	// downloaded the episode.
 	ClientHasIt bool
@@ -53,6 +57,8 @@ type uiFeedPage struct {
 	Filter                 string
 	Failed, NotCached      int
 	Prepares               bool
+	// Rules is the rule editor.
+	Rules uiRules
 	// Live updates the episodes while some are queued or being prepared.
 	Live uiLive
 }
@@ -92,6 +98,13 @@ func (ui *ui) feedPage(context *gin.Context) {
 }
 
 func (ui *ui) showFeedPage(context *gin.Context, status int, notice *uiNotice) {
+	ui.showFeedPageWith(context, status, notice, nil)
+}
+
+// showFeedPageWith shows the feed page with the rule editor as given (the
+// rows a refused save sent, so nothing typed is lost), or nil for the
+// feed's rules as stored.
+func (ui *ui) showFeedPageWith(context *gin.Context, status int, notice *uiNotice, rules *uiRules) {
 	feed, ok := ui.loadUIFeed(context)
 	if !ok {
 		return
@@ -112,6 +125,24 @@ func (ui *ui) showFeedPage(context *gin.Context, status int, notice *uiNotice) {
 		Total:               len(views),
 		Filter:              context.Query("show"),
 		Prepares:            ui.handlers.feeds.Processed(feed) || ui.handlers.feeds.DeliveryMode(feed) == "cache",
+	}
+	// The stored rules, even when the editor shows rows a refused save
+	// sent: the episodes say which rule decides for them as things are.
+	stored, err := ui.handlers.feeds.Rules(context.Request.Context(), feed.ID)
+	if err != nil {
+		logger.Log.Error("Failed to load the rules of feed '" + feed.Title + "' for the web UI. Error: " + err.Error())
+		ui.renderError(context, http.StatusInternalServerError, "Couldn't load the rules", "Something went wrong; the log says what.")
+		return
+	}
+	list := make([]models.Episode, len(views))
+	for i, view := range views {
+		list[i] = view.Episode
+	}
+	deciding := feeds.DecidingRules(stored, list)
+	if rules != nil {
+		content.Rules = *rules
+	} else {
+		content.Rules = rulesEditor(stored, list)
 	}
 	if notice == nil {
 		notice = feedPageNotice(context, views)
@@ -141,14 +172,18 @@ func (ui *ui) showFeedPage(context *gin.Context, status int, notice *uiNotice) {
 	}
 	content.Live = newLive(context, liveURL, busy > 0, plural(busy, "episode")+verb)
 
-	for _, view := range views {
+	for i, view := range views {
 		if content.Filter == "problems" && !problem(view) {
 			continue
 		}
 		if content.Filter != "all" && content.Filter != "problems" && len(content.Episodes) == feedPageSize {
 			break
 		}
-		content.Episodes = append(content.Episodes, uiEpisodeOf(view))
+		row := uiEpisodeOf(view)
+		if i < len(deciding) && deciding[i] >= 0 {
+			withRule(&row, view, deciding[i], stored[deciding[i]])
+		}
+		content.Episodes = append(content.Episodes, row)
 	}
 	content.Shown = len(content.Episodes)
 	ui.render(context, status, "feed", "feeds", notice, content)
@@ -241,6 +276,19 @@ func uiEpisodeOf(view episodes.EpisodeView) uiEpisode {
 	return row
 }
 
+// withRule says on an episode's row which rule decides for it (index, from
+// 0): what it tags the episode as, or that it hides it.
+func withRule(row *uiEpisode, view episodes.EpisodeView, index int, rule feeds.Rule) {
+	name := "rule " + strconv.Itoa(index+1)
+	switch {
+	case rule.Action == feeds.RuleTag:
+		row.Rule = "tagged " + rule.EpisodeType + " by " + name
+	case rule.Action == feeds.RuleHide && view.Status == episodes.StatusHidden:
+		row.Rule = "hidden by " + name
+		row.Detail = "Left out of the feed by " + name + "; not prepared."
+	}
+}
+
 // feedPageNotice is the notice after an action redirected back. Only IDs
 // and counts come in the query, never text, so a link can't make the page
 // say something it didn't do.
@@ -248,6 +296,8 @@ func feedPageNotice(context *gin.Context, views []episodes.EpisodeView) *uiNotic
 	switch context.Query("done") {
 	case "saved":
 		return &uiNotice{Kind: "ok", Text: "Saved the settings."}
+	case "rules":
+		return &uiNotice{Kind: "ok", Text: "Saved the rules."}
 	case "queued":
 		for _, view := range views {
 			if view.ID.String() == context.Query("episode") {

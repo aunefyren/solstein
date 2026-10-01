@@ -709,6 +709,7 @@ func TestOpenAPICoversEveryRoute(t *testing.T) {
 		"/ui/exits":                     "/ui/exits",
 		"/ui/feeds/:feedID/retry":       "/ui/feeds/{feedID}/retry",
 		"/ui/feeds/:feedID/prepare":     "/ui/feeds/{feedID}/prepare",
+		"/ui/feeds/:feedID/rules":       "/ui/feeds/{feedID}/rules",
 		"/ui/feeds/:feedID/episodes/:episodeID/queue": "/ui/feeds/{feedID}/episodes/{episodeID}/queue",
 		"/ui/login":                "/ui/login",
 		"/ui/login/password":       "/ui/login/password",

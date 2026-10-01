@@ -14,6 +14,64 @@
   </form>
   <p class="meta">In use now: {{if .RegionDiffAvailable}}region diff {{if .Feed.RegionDiff.InUse}}on{{else}}off{{end}}, {{end}}prepare ahead {{if .Feed.PrepareAhead.InUse}}on{{else}}off{{end}}.</p>
 </section>
+<section class="section" id="rules">
+  <h2>Rules</h2>
+  <p class="meta">Tried in order: the first rule an episode matches decides for it, and later rules don't apply. Hide keeps an episode out of the feed and never downloads it; Tag sets whether it is a full, bonus or trailer episode, which Audiobookshelf shows. A title pattern is a regular expression, ignoring case; lengths are written as 20:00 or 1:00:00, and empty means no limit. {{if not .Rules.Saved}}No rules yet: every episode is published as the source has it.{{end}}</p>
+  <form method="post" action="/ui/feeds/{{.Feed.ID}}/rules">
+    <input type="hidden" name="rules" value="{{.Rules.Count}}">
+    <table class="data-table data-table--fixed data-table--edit data-table--rules">
+      <thead>
+        <tr>
+          <th scope="col">Position</th>
+          <th scope="col">Title matches</th>
+          <th scope="col">At least</th>
+          <th scope="col">At most</th>
+          <th scope="col">Action</th>
+          <th scope="col">Matches</th>
+          <th scope="col"><span class="visually-hidden">Remove</span></th>
+        </tr>
+      </thead>
+      {{if .Rules.Rows}}<tbody>
+      {{range $row := .Rules.Rows}}
+        <tr>
+          <td data-label="Position">
+            <div class="data-table__title">{{$row.Name}}</div>
+            <label class="visually-hidden" for="rule-{{$row.Index}}-position">{{$row.Name}}: position</label>
+            <select id="rule-{{$row.Index}}-position" name="rule-{{$row.Index}}-position">
+              {{range $.Content.Rules.Positions}}<option value="{{.}}"{{if eq . $row.Position}} selected{{end}}>{{.}}</option>{{end}}
+            </select>
+          </td>
+          {{template "rule-fields" $row}}
+          <td data-label="Matches">{{if $row.Matches}}{{$row.Matches}}{{else}}<span class="meta">Not saved yet</span>{{end}}</td>
+          <td>
+            <label class="checkbox"><input type="checkbox" name="rule-{{$row.Index}}-remove" value="on"{{if $row.Remove}} checked{{end}}> Remove<span class="visually-hidden"> {{$row.Name}}</span></label>
+          </td>
+        </tr>
+      {{end}}
+      </tbody>{{end}}
+      <tbody class="data-table__group">
+        <tr>
+          <th scope="rowgroup" colspan="7">Add a rule</th>
+        </tr>
+        {{with .Rules.New}}<tr>
+          <td data-label="Position">
+            <label class="visually-hidden" for="rule-{{.Index}}-position">New rule: position</label>
+            <select id="rule-{{.Index}}-position" name="rule-{{.Index}}-position">
+              {{$position := .Position}}{{range $.Content.Rules.Inserts}}<option value="{{.Position}}"{{if eq .Position $position}} selected{{end}}>{{.Label}}</option>{{end}}
+            </select>
+          </td>
+          {{template "rule-fields" .}}
+          <td></td>
+          <td></td>
+        </tr>{{end}}
+      </tbody>
+    </table>
+    <div class="form-footer">
+      <button class="button button--primary" type="submit">Save rules</button>
+      <p class="meta">Matches counts each episode once, for the first rule it matches.</p>
+    </div>
+  </form>
+</section>
 <section class="section">
   <h2>Episodes</h2>
   {{template "live-status" .Live}}
@@ -42,7 +100,7 @@
       <tr id="episode-{{.ID}}">
         <td data-label="Episode">
           <div class="data-table__title">{{.Title}}</div>
-          <p class="meta">{{.Published}}{{with .Length}} · {{.}}{{end}}{{if .Backlog}} · backlog{{end}}</p>
+          <p class="meta">{{.Published}}{{with .Length}} · {{.}}{{end}}{{if .Backlog}} · backlog{{end}}{{with .Rule}} · {{.}}{{end}}</p>
         </td>
         <td data-label="Status">
           <span class="badge badge--{{.Badge}}">{{.BadgeText}}</span>
@@ -71,3 +129,23 @@
   </div>
 </section>
 {{end}}{{end}}
+
+{{define "rule-fields"}}<td data-label="Title matches">
+            <label class="visually-hidden" for="rule-{{.Index}}-title">{{.Name}}: title matches</label>
+            <input type="text" id="rule-{{.Index}}-title" name="rule-{{.Index}}-title" value="{{.Title}}" autocomplete="off" spellcheck="false">
+          </td>
+          <td data-label="At least">
+            <label class="visually-hidden" for="rule-{{.Index}}-at-least">{{.Name}}: at least</label>
+            <input type="text" id="rule-{{.Index}}-at-least" name="rule-{{.Index}}-at-least" value="{{.AtLeast}}" autocomplete="off">
+          </td>
+          <td data-label="At most">
+            <label class="visually-hidden" for="rule-{{.Index}}-at-most">{{.Name}}: at most</label>
+            <input type="text" id="rule-{{.Index}}-at-most" name="rule-{{.Index}}-at-most" value="{{.AtMost}}" autocomplete="off">
+          </td>
+          <td data-label="Action">
+            <label class="visually-hidden" for="rule-{{.Index}}-action">{{.Name}}: action</label>
+            <select id="rule-{{.Index}}-action" name="rule-{{.Index}}-action">
+              {{if or .New (eq .Action "")}}<option value=""{{if eq .Action ""}} selected{{end}}>Choose an action</option>{{end}}
+              {{$action := .Action}}{{range ruleActions}}<option value="{{.Value}}"{{if eq .Value $action}} selected{{end}}>{{.Label}}</option>{{end}}
+            </select>
+          </td>{{end}}

@@ -46,7 +46,7 @@ func TestCompileRules(t *testing.T) {
 			}
 		})
 	}
-	if err := ValidateRules(make([]Rule, maxRules+1)); !errors.Is(err, ErrInvalidSettings) {
+	if err := ValidateRules(make([]Rule, MaxRules+1)); !errors.Is(err, ErrInvalidSettings) {
 		t.Errorf("too many rules: err = %v", err)
 	}
 }
@@ -217,5 +217,27 @@ func TestSetRulesRefusesInvalidRules(t *testing.T) {
 	}
 	if left, err := service.store.ListFeedRules(ctx, feed.ID); err != nil || len(left) != 0 {
 		t.Errorf("rules left after delete: %+v, %v", left, err)
+	}
+}
+
+func TestCountMatches(t *testing.T) {
+	list := []Rule{
+		{Action: RuleTag, EpisodeType: "bonus", MaxSeconds: 1800},
+		{Action: RuleTag, EpisodeType: "full"},
+		{Action: RuleHide, TitleMatches: "never reached"},
+	}
+	episodes := []models.Episode{
+		{Title: "Clip", SourceSeconds: 600},
+		{Title: "Show", SourceSeconds: 9000},
+		{Title: "Undated"},
+	}
+	if got := CountMatches(list, episodes); fmt.Sprint(got) != "[1 2 0]" {
+		t.Errorf("counts = %v, want [1 2 0]", got)
+	}
+	if got := DecidingRules(list, episodes); fmt.Sprint(got) != "[0 1 1]" {
+		t.Errorf("deciding = %v, want [0 1 1]", got)
+	}
+	if got := CountMatches([]Rule{{Action: "nope"}}, episodes); got != nil {
+		t.Errorf("invalid rules counted: %v", got)
 	}
 }

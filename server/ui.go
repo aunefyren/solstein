@@ -160,6 +160,7 @@ func (handlers *handlers) registerUI(router *gin.Engine, version string, auth ui
 	pages.GET("/feeds/:feedID", ui.feedPage)
 	pages.POST("/feeds/:feedID/retry", ui.retryFeed)
 	pages.POST("/feeds/:feedID/prepare", ui.prepareFeed)
+	pages.POST("/feeds/:feedID/rules", ui.feedRules)
 	pages.POST("/feeds/:feedID/episodes/:episodeID/queue", ui.queueEpisode)
 	pages.GET("/instance", ui.instancePage)
 	pages.GET("/exits", ui.exitsPage)
@@ -178,7 +179,7 @@ func newUI(handlers *handlers, auth uiAuthenticator, version string) (*ui, error
 	if err != nil {
 		return nil, err
 	}
-	funcs := template.FuncMap{"setting": newSettingField}
+	funcs := template.FuncMap{"setting": newSettingField, "ruleActions": func() []uiRuleAction { return uiRuleActions }}
 	pages := map[string]*template.Template{}
 	for _, page := range []string{"feeds", "feed", "instance", "exits", "login", "account", "totp", "error"} {
 		parsed, err := template.New(page).Funcs(funcs).ParseFS(webFiles, "web/templates/layout.html", "web/templates/facts.html", "web/templates/settings.html", "web/templates/live.html", "web/templates/"+page+".html")

@@ -103,7 +103,7 @@ In `stream` and `original` mode with no processor, everything is published at on
 
 A feed can have rules that hide or tag some of its episodes. A rule matches episodes, and its action says what happens to them. Prompted by NRK's "Lørdagsrådet" (an unofficial feed, `sindrel.github.io/nrk-pod-feeds`), which mixes the Saturday show (2–2.5 h, titled with the guest list `A / B / C`) with short midweek clips (~15 min) and carries no `<itunes:episodeType>` at all. ABS shows full, bonus and trailer episodes from that tag; it doesn't work the type out itself.
 
-- **Stored in the database** (`feed_rules`, one row per rule, deleted with the feed), not `config.json`, and edited through the feed API as a whole list (`GET`/`PUT /api/v1/feeds/{id}/rules`, [`openapi.yaml`](openapi.yaml)). At most 50 per feed.
+- **Stored in the database** (`feed_rules`, one row per rule, deleted with the feed), not `config.json`, and edited as a whole list, through the feed API (`GET`/`PUT /api/v1/feeds/{id}/rules`, [`openapi.yaml`](openapi.yaml)) or the feed page. At most 50 per feed.
 - **Matching:** rules are tried in order; the first one an episode matches decides, and a later one never applies. Conditions, all optional, all of which must hold:
   - `title_matches`: a regular expression (Go syntax), case-insensitive, matched anywhere in the title (`^`/`$` to anchor).
   - `min_seconds` / `max_seconds`: bounds on the source's stated duration (`itunes:duration`), inclusive; 0 leaves that side open. An episode without a stated duration never matches a rule with a bound.
@@ -112,7 +112,7 @@ A feed can have rules that hide or tag some of its episodes. A rule matches epis
   - `hide`: left out of the served feed, and never prepared in the background: the pipeline doesn't claim it, and neither preparing ahead nor `prepare` queues it, so a hidden episode costs no download (and, with region diff, not two). It doesn't hold newer episodes back. A client asking for it anyway (it had the URL from before, or it is the one a feed of nothing but hidden episodes publishes so as not to be empty) is served as usual.
   - `tag` with `episode_type` `full`, `bonus` or `trailer`: sets `<itunes:episodeType>` in the served feed (Feed rewriting, above). Applied when the feed is served, so it changes nothing stored.
 - **Applied to stored episodes too:** saving rules sets each stored episode's `hidden` flag in the same transaction. One no longer hidden is prepared as a new one would be (the workers are woken, and a feed preparing ahead queues it). New episodes get the flag when a poll stores them. The flag is matched against the title and duration stored when the episode was found, and only the rules set it: `UpdateEpisode` never writes it, so a download saving a copy it loaded earlier can't undo a rule change.
-- The web UI shows a hidden episode as **Hidden** ([`web-ui.md`](web-ui.md)); rules aren't edited there yet ([`wip.md`](wip.md)).
+- **In the web UI** the feed page edits the rules (Rules, [`web-ui.md`](web-ui.md)), saving through the same code as the API, and shows a hidden episode as **Hidden**.
 
 Example: Lørdagsrådet's clips as bonus episodes, everything else as full ones:
 ```json

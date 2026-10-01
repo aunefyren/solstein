@@ -22,9 +22,9 @@ const (
 // tag action can set.
 var EpisodeTypes = []string{"full", "bonus", "trailer"}
 
-// maxRules caps a feed's rules; a feed needing more than a handful is
+// MaxRules caps a feed's rules; a feed needing more than a handful is
 // better split some other way.
-const maxRules = 50
+const MaxRules = 50
 
 // Rule is one of a feed's rules as the API takes and returns it (see
 // models.FeedRule): what it is stored as, without the row's ID and times,
@@ -62,8 +62,8 @@ type compiledRule struct {
 // compileRules checks rules and prepares them for matching. An invalid rule
 // returns ErrInvalidSettings, saying which rule and why.
 func compileRules(list []models.FeedRule) (rules, error) {
-	if len(list) > maxRules {
-		return nil, fmt.Errorf("%w: at most %d rules per feed", ErrInvalidSettings, maxRules)
+	if len(list) > MaxRules {
+		return nil, fmt.Errorf("%w: at most %d rules per feed", ErrInvalidSettings, MaxRules)
 	}
 	compiled := make(rules, 0, len(list))
 	for i, rule := range list {
@@ -134,6 +134,43 @@ func (list rules) episodeType(episode models.Episode) string {
 		return rule.EpisodeType
 	}
 	return ""
+}
+
+// CountMatches says how many of the episodes each rule decides for: the
+// ones it is the first match for, so a rule after a catch-all counts none.
+// Invalid rules count nothing (nil).
+func CountMatches(list []Rule, episodes []models.Episode) []int {
+	deciding := DecidingRules(list, episodes)
+	if deciding == nil {
+		return nil
+	}
+	counts := make([]int, len(list))
+	for _, index := range deciding {
+		if index >= 0 {
+			counts[index]++
+		}
+	}
+	return counts
+}
+
+// DecidingRules says which rule decides for each episode: the index of the
+// first one it matches, or -1 for none. Invalid rules decide nothing (nil).
+func DecidingRules(list []Rule, episodes []models.Episode) []int {
+	compiled, err := compileRules(storedRules(list))
+	if err != nil {
+		return nil
+	}
+	deciding := make([]int, len(episodes))
+	for i, episode := range episodes {
+		deciding[i] = -1
+		for index := range compiled {
+			if compiled[index:index+1].match(episode) != nil {
+				deciding[i] = index
+				break
+			}
+		}
+	}
+	return deciding
 }
 
 // ValidateRules checks a feed's rules without saving them.

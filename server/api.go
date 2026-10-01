@@ -361,8 +361,7 @@ func (handlers *handlers) apiSetRules(context *gin.Context) {
 	if !ok {
 		return
 	}
-	ctx := context.Request.Context()
-	shown, err := handlers.feeds.SetRules(ctx, feed.ID, request.Rules)
+	err := handlers.setRules(context.Request.Context(), feed, request.Rules)
 	if errors.Is(err, feeds.ErrInvalidSettings) {
 		context.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		context.Abort()
@@ -379,7 +378,18 @@ func (handlers *handlers) apiSetRules(context *gin.Context) {
 		context.Abort()
 		return
 	}
-	logger.Log.Info(fmt.Sprintf("Saved %d rules for feed '%s'.", len(request.Rules), feed.Title))
+	context.JSON(http.StatusOK, rulesBody{Rules: nonNil(request.Rules)})
+}
+
+// setRules saves a feed's rules and has the episodes they stop hiding
+// prepared. The API and the web UI both save rules through it. Invalid
+// rules return feeds.ErrInvalidSettings, and nothing is saved.
+func (handlers *handlers) setRules(ctx stdcontext.Context, feed models.Feed, rules []feeds.Rule) error {
+	shown, err := handlers.feeds.SetRules(ctx, feed.ID, rules)
+	if err != nil {
+		return err
+	}
+	logger.Log.Info(fmt.Sprintf("Saved %s for feed '%s'.", plural(len(rules), "rule"), feed.Title))
 	if shown > 0 && handlers.episodes != nil {
 		// Preparing ahead, an episode without its file stays out of the feed
 		// until it is queued; otherwise the workers find the new ones.
@@ -390,7 +400,7 @@ func (handlers *handlers) apiSetRules(context *gin.Context) {
 		}
 		handlers.episodes.Wake()
 	}
-	context.JSON(http.StatusOK, rulesBody{Rules: nonNil(request.Rules)})
+	return nil
 }
 
 // nonNil makes an empty list encode as [] rather than null.
