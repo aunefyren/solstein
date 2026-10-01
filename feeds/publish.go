@@ -27,6 +27,11 @@ import (
 // failure policy withholds is left out, but doesn't hold newer ones back,
 // and so is one the feed's rules hide.
 //
+// An episode the source dropped is only passed in while it is served, and
+// is then published like backlog, whatever prepareAhead says: it is never
+// prepared in the background (database.preparedFeeds), so it is prepared
+// when a client asks, and never holds newer episodes back.
+//
 // Otherwise (stream and original mode) nothing needs preparing, so
 // everything is published at once.
 //
@@ -41,7 +46,7 @@ func publishedEpisodes(episodes []models.Episode, prepare, prepareAhead bool) ma
 	for _, episode := range episodes {
 		switch {
 		case episode.Withheld, episode.Hidden:
-		case !prepare, episode.Backlog && !prepareAhead:
+		case !prepare, episode.Backlog && !prepareAhead, episode.DroppedAt != nil:
 			published[episode.ID] = true
 		case holding:
 		case episode.State == models.EpisodeReady, episode.State == models.EpisodeFailed:

@@ -39,6 +39,8 @@ What a new subscription does:
 | `region_diff_trim_break_markers` | `on`, `off` | `region_diff.trim_break_markers` |
 | `region_diff_compare_by_audio` | `on`, `off` | `region_diff.compare_by_audio` |
 | `prepare_ahead` | `on`, `off` | `prepare_ahead` |
+| `serve_dropped` | `on`, `off` | `serve_dropped_episodes` ([Dropped episodes](#dropped-episodes)) |
+| `delete_dropped` | `on`, `off` | `delete_dropped_episodes` ([Dropped episodes](#dropped-episodes)) |
 
 - `feeds.ValidateSettings` refuses an unknown `prepare_ahead` value, an exit that doesn't exist (including `direct` while the direct exit is off, `direct_exit`), an unknown delivery mode, a negative poll interval, `region_diff: on` while region diff isn't running, unknown region-diff values, and a `region_diff_exits` that isn't two different existing exits.
 - At start-up, `main.go` warns about feeds whose exit (or region-diff exit) no longer exists, and feeds with region diff switched on while it is off.
@@ -60,7 +62,7 @@ A small JSON API behind the subscribe token (`Authorization: Bearer` or `?token=
 | `PUT /api/v1/feeds/{id}/rules` | Replace them: `{"rules": [...]}`, an empty list removes them. An invalid list is refused (`400`, naming the rule) and the old rules stay |
 | `POST /api/v1/feeds/{id}/prepare` | Queue the feed's newest episodes without their file to be prepared ahead; optional body `{"newest": n}`, all when omitted; `{"queued": n}`. `400` for a feed nothing is prepared for (stream or original mode, not processed) |
 
-Responses carry the feed's settings plus `delivery_mode_in_use`, `region_diff_in_use`, `prepare_ahead_in_use` (the global and per-feed settings combined) and `feed_url` (signed). Invalid settings are `400`; internal error text goes to the log, never to the client.
+Responses carry the feed's settings plus `delivery_mode_in_use`, `region_diff_in_use`, `prepare_ahead_in_use`, `serve_dropped_in_use`, `delete_dropped_in_use` (the global and per-feed settings combined) and `feed_url` (signed). Invalid settings are `400`; internal error text goes to the log, never to the client.
 
 ## Polling
 
@@ -98,6 +100,19 @@ Checked against real feeds (NPR, 355 items; Acast, 27 items): only the enclosure
 - **Never an empty feed:** if nothing else would be published, the oldest episode is (the oldest neither withheld nor hidden, if any), because ABS treats a feed without items as a failed check.
 
 In `stream` and `original` mode with no processor, everything is published at once.
+
+## Dropped episodes
+
+An episode the source feed no longer lists is **dropped**. Rolling feeds do this all the time (NRK's unofficial "De 10 siste fra Lørdagsrådet", `sindrel.github.io/nrk-pod-feeds`, lists only the latest ten), and hosts do it when an episode is taken down. The served feed is the source's document rewritten, so before this, a dropped episode simply left the served feed while Solstein kept its row. The feed page went on listing it as if it were still in the feed. Found in production on 2026-10-01: the feed page showed 11 episodes, and ABS, its files deleted to download them again with new tags, could only get the 10 still in the source.
+
+- **Noticed by the poll** (`database.SyncEpisodes`): a stored episode the poll doesn't list gets `dropped_at`, and one listed again loses it. A poll listing no episodes at all drops nothing, so a source that briefly serves an empty feed doesn't make every episode look gone. Each poll also keeps every episode's `<item>` as the source has it (`source_item`, its bytes as `rss.Item.Raw` gives them), so a dropped one can be served as it was.
+- **Serving them** (`serve_dropped_episodes`, off by default; per feed `serve_dropped`; per episode its own **Serve** on the feed page, `models.Episode.Serve`, which wins). Off, a dropped episode leaves the served feed, as before. On, it stays: its kept item is added after the source's own items (`rss.Rewrite.Append`, newest first), rewritten like any other. An episode stored before items were kept gets an item made from what is stored: title, GUID, date, audio and duration (`rss.MinimalItem`, which declares the `itunes` prefix on the item itself). A kept item that doesn't fit the source's current document (a prefix bound differently now) is logged, and the feed is served without the dropped items rather than not at all.
+  - It is published like backlog: at once, keeping its own date (a dropped episode never served before is never dated now, so ABS doesn't take it for a new one), and never holding newer episodes back. It is **never prepared in the background** (`database.preparedFeeds`, `Queue`); without its file it is prepared when a client asks, `prepare_ahead` or not.
+  - **Kept for good:** a served dropped episode is never deleted, and its cached file is exempt from `cache_retention_days`, the size cap (it still counts towards the total) and `cache_evict_after_serve`, since the source may not have the audio any more ([`episodes.md`](episodes.md), Housekeeping).
+  - **Audio gone:** when the source answers `404` or `410` for a dropped episode, Solstein switches its Serve to off with a warning saying what the source answered and when (`serve_warning`), shown on the feed page and counted among its problems. This happens on a client's request (a stream, or a download for preparing), and the hourly sweep also asks the source for the first byte of each served dropped episode without a file, once per run. Any other failure (a timeout, no tunnel) says nothing about the audio and changes nothing. Setting Serve by hand clears the warning.
+- **Deleting them** (`delete_dropped_episodes`, off by default; per feed `delete_dropped`): the hourly sweep deletes a dropped episode that isn't served, with its cached file, once it has been dropped for a day (`feeds.DroppedGrace`). The day is there so that a source that leaves an episode out of one poll by mistake (a cut-off or half-built feed) doesn't cost its file and history. A served one is never deleted, whatever this says. Off, a dropped episode is kept (out of the feed) in case the source lists it again. A deleted episode that the source does list again comes back as a new episode.
+- **On the feed page** ([`web-ui.md`](web-ui.md)) a dropped episode says since when, whether it is still served, any warning, and has its own Serve setting and a **Delete** button (deletes at once, with its file). Only a dropped episode can be deleted: one still in the source would just come back at the next poll, dated now, so ABS would download it again. Hide it with a rule instead.
+- `UpdateEpisode` never writes `dropped_at`, `source_item`, `serve` or `serve_warning`, the same as `hidden`, so a download saving a copy it loaded earlier can't undo them.
 
 ## Rules
 

@@ -3,6 +3,7 @@
 package feeds
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -47,6 +48,9 @@ type Settings struct {
 	RegionDiffCompareByAudio string `json:"region_diff_compare_by_audio"`
 	// PrepareAhead is "on", "off" or empty.
 	PrepareAhead string `json:"prepare_ahead"`
+	// ServeDropped and DeleteDropped are "on", "off" or empty.
+	ServeDropped  string `json:"serve_dropped"`
+	DeleteDropped string `json:"delete_dropped"`
 }
 
 // SettingsOf returns a feed's per-feed settings.
@@ -61,6 +65,8 @@ func SettingsOf(feed models.Feed) Settings {
 		RegionDiffTrimBreakMarkers: feed.RegionDiffTrimBreakMarkers,
 		RegionDiffCompareByAudio:   feed.RegionDiffCompareByAudio,
 		PrepareAhead:               feed.PrepareAhead,
+		ServeDropped:               feed.ServeDropped,
+		DeleteDropped:              feed.DeleteDropped,
 	}
 }
 
@@ -89,6 +95,11 @@ type Options struct {
 	// whole backlog is queued at once instead of being prepared when a client
 	// asks for it (settings.Config.PrepareAhead).
 	PrepareAhead bool
+	// ServeDropped and DeleteDropped are the defaults for feeds that don't
+	// set their own: whether episodes the source no longer lists are still
+	// served, and whether they are deleted (settings.Config.ServeDropped,
+	// DeleteDropped).
+	ServeDropped, DeleteDropped bool
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 }
@@ -136,6 +147,12 @@ func (service *Service) ValidateSettings(feedSettings Settings) error {
 	if !slices.Contains(regionDiffSwitches, feedSettings.PrepareAhead) {
 		return fmt.Errorf("%w: prepare_ahead must be \"on\", \"off\" or empty (follow the global setting)", ErrInvalidSettings)
 	}
+	if !slices.Contains(regionDiffSwitches, feedSettings.ServeDropped) {
+		return fmt.Errorf("%w: serve_dropped must be \"on\", \"off\" or empty (follow the global setting)", ErrInvalidSettings)
+	}
+	if !slices.Contains(regionDiffSwitches, feedSettings.DeleteDropped) {
+		return fmt.Errorf("%w: delete_dropped must be \"on\", \"off\" or empty (follow the global setting)", ErrInvalidSettings)
+	}
 	if feedSettings.RegionDiff == "on" && !service.options.RegionDiffAvailable {
 		return fmt.Errorf("%w: region diff isn't running; set up region_diff in config.json first", ErrInvalidSettings)
 	}
@@ -176,6 +193,52 @@ func (service *Service) PreparesAhead(feed models.Feed) bool {
 	}
 	return service.options.PrepareAhead
 }
+
+// ServesDropped reports whether an episode the source no longer lists is
+// still in the served feed: the episode's own Serve, else the feed's
+// serve_dropped, else serve_dropped_episodes. For an episode still in the
+// source it says what would happen once it drops out. One that is served is
+// kept for good: never deleted, and its cached file never expires.
+func (service *Service) ServesDropped(feed models.Feed, episode models.Episode) bool {
+	switch episode.Serve {
+	case "on":
+		return true
+	case "off":
+		return false
+	}
+	return service.FeedServesDropped(feed)
+}
+
+// FeedServesDropped is a feed's serve_dropped, else serve_dropped_episodes:
+// what its dropped episodes without their own setting get.
+func (service *Service) FeedServesDropped(feed models.Feed) bool {
+	switch feed.ServeDropped {
+	case "on":
+		return true
+	case "off":
+		return false
+	}
+	return service.options.ServeDropped
+}
+
+// DeletesDropped reports whether a feed's episodes the source no longer
+// lists are deleted (once dropped for DroppedGrace, and only those not
+// served): the feed's delete_dropped, else delete_dropped_episodes.
+func (service *Service) DeletesDropped(feed models.Feed) bool {
+	switch feed.DeleteDropped {
+	case "on":
+		return true
+	case "off":
+		return false
+	}
+	return service.options.DeleteDropped
+}
+
+// DroppedGrace is how long an episode the source no longer lists is kept
+// before delete_dropped deletes it: a source that leaves an episode out of
+// one poll by mistake (a cut-off or half-built feed) shouldn't cost its
+// cached file and history.
+const DroppedGrace = 24 * time.Hour
 
 // Processed reports whether an episode processor handles the feed.
 func (service *Service) Processed(feed models.Feed) bool {
@@ -225,6 +288,8 @@ func (service *Service) Subscribe(ctx context.Context, rawSourceURL string, feed
 		RegionDiffTrimBreakMarkers: feedSettings.RegionDiffTrimBreakMarkers,
 		RegionDiffCompareByAudio:   feedSettings.RegionDiffCompareByAudio,
 		PrepareAhead:               feedSettings.PrepareAhead,
+		ServeDropped:               feedSettings.ServeDropped,
+		DeleteDropped:              feedSettings.DeleteDropped,
 	}
 
 	result, err := service.fetch(ctx, feed)
@@ -324,6 +389,16 @@ func (service *Service) Render(ctx context.Context, feed models.Feed, urls URLs)
 		return nil, err
 	}
 
+	// An episode the source dropped is only in the feed while it is served;
+	// one that isn't must not hold others back either (publishedEpisodes).
+	inFeed := episodes[:0:0]
+	for _, episode := range episodes {
+		if episode.DroppedAt == nil || service.ServesDropped(feed, episode) {
+			inFeed = append(inFeed, episode)
+		}
+	}
+	episodes = inFeed
+
 	mode := service.DeliveryMode(feed)
 	published := publishedEpisodes(episodes, mode == "cache" || service.Processed(feed), service.PreparesAhead(feed))
 
@@ -334,12 +409,14 @@ func (service *Service) Render(ctx context.Context, feed models.Feed, urls URLs)
 	// reaches the served feed late (held back until cached, or simply found by
 	// Solstein's poll after the client last checked) would otherwise be dated
 	// before that check and skipped for good. Backlog episodes keep their
-	// dates; clients don't auto-download those anyway.
+	// dates; clients don't auto-download those anyway. So does a dropped
+	// episode never served before (served dropped from now on, after being
+	// left out): dated now, clients would take it for a new one.
 	now := service.options.Now().UTC().Truncate(time.Second)
 	var newlyReleased []uuid.UUID
 	servedDate := make(map[uuid.UUID]time.Time)
 	for _, episode := range episodes {
-		if !published[episode.ID] || episode.Backlog {
+		if !published[episode.ID] || episode.Backlog || (episode.DroppedAt != nil && episode.ReleasedAt == nil) {
 			continue
 		}
 		releasedAt := now
@@ -359,6 +436,7 @@ func (service *Service) Render(ctx context.Context, feed models.Feed, urls URLs)
 
 	rewrite := rss.Rewrite{
 		FeedURL: urls.Feed(feed.ID),
+		Append:  droppedItems(episodes, published, document.Data),
 		Item: func(item rss.Item) rss.ItemChange {
 			if item.Enclosure == nil {
 				return rss.ItemChange{} // no audio: nothing to proxy
@@ -385,6 +463,13 @@ func (service *Service) Render(ctx context.Context, feed models.Feed, urls URLs)
 		},
 	}
 	output, err := rewrite.Apply(document.Data)
+	if err != nil && len(rewrite.Append) > 0 {
+		// A kept item that doesn't fit the source's current document mustn't
+		// cost clients the whole feed.
+		logger.Log.Warn("Failed to add the episodes the source no longer lists to feed '" + feed.Title + "'; serving it without them. Error: " + err.Error())
+		rewrite.Append = nil
+		output, err = rewrite.Apply(document.Data)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -394,6 +479,45 @@ func (service *Service) Render(ctx context.Context, feed models.Feed, urls URLs)
 		return nil, err
 	}
 	return output, nil
+}
+
+// droppedItems are the items of the published episodes the source no
+// longer lists, newest first, as the source last had them, or made from
+// what is stored for an episode whose item wasn't kept. episodes are oldest
+// first. One the document lists after all is left to it: the document is
+// saved just before its episodes are, so for a moment an episode back in
+// the source can still be marked dropped.
+func droppedItems(episodes []models.Episode, published map[uuid.UUID]bool, document []byte) [][]byte {
+	var listed map[string]bool
+	var items [][]byte
+	for i := len(episodes) - 1; i >= 0; i-- {
+		episode := episodes[i]
+		if episode.DroppedAt == nil || !published[episode.ID] {
+			continue
+		}
+		if listed == nil {
+			listed = map[string]bool{}
+			if parsed, err := rss.Parse(document); err == nil {
+				for _, item := range parsed.Items {
+					listed[item.Key] = true
+				}
+			}
+		}
+		if listed[episode.GUID] {
+			continue
+		}
+		if len(episode.SourceItem) > 0 {
+			items = append(items, episode.SourceItem)
+			continue
+		}
+		duration := ""
+		if episode.SourceSeconds > 0 {
+			duration = rss.FormatDuration(time.Duration(episode.SourceSeconds) * time.Second)
+		}
+		extension := AudioExtension(episode.SourceURL, "")
+		items = append(items, rss.MinimalItem(episode.Title, episode.GUID, episode.PublishedAt, episode.SourceURL, typesByExtension[extension], episode.CacheSize, duration))
+	}
+	return items
 }
 
 // Feed returns a feed by ID.
@@ -433,6 +557,7 @@ func episodesFromItems(items []rss.Item, state models.EpisodeState, backlog bool
 			PublishedAt: item.PublishedAt,
 			Backlog:     backlog,
 			State:       state,
+			SourceItem:  bytes.Clone(item.Raw),
 		}
 		if duration, ok := rss.ParseDuration(item.Duration); ok {
 			episode.SourceSeconds = int(duration.Round(time.Second) / time.Second)

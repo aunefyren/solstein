@@ -162,6 +162,8 @@ func (handlers *handlers) registerUI(router *gin.Engine, version string, auth ui
 	pages.POST("/feeds/:feedID/prepare", ui.prepareFeed)
 	pages.POST("/feeds/:feedID/rules", ui.feedRules)
 	pages.POST("/feeds/:feedID/episodes/:episodeID/queue", ui.queueEpisode)
+	pages.POST("/feeds/:feedID/episodes/:episodeID/serve", ui.serveEpisode)
+	pages.POST("/feeds/:feedID/episodes/:episodeID/delete", ui.deleteEpisode)
 	pages.GET("/instance", ui.instancePage)
 	pages.GET("/exits", ui.exitsPage)
 	pages.GET("/account", ui.accountPage)
@@ -295,6 +297,9 @@ type uiFeed struct {
 	Failing      bool
 	RegionDiff   uiToggle
 	PrepareAhead uiToggle
+	// ServeDropped and DeleteDropped are what happens to the episodes the
+	// source no longer lists.
+	ServeDropped, DeleteDropped uiToggle
 }
 
 type uiFeedList struct {
@@ -347,21 +352,23 @@ func (ui *ui) savedNotice(context *gin.Context) *uiNotice {
 
 func uiFeedOf(service *feeds.Service, feed models.Feed) uiFeed {
 	defaults := feed
-	defaults.RegionDiff, defaults.PrepareAhead = "", ""
+	defaults.RegionDiff, defaults.PrepareAhead, defaults.ServeDropped, defaults.DeleteDropped = "", "", "", ""
 	exit := feed.Exit
 	if exit == "" {
 		exit = "default"
 	}
 	return uiFeed{
-		ID:           feed.ID.String(),
-		Title:        feedTitle(feed),
-		SourceHost:   sourceHost(feed.SourceURL),
-		Exit:         exit,
-		DeliveryMode: service.DeliveryMode(feed),
-		LastPolled:   formatTime(feed.LastPolledAt),
-		Failing:      feed.LastError != "",
-		RegionDiff:   uiToggle{Value: feed.RegionDiff, DefaultOn: service.Processed(defaults), InUse: service.Processed(feed)},
-		PrepareAhead: uiToggle{Value: feed.PrepareAhead, DefaultOn: service.PreparesAhead(defaults), InUse: service.PreparesAhead(feed)},
+		ID:            feed.ID.String(),
+		Title:         feedTitle(feed),
+		SourceHost:    sourceHost(feed.SourceURL),
+		Exit:          exit,
+		DeliveryMode:  service.DeliveryMode(feed),
+		LastPolled:    formatTime(feed.LastPolledAt),
+		Failing:       feed.LastError != "",
+		RegionDiff:    uiToggle{Value: feed.RegionDiff, DefaultOn: service.Processed(defaults), InUse: service.Processed(feed)},
+		PrepareAhead:  uiToggle{Value: feed.PrepareAhead, DefaultOn: service.PreparesAhead(defaults), InUse: service.PreparesAhead(feed)},
+		ServeDropped:  uiToggle{Value: feed.ServeDropped, DefaultOn: service.FeedServesDropped(defaults), InUse: service.FeedServesDropped(feed)},
+		DeleteDropped: uiToggle{Value: feed.DeleteDropped, DefaultOn: service.DeletesDropped(defaults), InUse: service.DeletesDropped(feed)},
 	}
 }
 
@@ -401,7 +408,7 @@ func (ui *ui) feedSettings(context *gin.Context) {
 		return
 	}
 
-	fields := []uiFormField{{"prepare_ahead", &feed.PrepareAhead}}
+	fields := []uiFormField{{"prepare_ahead", &feed.PrepareAhead}, {"serve_dropped", &feed.ServeDropped}, {"delete_dropped", &feed.DeleteDropped}}
 	if ui.handlers.feeds.RegionDiffAvailable() {
 		fields = append(fields, uiFormField{"region_diff", &feed.RegionDiff})
 	}
@@ -427,7 +434,7 @@ func (ui *ui) feedSettings(context *gin.Context) {
 		ui.renderError(context, http.StatusInternalServerError, "Couldn't save the settings", "Something went wrong; the log says what.")
 		return
 	}
-	logger.Log.Info("Changed the settings of feed '" + feed.Title + "' through the web UI (region diff: " + orDefault(feed.RegionDiff) + ", prepare ahead: " + orDefault(feed.PrepareAhead) + ").")
+	logger.Log.Info("Changed the settings of feed '" + feed.Title + "' through the web UI (region diff: " + orDefault(feed.RegionDiff) + ", prepare ahead: " + orDefault(feed.PrepareAhead) + ", serve dropped: " + orDefault(feed.ServeDropped) + ", delete dropped: " + orDefault(feed.DeleteDropped) + ").")
 	if context.PostForm("from") == "feed" {
 		context.Redirect(http.StatusSeeOther, feedPagePath(feed)+"?done=saved")
 		return
@@ -459,11 +466,18 @@ func formatTime(at *time.Time) string {
 	return at.Local().Format("2 Jan 2006 15:04")
 }
 
+// orDefault names an on/off override for the log: "on", "off" or
+// "default". The values come from a form, and were checked before saving,
+// but the name is always a constant, so no text a request sent reaches the
+// log (which code scanning can see, unlike the check).
 func orDefault(value string) string {
-	if value == "" {
-		return "default"
+	switch value {
+	case "on":
+		return "on"
+	case "off":
+		return "off"
 	}
-	return value
+	return "default"
 }
 
 // uiFact is one row of a fact list (style guide: Fact list).
@@ -549,6 +563,8 @@ func (ui *ui) instancePage(context *gin.Context) {
 		{Label: "Delivery mode", Value: cfg.DeliveryMode, Mono: true},
 		{Label: "Polling", Value: "Every " + strconv.Itoa(cfg.PollIntervalMinutes) + " minutes"},
 		onFact("Prepare ahead", cfg.PrepareAhead, "Every episode is prepared before a client asks, and published once ready.", "Episodes are prepared when a feed is polled, and a backlog episode when a client asks for it."),
+		onFact("Serve dropped episodes", cfg.ServeDroppedEpisodes, "Episodes a source no longer lists stay in the feed, and are kept for good, cached file and all.", "Episodes a source no longer lists leave the feed too."),
+		onFact("Delete dropped episodes", cfg.DeleteDroppedEpisodes, "Episodes a source no longer lists, and that aren't served, are deleted a day later, cached file and all.", "Episodes a source no longer lists are kept, in case it lists them again."),
 	}
 	if ui.handlers.feeds.RegionDiffAvailable() {
 		defaults = append(defaults, onFact("Region diff", cfg.RegionDiff.Enabled, "On for every feed that doesn't switch it off.", "Off, except for feeds that switch it on."))

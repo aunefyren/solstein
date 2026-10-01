@@ -784,6 +784,87 @@ paths:
         "409":
           description: The episode is being prepared right now.
 
+  /ui/feeds/{feedID}/episodes/{episodeID}/serve:
+    parameters:
+      - $ref: "#/components/parameters/FeedID"
+      - name: episodeID
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [Web UI]
+      summary: Set whether one dropped episode is served
+      description: |
+        Whether an episode the source no longer lists stays in the served
+        feed, overriding the feed's `serve_dropped`. Clears any warning
+        Solstein gave when it stopped serving the episode itself (its source
+        answered that the audio is gone).
+      operationId: postUIEpisodeServe
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                serve:
+                  type: string
+                  enum: ["", "on", "off"]
+                  description: Empty follows the feed.
+                show:
+                  type: string
+                  enum: ["", all, problems]
+                  description: The view the action was taken in, to come back to.
+      responses:
+        "303":
+          description: Saved; to `/ui/feeds/{feedID}?done=serve&episode={episodeID}`.
+        "400":
+          description: Not one of Default, On or Off; the feed page with a notice.
+        "404":
+          description: No such feed or episode.
+
+  /ui/feeds/{feedID}/episodes/{episodeID}/delete:
+    parameters:
+      - $ref: "#/components/parameters/FeedID"
+      - name: episodeID
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [Web UI]
+      summary: Delete one dropped episode
+      description: |
+        Deletes an episode the source no longer lists, with its cached file.
+        One the source still lists can't be deleted: the next poll would add
+        it again, as a new episode.
+      operationId: postUIEpisodeDelete
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                show:
+                  type: string
+                  enum: ["", all, problems]
+                  description: The view the action was taken in, to come back to.
+      responses:
+        "303":
+          description: Deleted; to `/ui/feeds/{feedID}?done=deleted`.
+        "400":
+          description: The source still lists the episode; the feed page with a notice.
+        "404":
+          description: No such feed or episode.
+        "409":
+          description: The episode is being prepared or served into the cache right now.
+
   /ui/login:
     get:
       tags: [Web UI]
@@ -1127,8 +1208,10 @@ paths:
         episodes newest first (the newest 50 unless `show` says otherwise),
         each with its status, what processing did or what went wrong (URLs
         in errors cut down to their host), and Retry or Prepare where it
-        applies. `done` (with `episode` or `count`) names what was just
-        done, for the notice.
+        applies. An episode the source no longer lists says so, whether it
+        is still served, and has its own serve setting and a Delete button.
+        `done` (with `episode` or `count`) names what was just done, for the
+        notice.
       operationId: getUIFeed
       security: []
       parameters:
@@ -1196,6 +1279,14 @@ paths:
                   type: string
                   enum: ["", "on", "off"]
                   description: Empty follows `prepare_ahead`.
+                serve_dropped:
+                  type: string
+                  enum: ["", "on", "off"]
+                  description: Empty follows `serve_dropped_episodes`.
+                delete_dropped:
+                  type: string
+                  enum: ["", "on", "off"]
+                  description: Empty follows `delete_dropped_episodes`.
                 from:
                   type: string
                   enum: [feed]
@@ -1463,13 +1554,26 @@ components:
           description: >-
             Prepare every episode before any client asks for it, and keep it out of the feed until its
             file is ready (the backlog included); empty follows `prepare_ahead`.
+        serve_dropped:
+          type: string
+          enum: ["", "on", "off"]
+          description: >-
+            Keep serving episodes the source no longer lists, and keep them for good (their cached
+            files never expire); empty follows `serve_dropped_episodes` (off by default). An episode
+            can override it on the feed page.
+        delete_dropped:
+          type: string
+          enum: ["", "on", "off"]
+          description: >-
+            Delete episodes the source no longer lists, with their cached files, a day after they drop
+            out, unless they are served; empty follows `delete_dropped_episodes` (off by default).
 
     Feed:
       description: A subscribed feed, its settings and its state.
       allOf:
         - $ref: "#/components/schemas/FeedSettings"
         - type: object
-          required: [id, source_url, feed_url, delivery_mode_in_use, region_diff_in_use, prepare_ahead_in_use]
+          required: [id, source_url, feed_url, delivery_mode_in_use, region_diff_in_use, prepare_ahead_in_use, serve_dropped_in_use, delete_dropped_in_use]
           properties:
             id:
               type: string
@@ -1505,6 +1609,12 @@ components:
             prepare_ahead_in_use:
               type: boolean
               description: Whether the feed's episodes are all prepared before a client asks, after the global and per-feed settings are combined.
+            serve_dropped_in_use:
+              type: boolean
+              description: Whether episodes the source no longer lists stay in the served feed (unless an episode says otherwise), after the global and per-feed settings are combined.
+            delete_dropped_in_use:
+              type: boolean
+              description: Whether episodes the source no longer lists, and that aren't served, are deleted, after the global and per-feed settings are combined.
             feed_url:
               type: string
               format: uri

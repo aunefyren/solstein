@@ -127,16 +127,19 @@ func viewOf(episode models.Episode, prepares, working bool, now time.Time) Episo
 		view.Status = StatusNotCached
 	}
 	idle := view.Status != StatusWorking && view.Status != StatusQueued
-	view.CanRetry = idle && prepares && episode.State == models.EpisodeFailed
-	view.CanPrepare = idle && prepares && view.Status == StatusNotCached
+	// One the source dropped is never prepared in the background
+	// (database.preparedFeeds), so there is nothing to queue.
+	background := idle && prepares && episode.DroppedAt == nil
+	view.CanRetry = background && episode.State == models.EpisodeFailed
+	view.CanPrepare = background && view.Status == StatusNotCached
 	return view
 }
 
 // QueueEpisode queues one episode for the background, as RetryFailed and
 // Queue do for a whole feed: a failed one to be tried again, one published
 // without its file to be prepared. It reports whether it was queued: false
-// when it's neither (it has its file, or is waiting already), or a rule
-// hides it.
+// when it's neither (it has its file, or is waiting already), a rule
+// hides it, or the source dropped it.
 func (pipeline *Pipeline) QueueEpisode(ctx context.Context, feedID, episodeID uuid.UUID) (bool, error) {
 	feed, err := pipeline.store.GetFeed(ctx, feedID)
 	if err != nil {
@@ -152,7 +155,7 @@ func (pipeline *Pipeline) QueueEpisode(ctx context.Context, feedID, episodeID uu
 	if pipeline.preparing(episode.ID) {
 		return false, ErrEpisodeBusy
 	}
-	if episode.Hidden {
+	if episode.Hidden || episode.DroppedAt != nil {
 		return false, nil
 	}
 	queue, purpose := pipeline.store.QueueUncachedEpisodes, "prepared"

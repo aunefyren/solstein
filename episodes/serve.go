@@ -388,6 +388,7 @@ func (server *Server) stream(writer http.ResponseWriter, request *http.Request, 
 		return checkResponse(response)
 	})
 	if err != nil {
+		noteGone(ctx, server.store, server.options.Now(), feed, episode, err)
 		return fmt.Errorf("%w: %w", ErrSourceFailed, err)
 	}
 	defer response.Body.Close()

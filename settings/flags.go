@@ -248,6 +248,20 @@ var settings = []setting{
 		apply:   boolSetting(func(cfg *Config) *bool { return &cfg.PrepareAhead }),
 	},
 	{
+		flag:    "servedroppedepisodes",
+		env:     "SOLSTEIN_SERVE_DROPPED_EPISODES",
+		usage:   "Keep serving episodes a source feed no longer lists, and keep them (and their cached files) for good.",
+		boolean: true,
+		apply:   boolSetting(func(cfg *Config) *bool { return &cfg.ServeDroppedEpisodes }),
+	},
+	{
+		flag:    "deletedroppedepisodes",
+		env:     "SOLSTEIN_DELETE_DROPPED_EPISODES",
+		usage:   "Delete episodes a source feed no longer lists, with their cached files, a day after they drop out, unless they are served.",
+		boolean: true,
+		apply:   boolSetting(func(cfg *Config) *bool { return &cfg.DeleteDroppedEpisodes }),
+	},
+	{
 		flag:    "webui",
 		env:     "SOLSTEIN_WEB_UI",
 		usage:   "Serve the web UI under /ui. It has no sign-in yet: limit who can reach it with allowed_client_networks.",

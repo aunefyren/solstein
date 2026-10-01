@@ -70,8 +70,18 @@ func Open(configDir string) (*Store, error) {
 }
 
 func (store *Store) migrate() error {
+	// Episodes from before their source items were kept: polls are
+	// conditional, so a source that hasn't changed would answer 304 and
+	// nothing would notice which episodes it dropped, or keep the items, until
+	// it next changed. The next poll of every feed asks for it in full.
+	keepsItems := store.db.Migrator().HasTable(&models.Episode{}) && store.db.Migrator().HasColumn(&models.Episode{}, "SourceItem")
 	if err := store.db.AutoMigrate(&models.Feed{}, &models.Episode{}, &models.FeedDocument{}, &models.FeedRule{}, &models.User{}, &models.Token{}); err != nil {
 		return fmt.Errorf("migrate database: %w", err)
+	}
+	if !keepsItems {
+		if err := store.db.Model(&models.Feed{}).Where("1 = 1").Updates(map[string]any{"e_tag": "", "last_modified": ""}).Error; err != nil {
+			return fmt.Errorf("migrate database: ask every source in full once: %w", err)
+		}
 	}
 	return nil
 }

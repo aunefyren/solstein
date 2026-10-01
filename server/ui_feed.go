@@ -44,6 +44,14 @@ type uiEpisode struct {
 	// ClientHasIt warns that a retry won't reach a client that already
 	// downloaded the episode.
 	ClientHasIt bool
+	// Dropped says since when the source no longer lists the episode
+	// ("30 Sep 2026 14:05"), empty while it does. InFeed is whether it is
+	// in the served feed all the same, Serve its own override (a setting
+	// select), and Warning why Solstein switched serving off itself.
+	Dropped string
+	InFeed  bool
+	Serve   uiToggle
+	Warning string
 }
 
 type uiFeedPage struct {
@@ -56,7 +64,9 @@ type uiFeedPage struct {
 	Shown, Total, Problems int
 	Filter                 string
 	Failed, NotCached      int
-	Prepares               bool
+	// Dropped counts the episodes the source no longer lists.
+	Dropped  int
+	Prepares bool
 	// Rules is the rule editor.
 	Rules uiRules
 	// Live updates the episodes while some are queued or being prepared.
@@ -82,8 +92,12 @@ var statusBadges = map[episodes.Status][2]string{
 }
 
 // problem is whether an episode needs a look: it failed, is waiting on a
-// retry, or failed on a client's request.
+// retry, failed on a client's request, or the source no longer has the
+// audio of an episode it dropped.
 func problem(view episodes.EpisodeView) bool {
+	if view.ServeWarning != "" {
+		return true
+	}
 	switch view.Status {
 	case episodes.StatusRetrying, episodes.StatusWithheld, episodes.StatusGivenUp, episodes.StatusPublishedWithAds:
 		return true
@@ -160,8 +174,14 @@ func (ui *ui) showFeedPageWith(context *gin.Context, status int, notice *uiNotic
 		if view.CanPrepare {
 			content.NotCached++
 		}
+		if view.DroppedAt != nil {
+			content.Dropped++
+		}
 	}
 	content.Summary = summarise(len(views), counts)
+	if content.Dropped > 0 {
+		content.Summary += " " + plural(content.Dropped, "episode") + " no longer in the source."
+	}
 	busy := counts[episodes.StatusQueued] + counts[episodes.StatusWorking]
 	liveURL := feedPagePath(feed)
 	if content.Filter == "all" || content.Filter == "problems" {
@@ -183,6 +203,9 @@ func (ui *ui) showFeedPageWith(context *gin.Context, status int, notice *uiNotic
 		row := uiEpisodeOf(view)
 		if i < len(deciding) && deciding[i] >= 0 {
 			withRule(&row, view, deciding[i], stored[deciding[i]])
+		}
+		if view.DroppedAt != nil {
+			withDropped(&row, view, ui.handlers.feeds, feed)
 		}
 		content.Episodes = append(content.Episodes, row)
 	}
@@ -290,6 +313,15 @@ func withRule(row *uiEpisode, view episodes.EpisodeView, index int, rule feeds.R
 	}
 }
 
+// withDropped says on the row of an episode the source no longer lists
+// whether it is served all the same, with its serve switch.
+func withDropped(row *uiEpisode, view episodes.EpisodeView, service *feeds.Service, feed models.Feed) {
+	row.Dropped = formatTime(view.DroppedAt)
+	row.InFeed = service.ServesDropped(feed, view.Episode)
+	row.Serve = uiToggle{Value: view.Serve, DefaultOn: service.FeedServesDropped(feed), InUse: row.InFeed}
+	row.Warning = view.ServeWarning
+}
+
 // feedPageNotice is the notice after an action redirected back. Only IDs
 // and counts come in the query, never text, so a link can't make the page
 // say something it didn't do.
@@ -307,6 +339,14 @@ func feedPageNotice(context *gin.Context, views []episodes.EpisodeView) *uiNotic
 		}
 	case "retry":
 		return &uiNotice{Kind: "ok", Text: "Queued " + plural(atoi(context.Query("count")), "failed episode") + " to be tried again."}
+	case "serve":
+		for _, view := range views {
+			if view.ID.String() == context.Query("episode") {
+				return &uiNotice{Kind: "ok", Text: "Saved whether '" + view.Title + "' is served."}
+			}
+		}
+	case "deleted":
+		return &uiNotice{Kind: "ok", Text: "Deleted the episode."}
 	case "prepare":
 		return &uiNotice{Kind: "ok", Text: "Queued " + plural(atoi(context.Query("count")), "episode") + " to be prepared, newest first."}
 	}
@@ -380,6 +420,64 @@ func (ui *ui) queueEpisode(context *gin.Context) {
 	default:
 		query := url.Values{"done": {"queued"}, "episode": {episodeID.String()}}
 		context.Redirect(http.StatusSeeOther, feedPageURL(feed, context.PostForm("show"), query)+"#episode-"+episodeID.String())
+	}
+}
+
+// serveEpisode sets whether one episode the source no longer lists is still
+// served.
+func (ui *ui) serveEpisode(context *gin.Context) {
+	feed, ok := ui.loadUIFeed(context)
+	if !ok {
+		return
+	}
+	episodeID, err := uuid.Parse(context.Param("episodeID"))
+	if err != nil || ui.handlers.episodes == nil {
+		ui.renderError(context, http.StatusNotFound, "No such episode", "This episode doesn't exist in this feed.")
+		return
+	}
+	episode, err := ui.handlers.episodes.SetServe(context.Request.Context(), feed.ID, episodeID, context.PostForm("serve"))
+	switch {
+	case errors.Is(err, database.ErrEpisodeNotFound):
+		ui.renderError(context, http.StatusNotFound, "No such episode", "This episode doesn't exist in this feed.")
+	case errors.Is(err, feeds.ErrInvalidSettings):
+		ui.showFeedPage(context, http.StatusBadRequest, &uiNotice{Kind: "error", Text: "Couldn't save whether the episode is served: it can only be Default, On or Off."})
+	case err != nil:
+		logger.Log.Error("Failed to set whether an episode of feed '" + feed.Title + "' is served, from the web UI. Error: " + err.Error())
+		ui.renderError(context, http.StatusInternalServerError, "Couldn't save the setting", "Something went wrong; the log says what.")
+	default:
+		logger.Log.Info("Set whether episode '" + episode.Title + "' of '" + feed.Title + "' is served once its source no longer lists it, through the web UI (" + orDefault(episode.Serve) + ").")
+		query := url.Values{"done": {"serve"}, "episode": {episodeID.String()}}
+		context.Redirect(http.StatusSeeOther, feedPageURL(feed, context.PostForm("show"), query)+"#episode-"+episodeID.String())
+	}
+}
+
+// deleteEpisode deletes one episode the source no longer lists, with its
+// cached file.
+func (ui *ui) deleteEpisode(context *gin.Context) {
+	feed, ok := ui.loadUIFeed(context)
+	if !ok {
+		return
+	}
+	episodeID, err := uuid.Parse(context.Param("episodeID"))
+	if err != nil || ui.handlers.episodes == nil {
+		ui.renderError(context, http.StatusNotFound, "No such episode", "This episode doesn't exist in this feed.")
+		return
+	}
+	episode, err := ui.handlers.episodes.DeleteEpisode(context.Request.Context(), feed.ID, episodeID)
+	switch {
+	case errors.Is(err, database.ErrEpisodeNotFound):
+		ui.renderError(context, http.StatusNotFound, "No such episode", "This episode doesn't exist in this feed.")
+	case errors.Is(err, episodes.ErrNotDropped):
+		ui.showFeedPage(context, http.StatusBadRequest, &uiNotice{Kind: "error", Text: "The source still lists that episode, so it can't be deleted: the next poll would add it again, as a new episode. Hide it with a rule instead."})
+	case errors.Is(err, episodes.ErrEpisodeBusy):
+		ui.showFeedPage(context, http.StatusConflict, &uiNotice{Kind: "error", Text: "That episode is being prepared or served right now; try again shortly."})
+	case err != nil:
+		logger.Log.Error("Failed to delete an episode of feed '" + feed.Title + "' from the web UI. Error: " + err.Error())
+		ui.renderError(context, http.StatusInternalServerError, "Couldn't delete the episode", "Something went wrong; the log says what.")
+	default:
+		logger.Log.Info("Deleted episode '" + episode.Title + "' of '" + feed.Title + "', which its source no longer lists, through the web UI.")
+		query := url.Values{"done": {"deleted"}}
+		context.Redirect(http.StatusSeeOther, feedPageURL(feed, context.PostForm("show"), query))
 	}
 }
 

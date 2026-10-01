@@ -26,17 +26,24 @@ type feedResponse struct {
 	RegionDiffInUse bool `json:"region_diff_in_use"`
 	// PrepareAheadInUse says whether the feed's episodes are all prepared
 	// before a client asks, the global and the feed's settings combined.
-	PrepareAheadInUse bool   `json:"prepare_ahead_in_use"`
-	FeedURL           string `json:"feed_url"`
+	PrepareAheadInUse bool `json:"prepare_ahead_in_use"`
+	// ServeDroppedInUse and DeleteDroppedInUse say what happens to the
+	// episodes the source no longer lists, the global and the feed's
+	// settings combined (an episode can override serving for itself).
+	ServeDroppedInUse  bool   `json:"serve_dropped_in_use"`
+	DeleteDroppedInUse bool   `json:"delete_dropped_in_use"`
+	FeedURL            string `json:"feed_url"`
 }
 
 func (handlers *handlers) feedResponse(context *gin.Context, feed models.Feed) feedResponse {
 	return feedResponse{
-		Feed:              feed,
-		DeliveryModeInUse: handlers.feeds.DeliveryMode(feed),
-		RegionDiffInUse:   handlers.feeds.Processed(feed),
-		PrepareAheadInUse: handlers.feeds.PreparesAhead(feed),
-		FeedURL:           handlers.urls(context).Feed(feed.ID),
+		Feed:               feed,
+		DeliveryModeInUse:  handlers.feeds.DeliveryMode(feed),
+		RegionDiffInUse:    handlers.feeds.Processed(feed),
+		PrepareAheadInUse:  handlers.feeds.PreparesAhead(feed),
+		ServeDroppedInUse:  handlers.feeds.FeedServesDropped(feed),
+		DeleteDroppedInUse: handlers.feeds.DeletesDropped(feed),
+		FeedURL:            handlers.urls(context).Feed(feed.ID),
 	}
 }
 
@@ -105,6 +112,8 @@ type updateFeedRequest struct {
 	RegionDiffTrimBreakMarkers *string   `json:"region_diff_trim_break_markers"`
 	RegionDiffCompareByAudio   *string   `json:"region_diff_compare_by_audio"`
 	PrepareAhead               *string   `json:"prepare_ahead"`
+	ServeDropped               *string   `json:"serve_dropped"`
+	DeleteDropped              *string   `json:"delete_dropped"`
 }
 
 func (handlers *handlers) apiUpdateFeed(context *gin.Context) {
@@ -144,6 +153,12 @@ func (handlers *handlers) apiUpdateFeed(context *gin.Context) {
 	}
 	if request.PrepareAhead != nil {
 		feed.PrepareAhead = *request.PrepareAhead
+	}
+	if request.ServeDropped != nil {
+		feed.ServeDropped = *request.ServeDropped
+	}
+	if request.DeleteDropped != nil {
+		feed.DeleteDropped = *request.DeleteDropped
 	}
 
 	err := handlers.updateFeed(context.Request.Context(), &feed)
