@@ -320,6 +320,14 @@ func withDropped(row *uiEpisode, view episodes.EpisodeView, service *feeds.Servi
 	row.InFeed = service.ServesDropped(feed, view.Episode)
 	row.Serve = uiToggle{Value: view.Serve, DefaultOn: service.FeedServesDropped(feed), InUse: row.InFeed}
 	row.Warning = view.ServeWarning
+	// Never prepared in the background, so Prepare isn't offered; one that
+	// isn't served isn't fetched at all, which the row says already.
+	if view.Status == episodes.StatusNotCached {
+		row.Detail = ""
+		if row.InFeed {
+			row.Detail = "Fetched when a client asks for it."
+		}
+	}
 }
 
 // feedPageNotice is the notice after an action redirected back. Only IDs

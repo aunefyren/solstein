@@ -52,6 +52,9 @@ func TestUIDroppedEpisodes(t *testing.T) {
 			t.Errorf("the feed page lacks %q", want)
 		}
 	}
+	if strings.Contains(page, "or with Prepare") {
+		t.Error("a dropped episode is offered Prepare")
+	}
 	if problems := do(router, http.MethodGet, "/ui/feeds/"+id+"?show=problems", "", nil).Body.String(); !strings.Contains(problems, "Its source answered 404") {
 		t.Error("a dropped episode with a warning isn't among the problems")
 	}
@@ -67,7 +70,7 @@ func TestUIDroppedEpisodes(t *testing.T) {
 		t.Errorf("after serving by hand: serve %q, warning %q", stored.Serve, stored.ServeWarning)
 	}
 	page, _, _ = strings.Cut(location, "#")
-	if body := do(router, http.MethodGet, page, "", nil).Body.String(); !strings.Contains(body, "Saved whether &#39;One&#39; is served.") || !strings.Contains(body, "Still in the served feed, and kept for good.") {
+	if body := do(router, http.MethodGet, page, "", nil).Body.String(); !strings.Contains(body, "Saved whether &#39;One&#39; is served.") || !strings.Contains(body, "Still in the served feed, and kept for good.") || !strings.Contains(body, "Fetched when a client asks for it.") {
 		t.Errorf("after serving by hand:\n%s", body)
 	}
 	if code := do(router, http.MethodPost, episodePath+"/serve", url.Values{"serve": {"sometimes"}}.Encode(), form).Code; code != http.StatusBadRequest {
