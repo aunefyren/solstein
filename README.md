@@ -337,7 +337,7 @@ curl -X PUT -H "Authorization: Bearer $token" -H "Content-Type: application/json
 ```
 
 - **Hide** leaves an episode out of the feed and never downloads it, so with region diff a hidden clip costs nothing. Episodes your client already downloaded stay in the client: set the rules up before the client sees them.
-- **Tag** changes only the served feed. Whether Audiobookshelf updates the type of an episode it already has isn't confirmed yet; new episodes get it.
+- **Tag** changes only the served feed. Audiobookshelf shows the types (checked); whether it updates the type of an episode it already has isn't confirmed yet, so set the rules up before adding the podcast.
 - **Length** is the feed's stated duration (`min_seconds` / `max_seconds`; in the web UI `20:00` or `1:00:00`). An episode whose feed states none can only be matched by length once region diff has processed it, so it can be tagged by length but not hidden by it.
 - Removing a rule brings its hidden episodes back with their own dates, so the client doesn't take them for new episodes.
 - At most 50 rules per feed. Details: [`docs/feeds.md`](docs/feeds.md), Rules.
