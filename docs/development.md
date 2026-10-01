@@ -176,6 +176,7 @@ Rules:
 - Gin's own logger is not used (`gin.New`, not `gin.Default`); the `requestLogger` middleware logs requests through logrus: `debug` for success, `warn` for 4xx, `error` for 5xx.
 - `info` for lifecycle events (feed polled, episode processed, tunnel up/down); `debug` for per-request and per-segment detail; `warn` for degraded but working states (exit unavailable, diff skipped); `error` for failures.
 - Log messages are full sentences starting with a capital letter and naming the object: `"Failed to poll feed 'Example Show'. Error: ..."`.
+- **Every message is one line of plain text:** the formatter (`logger.escapingFormatter`) writes control characters as visible escapes (`\n`, `\r`, `\x1b`, `\u2028` …; tabs stay). Messages carry text from outside Solstein, episode and feed titles above all, and a newline in a title would otherwise let a source feed forge log lines of its own, and an escape sequence reach the terminal reading the log. So call sites don't sanitise titles themselves. Values from a request (a form's `on`/`off`) are logged through a function that returns only constants (`server.orDefault`), which code scanning can follow where it can't follow the validation before it.
 - Errors before the logger exists (config failures) go to stderr with `fmt.Fprintln`.
 
 

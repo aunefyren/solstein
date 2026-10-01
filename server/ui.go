@@ -466,11 +466,18 @@ func formatTime(at *time.Time) string {
 	return at.Local().Format("2 Jan 2006 15:04")
 }
 
+// orDefault names an on/off override for the log: "on", "off" or
+// "default". The values come from a form, and were checked before saving,
+// but the name is always a constant, so no text a request sent reaches the
+// log (which code scanning can see, unlike the check).
 func orDefault(value string) string {
-	if value == "" {
-		return "default"
+	switch value {
+	case "on":
+		return "on"
+	case "off":
+		return "off"
 	}
-	return value
+	return "default"
 }
 
 // uiFact is one row of a fact list (style guide: Fact list).
