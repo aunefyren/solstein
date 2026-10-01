@@ -61,8 +61,8 @@ func TestClosedStoreReturnsErrors(t *testing.T) {
 			return store.CreateSubscription(ctx, &models.Feed{SourceURL: "https://b.example/feed"}, []byte("<rss/>"), now,
 				[]models.Episode{{GUID: "a", SourceURL: "https://b.example/a.mp3"}})
 		},
-		"AddNewEpisodes": func() error {
-			_, err := store.AddNewEpisodes(ctx, feedID, []models.Episode{{GUID: "a", SourceURL: "https://a.example/a.mp3"}})
+		"SyncEpisodes": func() error {
+			_, err := store.SyncEpisodes(ctx, feedID, []models.Episode{{GUID: "a", SourceURL: "https://a.example/a.mp3"}}, Hiding{})
 			return err
 		},
 	}

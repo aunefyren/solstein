@@ -223,9 +223,10 @@ func TestHiddenEpisodesAreNotQueued(t *testing.T) {
 	ctx := context.Background()
 	hidden := setup.addBacklog(t, "/ok.mp3?hidden")
 	shown := setup.addBacklog(t, "/ok.mp3?shown")
-	if _, err := setup.store.ReplaceFeedRules(ctx, setup.feed.ID, nil, func(episode models.Episode) bool {
-		return episode.ID == hidden.ID
-	}); err != nil {
+	hide := func([]models.FeedRule) func(models.Episode) bool {
+		return func(episode models.Episode) bool { return episode.ID == hidden.ID }
+	}
+	if _, err := setup.store.ReplaceFeedRules(ctx, setup.feed.ID, nil, database.Hiding{HiderFor: hide}); err != nil {
 		t.Fatal(err)
 	}
 

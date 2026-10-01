@@ -1006,7 +1006,7 @@ func TestUIRuleEditor(t *testing.T) {
 	page := do(router, http.MethodGet, "/ui/feeds/"+id, "", nil).Body.String()
 	for _, want := range []string{
 		`<section class="section" id="rules">`, "No rules yet", `name="rules" value="1"`,
-		`<th scope="rowgroup" colspan="7">Add a rule</th>`, `<option value="1" selected>At the end</option>`, `<option value="" selected>Choose an action</option>`,
+		`<th scope="rowgroup" colspan="7">Add a rule</th>`, `name="rule-0-new" value="1"`, ">Check without saving</button>", `<option value="1" selected>At the end</option>`, `<option value="" selected>Choose an action</option>`,
 		`<option value="tag:bonus">Tag as bonus</option>`, `for="rule-0-title"`,
 	} {
 		if !strings.Contains(page, want) {
@@ -1039,7 +1039,7 @@ func TestUIRuleEditor(t *testing.T) {
 	code, _, body = postForm(router, "/ui/feeds/"+id+"/rules", url.Values{
 		"rules":           {"2"},
 		"rule-0-position": {"1"}, "rule-0-title": {"^one$"}, "rule-0-action": {"tag:bonus"},
-		"rule-1-position": {"1"}, "rule-1-at-least": {"1:00"}, "rule-1-at-most": {"1:30:00"}, "rule-1-action": {"hide"},
+		"rule-1-position": {"1"}, "rule-1-at-least": {"1:00"}, "rule-1-at-most": {"1:30:00"}, "rule-1-action": {"hide"}, "rule-1-new": {"1"},
 	}, nil)
 	if code != http.StatusSeeOther {
 		t.Fatalf("save two = %d:\n%s", code, body)
@@ -1096,6 +1096,28 @@ func TestUIRuleEditor(t *testing.T) {
 	}
 	if rules, _ := store.ListFeedRules(ctx, feedID); len(rules) != 2 {
 		t.Errorf("a refused save changed the rules: %+v", rules)
+	}
+
+	// Checking shows what the rules would do, in their new order, and
+	// saves nothing.
+	before, _ := store.ListFeedRules(ctx, feedID)
+	code, _, body = postForm(router, "/ui/feeds/"+id+"/rules", url.Values{
+		"rules": {"3"}, "check": {"1"},
+		"rule-0-position": {"1"}, "rule-0-title": {"^one$"}, "rule-0-action": {"tag:bonus"},
+		"rule-1-position": {"2"}, "rule-1-action": {"hide"},
+		"rule-2-position": {"1"}, "rule-2-new": {"1"}, "rule-2-action": {"tag:trailer"},
+	}, nil)
+	if code != http.StatusOK || !strings.Contains(body, "Checked the rules of &#39;Fake Show&#39;. They aren&#39;t saved yet") || !strings.Contains(body, "Not saved yet. Matches counts") {
+		t.Errorf("check = %d:\n%s", code, body)
+	}
+	if !strings.Contains(body, `<option value="tag:trailer" selected>`) || !strings.Contains(body, `name="rules" value="4"`) || strings.Count(body, "<td data-label=\"Matches\">None</td>") != 2 || !strings.Contains(body, "<td data-label=\"Matches\">1 episode</td>") {
+		t.Errorf("checked rules not shown with their counts:\n%s", body)
+	}
+	if after, _ := store.ListFeedRules(ctx, feedID); fmt.Sprint(after) != fmt.Sprint(before) {
+		t.Errorf("checking changed the rules: %+v", after)
+	}
+	if code, _, body := postForm(router, "/ui/feeds/"+id+"/rules", url.Values{"rules": {"1"}, "check": {"1"}, "rule-0-new": {"1"}, "rule-0-title": {"x"}}, nil); code != http.StatusBadRequest || !strings.Contains(body, "Couldn&#39;t check the rules") {
+		t.Errorf("check with a problem = %d", code)
 	}
 
 	// A hiding rule shows on the episode it hides.

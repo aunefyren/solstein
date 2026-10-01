@@ -691,8 +691,8 @@ paths:
         `remove`, or with every field empty (the editor's new row left
         blank), is left out, and the rest are saved in the order of their
         `position` (ties keep the rows' order). The last row is the new
-        rule, whose position n means "before rule n" (one past the last:
-        at the end). Lengths are `M:SS` or `H:MM:SS`, empty for no limit.
+        rule (marked `rule-{n}-new`), whose position n means "before rule
+        n" (one past the last: at the end). Lengths are `M:SS` or `H:MM:SS`, empty for no limit.
       operationId: postUIFeedRules
       security: []
       requestBody:
@@ -702,6 +702,9 @@ paths:
             schema:
               type: object
               properties:
+                check:
+                  type: string
+                  description: Set (the "Check without saving" button) to check the rules and show what they would do without saving them; the answer is then `200` with the page.
                 rules:
                   type: integer
                   description: How many rows the form has.
@@ -723,7 +726,15 @@ paths:
                 rule-{n}-remove:
                   type: string
                   enum: ["on"]
+                rule-{n}-new:
+                  type: string
+                  enum: ["1"]
+                  description: Marks the new rule's row, whose position n means "before rule n".
       responses:
+        "200":
+          description: With `check`, the feed page showing what the rules would do; nothing saved.
+          content:
+            text/html: {}
         "303":
           description: To `/ui/feeds/{feedID}?done=rules#rules`.
         "400":
@@ -1378,16 +1389,17 @@ components:
       properties:
         title_matches:
           type: string
+          maxLength: 500
           description: A regular expression (Go syntax, case-insensitive) the episode's title must contain a match for; empty matches any title.
           examples: ["^trailer", " / "]
         min_seconds:
           type: integer
           minimum: 0
-          description: The source's stated duration must be at least this; 0 means no lower bound. An episode without a stated duration never matches a rule with a duration bound.
+          description: The episode's length must be at least this; 0 means no lower bound. The length is the source's stated duration, else the processed file's; an episode with neither never matches a rule with a length bound.
         max_seconds:
           type: integer
           minimum: 0
-          description: The source's stated duration must be at most this; 0 means no upper bound.
+          description: The episode's length must be at most this; 0 means no upper bound.
         action:
           type: string
           enum: [hide, tag]

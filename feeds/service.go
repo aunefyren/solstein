@@ -303,15 +303,9 @@ func (service *Service) Refresh(ctx context.Context, feed *models.Feed) (added [
 	if service.DeliveryMode(*feed) == "cache" || service.Processed(*feed) {
 		state = models.EpisodeDiscovered
 	}
-	feedRules, err := service.loadRules(ctx, *feed)
-	if err != nil {
-		return nil, err
-	}
-	episodes := episodesFromItems(parsed.Items, state, false)
-	for i := range episodes {
-		episodes[i].Hidden = feedRules.hides(episodes[i])
-	}
-	return service.store.AddNewEpisodes(ctx, feed.ID, episodes)
+	// The rules are read in the same transaction that stores the episodes,
+	// so a rule change saved meanwhile can't be missed.
+	return service.store.SyncEpisodes(ctx, feed.ID, episodesFromItems(parsed.Items, state, false), service.hiding(*feed))
 }
 
 // Render builds the feed served to clients from the stored source document

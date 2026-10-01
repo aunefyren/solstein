@@ -391,13 +391,8 @@ func (handlers *handlers) setRules(ctx stdcontext.Context, feed models.Feed, rul
 	}
 	logger.Log.Info(fmt.Sprintf("Saved %s for feed '%s'.", plural(len(rules), "rule"), feed.Title))
 	if shown > 0 && handlers.episodes != nil {
-		// Preparing ahead, an episode without its file stays out of the feed
-		// until it is queued; otherwise the workers find the new ones.
-		if handlers.feeds.PreparesAhead(feed) {
-			if _, err := handlers.episodes.Queue(ctx, feed.ID, 0); err != nil && !errors.Is(err, episodes.ErrNotPrepared) {
-				logger.Log.Error("Failed to queue the episodes of feed '" + feed.Title + "' to be prepared ahead. Error: " + err.Error())
-			}
-		}
+		// Shown again, they are queued where the feed prepares ahead
+		// (feeds.Service.SetRules); the workers look now.
 		handlers.episodes.Wake()
 	}
 	return nil

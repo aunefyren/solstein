@@ -321,6 +321,27 @@ Hosts such as Acast insert ads per listener region. Region diff downloads each e
 - If the exits don't exist, region diff stays off and Solstein logs why at start-up.
 - **Upgrading to this version:** region diff's algorithm changed (version 4: comparing by audio, silent frames at cuts), so at the first start every cleaned episode's cached file is cleared and the episode cleaned again the next time it is played or prepared, and episodes that failed before are tried again. Audiobookshelf keeps the copies it has already downloaded, so this is no mass re-download; `POST /api/v1/feeds/{id}/prepare` cleans a feed's episodes ahead if you want them cached again.
 
+## Hiding and tagging episodes (rules)
+
+Some shows mix their episodes with short clips, trailers or teasers you don't want, and many feeds don't say which is which. A feed's **rules** sort that out. Each rule matches episodes by title (a regular expression, ignoring case) and/or length, and either **hides** them or **tags** them as `full`, `bonus` or `trailer` episodes (`<itunes:episodeType>`, which Audiobookshelf shows). Rules are tried in order and the first one an episode matches decides; a rule without conditions matches everything, so it can end the list as a catch-all.
+
+Edit them on the feed's page in the web UI (with **Check without saving** to see how many episodes each would match), or with the API:
+
+```
+curl -X PUT -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+     -d '{"rules": [
+           {"max_seconds": 3600, "action": "tag", "episode_type": "bonus"},
+           {"action": "tag", "episode_type": "full"}
+         ]}' \
+     http://localhost:8080/api/v1/feeds/<feed ID>/rules
+```
+
+- **Hide** leaves an episode out of the feed and never downloads it, so with region diff a hidden clip costs nothing. Episodes your client already downloaded stay in the client: set the rules up before the client sees them.
+- **Tag** changes only the served feed. Whether Audiobookshelf updates the type of an episode it already has isn't confirmed yet; new episodes get it.
+- **Length** is the feed's stated duration (`min_seconds` / `max_seconds`; in the web UI `20:00` or `1:00:00`). An episode whose feed states none can only be matched by length once region diff has processed it, so it can be tagged by length but not hidden by it.
+- Removing a rule brings its hidden episodes back with their own dates, so the client doesn't take them for new episodes.
+- At most 50 rules per feed. Details: [`docs/feeds.md`](docs/feeds.md), Rules.
+
 ## Operating styles
 
 The guide above sets up one particular style. Solstein can be run in quite different ways, though, and what each needs — VPN keys, patience, the kind of client — differs. Two settings pick the style, and [How many VPN keys](#how-many-vpn-keys) says what the keys change:

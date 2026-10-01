@@ -101,10 +101,11 @@ func (ui *ui) showFeedPage(context *gin.Context, status int, notice *uiNotice) {
 	ui.showFeedPageWith(context, status, notice, nil)
 }
 
-// showFeedPageWith shows the feed page with the rule editor as given (the
-// rows a refused save sent, so nothing typed is lost), or nil for the
-// feed's rules as stored.
-func (ui *ui) showFeedPageWith(context *gin.Context, status int, notice *uiNotice, rules *uiRules) {
+// showFeedPageWith shows the feed page with the rule editor rules builds
+// from the feed's episodes (the rows a refused save sent, so nothing typed
+// is lost; or rules checked without saving), or nil for the feed's rules
+// as stored.
+func (ui *ui) showFeedPageWith(context *gin.Context, status int, notice *uiNotice, rules func([]models.Episode) uiRules) {
 	feed, ok := ui.loadUIFeed(context)
 	if !ok {
 		return
@@ -140,7 +141,7 @@ func (ui *ui) showFeedPageWith(context *gin.Context, status int, notice *uiNotic
 	}
 	deciding := feeds.DecidingRules(stored, list)
 	if rules != nil {
-		content.Rules = *rules
+		content.Rules = rules(list)
 	} else {
 		content.Rules = rulesEditor(stored, list)
 	}

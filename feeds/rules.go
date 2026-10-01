@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 
+	"aunefyren/solstein/database"
 	"aunefyren/solstein/logger"
 	"aunefyren/solstein/models"
 
@@ -25,6 +26,12 @@ var EpisodeTypes = []string{"full", "bonus", "trailer"}
 // MaxRules caps a feed's rules; a feed needing more than a handful is
 // better split some other way.
 const MaxRules = 50
+
+// MaxTitlePattern caps a title pattern's length. Go's regular expressions
+// run in linear time, so this isn't about runaway matching; a pattern for
+// telling episodes apart never needs to be long, and the rules are matched
+// against every episode on every poll and render.
+const MaxTitlePattern = 500
 
 // Rule is one of a feed's rules as the API takes and returns it (see
 // models.FeedRule): what it is stored as, without the row's ID and times,
@@ -89,6 +96,9 @@ func compileRules(list []models.FeedRule) (rules, error) {
 			return nil, invalid("min_seconds is more than max_seconds")
 		}
 		entry := compiledRule{FeedRule: rule}
+		if len(rule.TitleMatches) > MaxTitlePattern {
+			return nil, invalid("title_matches is longer than %d characters", MaxTitlePattern)
+		}
 		if rule.TitleMatches != "" {
 			title, err := regexp.Compile("(?i)" + rule.TitleMatches)
 			if err != nil {
@@ -101,20 +111,30 @@ func compileRules(list []models.FeedRule) (rules, error) {
 	return compiled, nil
 }
 
+// lengthOf is the length rules compare: the source's stated duration, else
+// the processed file's (a processor measures what it made), else 0.
+func lengthOf(episode models.Episode) int {
+	if episode.SourceSeconds > 0 {
+		return episode.SourceSeconds
+	}
+	return episode.CacheSeconds
+}
+
 // match returns the first rule the episode matches, or nil.
 func (list rules) match(episode models.Episode) *models.FeedRule {
+	length := lengthOf(episode)
 	for i := range list {
 		rule := &list[i]
 		if rule.title != nil && !rule.title.MatchString(episode.Title) {
 			continue
 		}
-		if (rule.MinSeconds > 0 || rule.MaxSeconds > 0) && episode.SourceSeconds <= 0 {
-			continue // no stated duration to compare
+		if (rule.MinSeconds > 0 || rule.MaxSeconds > 0) && length <= 0 {
+			continue // no length to compare
 		}
-		if rule.MinSeconds > 0 && episode.SourceSeconds < rule.MinSeconds {
+		if rule.MinSeconds > 0 && length < rule.MinSeconds {
 			continue
 		}
-		if rule.MaxSeconds > 0 && episode.SourceSeconds > rule.MaxSeconds {
+		if rule.MaxSeconds > 0 && length > rule.MaxSeconds {
 			continue
 		}
 		return &rule.FeedRule
@@ -209,11 +229,34 @@ func (service *Service) Rules(ctx context.Context, feedID uuid.UUID) ([]Rule, er
 // ErrInvalidSettings, and nothing is saved.
 func (service *Service) SetRules(ctx context.Context, feedID uuid.UUID, list []Rule) (shown int, err error) {
 	stored := storedRules(list)
-	compiled, err := compileRules(stored)
+	if _, err := compileRules(stored); err != nil {
+		return 0, err
+	}
+	feed, err := service.store.GetFeed(ctx, feedID)
 	if err != nil {
 		return 0, err
 	}
-	return service.store.ReplaceFeedRules(ctx, feedID, stored, compiled.hides)
+	return service.store.ReplaceFeedRules(ctx, feedID, stored, service.hiding(feed))
+}
+
+// hiding is how a feed's rules act on its episodes as they are stored (see
+// database.Hiding). An episode shown again is queued when the feed prepares
+// ahead, since nothing would ask for it otherwise.
+func (service *Service) hiding(feed models.Feed) database.Hiding {
+	prepared := service.DeliveryMode(feed) == "cache" || service.Processed(feed)
+	return database.Hiding{
+		HiderFor: func(stored []models.FeedRule) func(models.Episode) bool {
+			compiled, err := compileRules(stored)
+			if err != nil {
+				// Checked before they were saved; see loadRules.
+				logger.Log.Warn("Ignoring the rules of feed '" + feed.Title + "', which aren't valid any more. Error: " + err.Error())
+				return func(models.Episode) bool { return false }
+			}
+			return compiled.hides
+		},
+		QueueShown: prepared && service.PreparesAhead(feed),
+		Now:        service.options.Now().UTC(),
+	}
 }
 
 // loadRules returns a feed's rules ready for matching. Rules are checked

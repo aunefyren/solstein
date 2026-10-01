@@ -2,6 +2,7 @@
   "external_url": "http://solstein:8080",
   "default_exit": "mine",
   "prepare_ahead": false,
+  "web_ui": { "enabled": true },
   "vpn": {
     "providers": {
       "proton": {

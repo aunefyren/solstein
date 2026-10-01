@@ -32,6 +32,8 @@ func TestCompileRules(t *testing.T) {
 		{"negative duration", Rule{Action: RuleHide, MinSeconds: -1}, false},
 		{"min above max", Rule{Action: RuleHide, MinSeconds: 600, MaxSeconds: 60}, false},
 		{"bad expression", Rule{Action: RuleHide, TitleMatches: "(unclosed"}, false},
+		{"pattern too long", Rule{Action: RuleHide, TitleMatches: strings.Repeat("a", MaxTitlePattern+1)}, false},
+		{"longest pattern", Rule{Action: RuleHide, TitleMatches: strings.Repeat("a", MaxTitlePattern)}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -73,6 +75,10 @@ func TestRulesMatch(t *testing.T) {
 		{"A / B / C", 3600, false, "full"},
 		{"Middling", 2400, false, ""}, // no rule matches
 		{"No duration", 0, false, ""}, // duration rules need a stated one
+	}
+	// No stated duration: the processed file's length is compared instead.
+	if got := list.episodeType(models.Episode{Title: "Clip", CacheSeconds: 900}); got != "bonus" {
+		t.Errorf("processed length: tag = %q, want bonus", got)
 	}
 	for _, c := range cases {
 		episode := models.Episode{Title: c.title, SourceSeconds: c.seconds}
@@ -173,16 +179,19 @@ func TestRulesHideAndTag(t *testing.T) {
 		t.Errorf("UpdateEpisode changed hidden: %+v", stored[1])
 	}
 
-	// Without the rules the trailer comes back, to be prepared.
+	// Without the rules the trailer comes back as backlog (it was never
+	// published): in the feed at once, prepared when a client asks.
 	shown, err := service.SetRules(ctx, feed.ID, nil)
 	if err != nil || shown != 1 {
 		t.Fatalf("SetRules(nil) = %d, %v; want the trailer shown", shown, err)
 	}
-	claimed, err = store.ClaimNextEpisode(ctx, now, "cache", nil)
-	if err != nil || claimed.GUID != "trailer" {
-		t.Errorf("claimed %q, %v; want the trailer", claimed.GUID, err)
+	if _, err := store.ClaimNextEpisode(ctx, now, "cache", nil); !errors.Is(err, database.ErrNoWork) {
+		t.Errorf("claim after showing: err = %v, want ErrNoWork", err)
 	}
 	output, _ = service.Render(ctx, feed, testURLs)
+	if !strings.Contains(string(output), "<guid>trailer</guid>") {
+		t.Errorf("the trailer isn't back in the feed:\n%s", output)
+	}
 	if strings.Contains(string(output), "episodeType") {
 		t.Errorf("rules removed, but episodes still tagged:\n%s", output)
 	}
@@ -239,5 +248,76 @@ func TestCountMatches(t *testing.T) {
 	}
 	if got := CountMatches([]Rule{{Action: "nope"}}, episodes); got != nil {
 		t.Errorf("invalid rules counted: %v", got)
+	}
+}
+
+// TestShownAgainAsBacklog: an episode hidden from the moment it was found,
+// shown again, keeps its own date rather than appearing as new.
+func TestShownAgainAsBacklog(t *testing.T) {
+	for _, prepareAhead := range []bool{false, true} {
+		t.Run(fmt.Sprintf("prepare ahead %v", prepareAhead), func(t *testing.T) {
+			host := newFakeHost(t)
+			service, store := newTestService(t, Options{PrepareAhead: prepareAhead})
+			ctx := context.Background()
+			feed, _, err := service.Subscribe(ctx, host.server.URL, Settings{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.SetRules(ctx, feed.ID, []Rule{{Action: RuleHide, TitleMatches: "clip"}}); err != nil {
+				t.Fatal(err)
+			}
+			host.addTimedItem("clip", "A clip", "Tue, 22 Sep 2026 06:00:00 +0000", "10:00")
+			if added, err := service.Refresh(ctx, &feed); err != nil || len(added) != 1 || !added[0].Hidden {
+				t.Fatalf("Refresh = %+v, %v", added, err)
+			}
+
+			if shown, err := service.SetRules(ctx, feed.ID, nil); err != nil || shown != 1 {
+				t.Fatalf("SetRules(nil) = %d, %v", shown, err)
+			}
+			episodes, _ := store.ListEpisodes(ctx, feed.ID)
+			clip := episodes[1]
+			if clip.GUID != "clip" || clip.Hidden || !clip.Backlog || clip.State != models.EpisodeReady || (clip.NextAttemptAt != nil) != prepareAhead {
+				t.Errorf("shown again: %+v; want backlog, ready, queued only when preparing ahead", clip)
+			}
+			if prepareAhead {
+				return // it appears once prepared
+			}
+			output, _ := service.Render(ctx, feed, testURLs)
+			parsed, _ := rss.Parse(output)
+			for _, item := range parsed.Items {
+				if item.GUID == "clip" && !item.PublishedAt.Equal(time.Date(2026, 9, 22, 6, 0, 0, 0, time.UTC)) {
+					t.Errorf("the clip is dated %v, not its own date", item.PublishedAt)
+				}
+			}
+			if len(parsed.Items) != 2 {
+				t.Errorf("items = %d, want both", len(parsed.Items))
+			}
+		})
+	}
+}
+
+// TestRefreshFollowsSourceDetails: a title or duration changed at the
+// source is stored, and the rules applied to it again.
+func TestRefreshFollowsSourceDetails(t *testing.T) {
+	host := newFakeHost(t)
+	service, store := newTestService(t, Options{})
+	ctx := context.Background()
+	feed, _, _ := service.Subscribe(ctx, host.server.URL, Settings{})
+	if _, err := service.SetRules(ctx, feed.ID, []Rule{{Action: RuleHide, TitleMatches: "^trailer"}}); err != nil {
+		t.Fatal(err)
+	}
+	host.addTimedItem("ep-2", "Season two", "Tue, 22 Sep 2026 06:00:00 +0000", "10:00")
+	if _, err := service.Refresh(ctx, &feed); err != nil {
+		t.Fatal(err)
+	}
+	host.set(func(host *fakeHost) {
+		host.items[0] = strings.NewReplacer("Season two", "Trailer: season two", "10:00", "2:00").Replace(host.items[0])
+	})
+	if added, err := service.Refresh(ctx, &feed); err != nil || len(added) != 0 {
+		t.Fatalf("Refresh = %+v, %v", added, err)
+	}
+	episodes, _ := store.ListEpisodes(ctx, feed.ID)
+	if got := episodes[1]; got.Title != "Trailer: season two" || got.SourceSeconds != 120 || !got.Hidden {
+		t.Errorf("after the source changed: %+v", got)
 	}
 }

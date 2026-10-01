@@ -63,10 +63,8 @@ Found 2026-09-28 (it skips where those downloads aren't present, so CI never run
 ## Core
 
 - **Publish immediately, swap later (idea, for clients other than ABS):** publish an episode of a processed feed at once with its ads, and swap in the processed file when ready. Useless for ABS, which downloads once and matches by GUID afterwards; only worth it for clients that re-download changed enclosures (unknown, see below).
-- **Feed rules: what's left** (hide and tag are built, [`feeds.md`](feeds.md), Rules; 2026-10-01):
+- **Feed rules: what's left** (hide and tag are built, [`feeds.md`](feeds.md), Rules; 2026-10-01). The maintainer is checking this one:
   - **Not checked live against ABS yet:** that ABS shows a tagged episode as bonus/trailer, and whether it picks up a type changed on an episode it already has (it probably doesn't re-read existing episodes' metadata, which would mean a tag reaches new episodes only). Try on `docker-test` with Lørdagsrådet: `{"max_seconds": 3600, "action": "tag", "episode_type": "bonus"}` then a catch-all `full`.
-  - **More conditions** if a feed needs them (weekday was discussed for Lørdagsrådet; duration is enough there). Weekday would need a time zone (the feed's dates, or `timezone`).
-  - **A poll racing a rule change:** a poll loads the rules before storing new episodes, so one stored in the moment a `PUT` commits gets its `hidden` flag from the old rules until the next rule change. Only matters for an episode new in that same moment; not worth a lock unless seen.
 - **`TestServeRunsAndStops` can miss its 15 s window if the clock steps back** (seen once, 2026-10-01, in a full `-race` run on WSL; passed 3 of 3 alone): the log's timestamps went backwards by a second, so the episode queued "now" at start-up wasn't due yet at the worker's first look, and the next look came after the deadline. Not a bug in the queue as such (a real clock step only delays one attempt), but the test depends on the wall clock; the root package's test could take a clock like the others if it recurs.
 - **Chaining processors (idea):** the processor interface allows one processor per feed; chaining would let e.g. a loudness pass run after region diff.
 - **Web UI: what's left** (the feed list with its region diff and prepare-ahead switches is built, [`web-ui.md`](web-ui.md); built to [`style-guide.md`](style-guide.md)):

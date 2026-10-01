@@ -55,6 +55,7 @@
         </tr>
         {{with .Rules.New}}<tr>
           <td data-label="Position">
+            <input type="hidden" name="rule-{{.Index}}-new" value="1">
             <label class="visually-hidden" for="rule-{{.Index}}-position">New rule: position</label>
             <select id="rule-{{.Index}}-position" name="rule-{{.Index}}-position">
               {{$position := .Position}}{{range $.Content.Rules.Inserts}}<option value="{{.Position}}"{{if eq .Position $position}} selected{{end}}>{{.Label}}</option>{{end}}
@@ -68,7 +69,8 @@
     </table>
     <div class="form-footer">
       <button class="button button--primary" type="submit">Save rules</button>
-      <p class="meta">Matches counts each episode once, for the first rule it matches.</p>
+      <button class="button button--secondary" type="submit" name="check" value="1">Check without saving</button>
+      <p class="meta">{{if .Rules.Unsaved}}Not saved yet. {{end}}Matches counts each episode once, for the first rule it matches.</p>
     </div>
   </form>
 </section>

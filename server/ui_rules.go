@@ -66,6 +66,9 @@ type uiRules struct {
 	Inserts   []uiRuleInsert
 	// Saved is how many rules the feed has stored.
 	Saved int
+	// Unsaved marks rules checked but not saved: Matches shows what they
+	// would do.
+	Unsaved bool
 }
 
 // uiRuleInsert is one choice of where the new rule goes: before rule
@@ -129,7 +132,9 @@ func newRulesEditor(rows []uiRule, saved int) uiRules {
 
 // rulesFromForm reads the editor's form: the rows as sent, for showing it
 // again, and the rules to save in their new order. problem says what is
-// wrong with them, in words for the page, when they can't be saved.
+// wrong with them, in words for the page, when they can't be saved. saved
+// is how many rules the feed has stored, for the page's words only; the
+// form itself marks its new row.
 func rulesFromForm(context *gin.Context, saved int) (editor uiRules, rules []feeds.Rule, problem string) {
 	count, _ := strconv.Atoi(context.PostForm("rules"))
 	count = max(0, min(count, feeds.MaxRules+1))
@@ -146,7 +151,7 @@ func rulesFromForm(context *gin.Context, saved int) (editor uiRules, rules []fee
 			return strings.TrimSpace(context.PostForm("rule-" + strconv.Itoa(i) + "-" + name))
 		}
 		row := uiRule{
-			Index: i, Name: "Rule " + strconv.Itoa(i+1), New: i >= saved,
+			Index: i, Name: "Rule " + strconv.Itoa(i+1), New: field("new") != "",
 			Title: field("title"), AtLeast: field("at-least"), AtMost: field("at-most"),
 			Action: field("action"), Remove: field("remove") != "",
 		}
@@ -194,6 +199,8 @@ func ruleFromRow(row uiRule) (feeds.Rule, string) {
 	rule := feeds.Rule{TitleMatches: row.Title}
 	action, episodeType, _ := strings.Cut(row.Action, ":")
 	switch {
+	case len(row.Title) > feeds.MaxTitlePattern:
+		return rule, "the title pattern is longer than " + strconv.Itoa(feeds.MaxTitlePattern) + " characters."
 	case row.Action == "":
 		return rule, "choose an action."
 	case !slices.ContainsFunc(uiRuleActions, func(choice uiRuleAction) bool { return choice.Value == row.Action }):
@@ -237,7 +244,9 @@ func parseLength(text string) (int, bool) {
 	return int(duration.Round(time.Second) / time.Second), true
 }
 
-// feedRules saves the feed's rules from the feed page's editor.
+// feedRules saves the feed's rules from the feed page's editor, or with
+// "check" only shows what they would do: the page again with the rules in
+// their new order and Matches counted for them, nothing saved.
 func (ui *ui) feedRules(context *gin.Context) {
 	feed, ok := ui.loadUIFeed(context)
 	if !ok {
@@ -250,14 +259,29 @@ func (ui *ui) feedRules(context *gin.Context) {
 		return
 	}
 	editor, rules, problem := rulesFromForm(context, len(saved))
+	sent := func([]models.Episode) uiRules { return editor }
+	checking := context.PostForm("check") != ""
 	if problem != "" {
-		ui.showFeedPageWith(context, http.StatusBadRequest, &uiNotice{Kind: "error", Text: "Couldn't save the rules of '" + feedTitle(feed) + "'. " + problem}, &editor)
+		verb := "save"
+		if checking {
+			verb = "check"
+		}
+		ui.showFeedPageWith(context, http.StatusBadRequest, &uiNotice{Kind: "error", Text: "Couldn't " + verb + " the rules of '" + feedTitle(feed) + "'. " + problem}, sent)
+		return
+	}
+	if checking {
+		checked := func(list []models.Episode) uiRules {
+			checked := rulesEditor(rules, list)
+			checked.Saved, checked.Unsaved = len(saved), true
+			return checked
+		}
+		ui.showFeedPageWith(context, http.StatusOK, &uiNotice{Kind: "ok", Text: "Checked the rules of '" + feedTitle(feed) + "'. They aren't saved yet: Matches shows what they would do."}, checked)
 		return
 	}
 	err = ui.handlers.setRules(context.Request.Context(), feed, rules)
 	if errors.Is(err, feeds.ErrInvalidSettings) {
 		// The form's own checks should have caught it; the API's words, then.
-		ui.showFeedPageWith(context, http.StatusBadRequest, &uiNotice{Kind: "error", Text: "Couldn't save the rules of '" + feedTitle(feed) + "': " + err.Error() + "."}, &editor)
+		ui.showFeedPageWith(context, http.StatusBadRequest, &uiNotice{Kind: "error", Text: "Couldn't save the rules of '" + feedTitle(feed) + "': " + err.Error() + "."}, sent)
 		return
 	}
 	if err != nil {

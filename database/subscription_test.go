@@ -57,7 +57,7 @@ func TestCreateSubscriptionIsAtomic(t *testing.T) {
 	}
 }
 
-func TestAddNewEpisodes(t *testing.T) {
+func TestSyncEpisodes(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 	feed := createTestFeed(t, store, "https://example.com/feed")
@@ -67,13 +67,13 @@ func TestAddNewEpisodes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	added, err := store.AddNewEpisodes(ctx, feed.ID, []models.Episode{
+	added, err := store.SyncEpisodes(ctx, feed.ID, []models.Episode{
 		{GUID: "old", SourceURL: "https://example.com/changed.mp3", State: models.EpisodeDiscovered},
 		{GUID: "new", SourceURL: "https://example.com/new.mp3", State: models.EpisodeDiscovered},
 		{GUID: "new", SourceURL: "https://example.com/dup.mp3", State: models.EpisodeDiscovered},
-	})
+	}, Hiding{})
 	if err != nil {
-		t.Fatalf("AddNewEpisodes: %v", err)
+		t.Fatalf("SyncEpisodes: %v", err)
 	}
 	if len(added) != 1 || added[0].GUID != "new" || added[0].FeedID != feed.ID {
 		t.Errorf("added = %+v", added)
@@ -84,7 +84,7 @@ func TestAddNewEpisodes(t *testing.T) {
 		t.Errorf("existing episode changed: %+v, %v", kept, err)
 	}
 
-	added, err = store.AddNewEpisodes(ctx, feed.ID, nil)
+	added, err = store.SyncEpisodes(ctx, feed.ID, nil, Hiding{})
 	if err != nil || len(added) != 0 {
 		t.Errorf("empty add = %+v, %v", added, err)
 	}
@@ -117,5 +117,30 @@ func TestFeedDocument(t *testing.T) {
 	}
 	if _, err := store.GetFeedDocument(ctx, feed.ID); !errors.Is(err, ErrFeedDocumentNotFound) {
 		t.Errorf("document survived feed deletion: err = %v", err)
+	}
+}
+
+// TestSyncEpisodesReadsRulesInItsTransaction: the hider is built from the
+// rules as stored when the episodes are, not from a copy the caller loaded
+// earlier.
+func TestSyncEpisodesReadsRulesInItsTransaction(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	feed := createTestFeed(t, store, "https://example.com/feed")
+	var seen []models.FeedRule
+	hiding := Hiding{HiderFor: func(rules []models.FeedRule) func(models.Episode) bool {
+		seen = rules
+		return func(models.Episode) bool { return len(rules) > 0 }
+	}}
+	if _, err := store.ReplaceFeedRules(ctx, feed.ID, []models.FeedRule{{Action: "hide"}}, Hiding{}); err != nil {
+		t.Fatal(err)
+	}
+	added, err := store.SyncEpisodes(ctx, feed.ID, []models.Episode{{GUID: "a", SourceURL: "https://example.com/a.mp3", State: models.EpisodeDiscovered}}, hiding)
+	if err != nil || len(added) != 1 || !added[0].Hidden || len(seen) != 1 || seen[0].Action != "hide" {
+		t.Fatalf("added %+v, %v; rules seen %+v", added, err, seen)
+	}
+	stored, _ := store.GetEpisode(ctx, feed.ID, added[0].ID)
+	if !stored.Hidden {
+		t.Error("stored without its hidden flag")
 	}
 }
