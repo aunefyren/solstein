@@ -60,9 +60,11 @@ func (store *Store) ClaimNextEpisode(ctx context.Context, now time.Time, default
 
 // preparedFeeds starts an episode query limited to the feeds whose episodes
 // the pipeline prepares: cache delivery, set on the feed or inherited from
-// defaultMode, or one of processedFeeds.
+// defaultMode, or one of processedFeeds. Hidden episodes are left out.
 func preparedFeeds(tx *gorm.DB, defaultMode string, processedFeeds []uuid.UUID) *gorm.DB {
-	query := tx.Model(&models.Episode{}).Joins("JOIN feeds ON feeds.id = episodes.feed_id")
+	// A rule hides an episode instead of it being prepared.
+	query := tx.Model(&models.Episode{}).Joins("JOIN feeds ON feeds.id = episodes.feed_id").
+		Where("NOT episodes.hidden")
 	cacheModes := []string{"cache"}
 	if defaultMode == "cache" {
 		cacheModes = append(cacheModes, "")
@@ -134,7 +136,7 @@ func (store *Store) ClaimQueuedEpisodesForFeed(ctx context.Context, now, leaseUn
 	var episodes []models.Episode
 	err := store.withContext(ctx).Transaction(func(tx *gorm.DB) error {
 		err := tx.Model(&models.Episode{}).
-			Where("feed_id = ? AND id <> ?", feedID, except).
+			Where("feed_id = ? AND id <> ? AND NOT hidden", feedID, except).
 			Where("next_attempt_at IS NOT NULL AND next_attempt_at <= ?", now).
 			Where("state = ? OR (state = ? AND cache_file = '')", models.EpisodeFailed, models.EpisodeReady).
 			Order("next_attempt_at, published_at IS NULL, published_at DESC, created_at DESC").
@@ -171,7 +173,9 @@ func (store *Store) ClaimQueuedEpisodesForFeed(ctx context.Context, now, leaseUn
 // ClaimEpisode marks one discovered episode as acquiring, whatever its retry
 // time: a client has asked for it, so it is prepared now. It returns
 // ErrNoWork when the episode isn't discovered (a worker has it, or it is
-// done).
+// done). A hidden episode is claimed too: it isn't in the feed, so a client
+// asking for it had its URL from before, or it is the one a feed of hidden
+// episodes publishes so as not to be empty.
 func (store *Store) ClaimEpisode(ctx context.Context, episodeID uuid.UUID, now time.Time) (models.Episode, error) {
 	var episode models.Episode
 	err := store.withContext(ctx).Transaction(func(tx *gorm.DB) error {

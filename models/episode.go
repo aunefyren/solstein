@@ -57,6 +57,11 @@ type Episode struct {
 	// Withheld marks a failed episode the processor's failure policy keeps
 	// out of the feed, rather than publishing it unprocessed.
 	Withheld bool `json:"withheld"`
+	// Hidden marks an episode one of the feed's rules leaves out of the
+	// feed. It is never prepared, and doesn't hold newer episodes back. Only
+	// the rules set it (database.ReplaceFeedRules, and when the episode is
+	// stored), never UpdateEpisode.
+	Hidden bool `json:"hidden" gorm:"not null;default:false"`
 	// ProcessNote says what a processor did, e.g. how much it removed.
 	ProcessNote string `json:"process_note"`
 	// PreparedWith describes the settings the episode's file was made with

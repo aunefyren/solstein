@@ -37,6 +37,7 @@ The statuses come from `episodes.Pipeline.Episodes` (`episodes/status.go`), whic
 | Withheld | Failed and kept out of the feed; retried slowly, next at the time shown |
 | Given up | Withheld, and its slow retries are over; only Retry (or a change of settings) brings it back |
 | Published with ads | Failed, and the failure policy published it unprocessed |
+| Hidden | Left out of the feed by one of its rules ([`feeds.md`](feeds.md), Rules), and not prepared |
 
 - **Errors are shown with every URL cut down to its host** (`https://cdn.example.com/…`), since an error often quotes the source URL, whose path or query can carry a private feed's token (tested).
 - **"Downloaded by a client"** shows when a client fetched the cached copy in full. On a failed episode it comes with a warning on Retry: a client that already has the episode (ABS downloads each once) won't fetch the cleaned copy.

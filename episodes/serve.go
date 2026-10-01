@@ -322,6 +322,14 @@ func (server *Server) QueueEpisode(ctx context.Context, feedID, episodeID uuid.U
 	return server.pipeline.QueueEpisode(ctx, feedID, episodeID)
 }
 
+// Wake tells the pipeline to look for work now, e.g. after a feed's rules
+// stopped hiding episodes. Without a pipeline it does nothing.
+func (server *Server) Wake() {
+	if server.pipeline != nil {
+		server.pipeline.Wake()
+	}
+}
+
 // RemoveFeed deletes a deleted feed's cached audio at once, instead of
 // leaving it for the hourly clean-up.
 func (server *Server) RemoveFeed(feedID uuid.UUID) error {

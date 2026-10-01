@@ -56,6 +56,8 @@ A small JSON API behind the subscribe token (`Authorization: Bearer` or `?token=
 | `DELETE /api/v1/feeds/{id}` | Remove the feed, its episodes and its cached audio |
 | `POST /api/v1/feeds/{id}/retry` | Queue the feed's failed episodes for another attempt ([`episodes.md`](episodes.md), Background queue); `{"queued": n}` |
 | `POST /api/v1/retry` | The same for every feed whose episodes are prepared; `{"queued": n}` in total |
+| `GET /api/v1/feeds/{id}/rules` | The feed's rules, in order ([Rules](#rules)) |
+| `PUT /api/v1/feeds/{id}/rules` | Replace them: `{"rules": [...]}`, an empty list removes them. An invalid list is refused (`400`, naming the rule) and the old rules stay |
 | `POST /api/v1/feeds/{id}/prepare` | Queue the feed's newest episodes without their file to be prepared ahead; optional body `{"newest": n}`, all when omitted; `{"queued": n}`. `400` for a feed nothing is prepared for (stream or original mode, not processed) |
 
 Responses carry the feed's settings plus `delivery_mode_in_use`, `region_diff_in_use`, `prepare_ahead_in_use` (the global and per-feed settings combined) and `feed_url` (signed). Invalid settings are `400`; internal error text goes to the log, never to the client.
@@ -78,6 +80,7 @@ What changes:
 - Items with no `<enclosure>` but an audio `<media:content>` use that as their audio, as ABS does.
 - **`length` and `itunes:duration`** → the cached file's real size, and its real duration when a processor changed it.
 - **`itunes:new-feed-url` and `atom:link rel="self"`** → Solstein's signed feed URL, so clients that follow them stay on Solstein.
+- **`itunes:episodeType`** → what a `tag` rule sets ([Rules](#rules)): replaced where the item has one, otherwise added after the item's last child, indented like its other children, with the prefix the feed binds the iTunes namespace to (declared on the element itself when the feed doesn't bind it).
 - **`guid`** is **never** changed, so a client switched over to Solstein recognises episodes it already has.
 - **`pubDate`** of a non-backlog episode → the time Solstein first served it (`released_at`), when that is later than the source's date. Backlog episodes keep their dates. Why: [`clients.md`](clients.md).
 - Items not yet published (below) are left out.
@@ -91,9 +94,32 @@ Checked against real feeds (NPR, 355 items; Acast, 27 items): only the enclosure
 - **In order:** episodes are published in `pubDate` order, and a pending episode holds back every newer one. ABS only picks up episodes newer than the newest it has, so publishing Tuesday's before Monday's would make it skip Monday's for good.
 - **Backlog** episodes are always published; they are fetched or processed on demand. **Preparing ahead** they are not: they wait their turn like any other episode, and hold back newer ones in the same way, since nothing is prepared on demand.
 - **Failed** episodes (retries exhausted, or a permanent error) are published and served unprocessed, so one bad episode can't hold a feed back forever.
-- **Withheld** episodes (a processor's failure policy `hide`) are left out, backlog included, without holding newer ones back.
-- **Never an empty feed:** if nothing else would be published, the oldest episode is (the oldest not withheld, if any), because ABS treats a feed without items as a failed check.
+- **Withheld** episodes (a processor's failure policy `hide`) are left out, backlog included, without holding newer ones back. So are episodes a rule **hides**.
+- **Never an empty feed:** if nothing else would be published, the oldest episode is (the oldest neither withheld nor hidden, if any), because ABS treats a feed without items as a failed check.
 
 In `stream` and `original` mode with no processor, everything is published at once.
+
+## Rules
+
+A feed can have rules that hide or tag some of its episodes. A rule matches episodes, and its action says what happens to them. Prompted by NRK's "Lørdagsrådet" (an unofficial feed, `sindrel.github.io/nrk-pod-feeds`), which mixes the Saturday show (2–2.5 h, titled with the guest list `A / B / C`) with short midweek clips (~15 min) and carries no `<itunes:episodeType>` at all. ABS shows full, bonus and trailer episodes from that tag; it doesn't work the type out itself.
+
+- **Stored in the database** (`feed_rules`, one row per rule, deleted with the feed), not `config.json`, and edited through the feed API as a whole list (`GET`/`PUT /api/v1/feeds/{id}/rules`, [`openapi.yaml`](openapi.yaml)). At most 50 per feed.
+- **Matching:** rules are tried in order; the first one an episode matches decides, and a later one never applies. Conditions, all optional, all of which must hold:
+  - `title_matches`: a regular expression (Go syntax), case-insensitive, matched anywhere in the title (`^`/`$` to anchor).
+  - `min_seconds` / `max_seconds`: bounds on the source's stated duration (`itunes:duration`), inclusive; 0 leaves that side open. An episode without a stated duration never matches a rule with a bound.
+  - A rule with no conditions matches everything, so it can close the list as a catch-all.
+- **Actions:**
+  - `hide`: left out of the served feed, and never prepared in the background: the pipeline doesn't claim it, and neither preparing ahead nor `prepare` queues it, so a hidden episode costs no download (and, with region diff, not two). It doesn't hold newer episodes back. A client asking for it anyway (it had the URL from before, or it is the one a feed of nothing but hidden episodes publishes so as not to be empty) is served as usual.
+  - `tag` with `episode_type` `full`, `bonus` or `trailer`: sets `<itunes:episodeType>` in the served feed (Feed rewriting, above). Applied when the feed is served, so it changes nothing stored.
+- **Applied to stored episodes too:** saving rules sets each stored episode's `hidden` flag in the same transaction. One no longer hidden is prepared as a new one would be (the workers are woken, and a feed preparing ahead queues it). New episodes get the flag when a poll stores them. The flag is matched against the title and duration stored when the episode was found, and only the rules set it: `UpdateEpisode` never writes it, so a download saving a copy it loaded earlier can't undo a rule change.
+- The web UI shows a hidden episode as **Hidden** ([`web-ui.md`](web-ui.md)); rules aren't edited there yet ([`wip.md`](wip.md)).
+
+Example: Lørdagsrådet's clips as bonus episodes, everything else as full ones:
+```json
+{"rules": [
+  {"max_seconds": 3600, "action": "tag", "episode_type": "bonus"},
+  {"action": "tag", "episode_type": "full"}
+]}
+```
 
 Rejected alternative: publishing an episode at once and swapping in the processed file later. ABS downloads once and matches by GUID afterwards, so it would keep the version with ads (the idea is kept for other clients in [`wip.md`](wip.md)).

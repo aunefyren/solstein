@@ -502,6 +502,73 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1/feeds/{feedID}/rules:
+    parameters:
+      - $ref: "#/components/parameters/FeedID"
+    get:
+      tags: [Feed API]
+      summary: A feed's rules
+      description: The feed's rules, in the order they are tried. A feed without rules has an empty list.
+      operationId: getFeedRules
+      responses:
+        "200":
+          $ref: "#/components/responses/Rules"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [Feed API]
+      summary: Replace a feed's rules
+      description: |
+        Replaces the feed's rules with the list given; an empty list removes
+        them. Rules are tried in order and the first one an episode matches
+        decides: `hide` leaves it out of the served feed and keeps it from
+        being prepared in the background, `tag` sets its
+        `<itunes:episodeType>`, adding the element when the source has none.
+        Episodes already stored are hidden or shown to match at once; one
+        no longer hidden is prepared as a new one would be. An invalid list
+        is refused as a whole, and the rules stay as they were.
+      operationId: replaceFeedRules
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Rules"
+            examples:
+              tagBonusClips:
+                summary: Short clips as bonus, the rest as full episodes
+                value:
+                  rules:
+                    - max_seconds: 3600
+                      action: tag
+                      episode_type: bonus
+                    - action: tag
+                      episode_type: full
+              hideTrailers:
+                value:
+                  rules:
+                    - title_matches: "^trailer"
+                      action: hide
+      responses:
+        "200":
+          $ref: "#/components/responses/Rules"
+        "400":
+          description: Invalid body, or an invalid rule (the error names which).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /:
     get:
       tags: [Web UI]
@@ -1142,6 +1209,12 @@ components:
         type: string
 
   responses:
+    Rules:
+      description: The feed's rules, in the order they are tried.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Rules"
     Queued:
       description: How many episodes were queued.
       content:
@@ -1231,6 +1304,44 @@ components:
             $ref: "#/components/schemas/Error"
 
   schemas:
+    Rules:
+      type: object
+      required: [rules]
+      properties:
+        rules:
+          type: array
+          maxItems: 50
+          items:
+            $ref: "#/components/schemas/Rule"
+
+    Rule:
+      type: object
+      description: |
+        Which episodes a rule matches, and what it does with them. Every
+        condition given must hold; a rule without conditions matches every
+        episode, so it can end the list as a catch-all.
+      required: [action]
+      properties:
+        title_matches:
+          type: string
+          description: A regular expression (Go syntax, case-insensitive) the episode's title must contain a match for; empty matches any title.
+          examples: ["^trailer", " / "]
+        min_seconds:
+          type: integer
+          minimum: 0
+          description: The source's stated duration must be at least this; 0 means no lower bound. An episode without a stated duration never matches a rule with a duration bound.
+        max_seconds:
+          type: integer
+          minimum: 0
+          description: The source's stated duration must be at most this; 0 means no upper bound.
+        action:
+          type: string
+          enum: [hide, tag]
+        episode_type:
+          type: string
+          enum: [full, bonus, trailer]
+          description: What `tag` sets as `<itunes:episodeType>`. Only with `tag`, and required with it.
+
     Error:
       type: object
       required: [error]

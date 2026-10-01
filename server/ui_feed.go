@@ -72,6 +72,7 @@ var statusBadges = map[episodes.Status][2]string{
 	episodes.StatusWithheld:         {"warn", "Withheld"},
 	episodes.StatusGivenUp:          {"error", "Given up"},
 	episodes.StatusPublishedWithAds: {"warn", "Published with ads"},
+	episodes.StatusHidden:           {"off", "Hidden"},
 }
 
 // problem is whether an episode needs a look: it failed, is waiting on a
@@ -161,7 +162,7 @@ func summarise(total int, counts map[episodes.Status]int) string {
 	for _, status := range []episodes.Status{
 		episodes.StatusCleaned, episodes.StatusCached, episodes.StatusNotCached, episodes.StatusPassedThrough,
 		episodes.StatusWorking, episodes.StatusQueued, episodes.StatusRetrying, episodes.StatusWithheld,
-		episodes.StatusGivenUp, episodes.StatusPublishedWithAds,
+		episodes.StatusGivenUp, episodes.StatusPublishedWithAds, episodes.StatusHidden,
 	} {
 		if counts[status] > 0 {
 			parts = append(parts, strconv.Itoa(counts[status])+" "+strings.ToLower(statusBadges[status][1]))
@@ -234,6 +235,8 @@ func uiEpisodeOf(view episodes.EpisodeView) uiEpisode {
 		row.Detail = "Kept out of the feed; its retries are over. Retry to try once more."
 	case episodes.StatusPublishedWithAds:
 		row.Detail = "Couldn't be cleaned, so it was published with its ads."
+	case episodes.StatusHidden:
+		row.Detail = "Left out of the feed by one of its rules; not prepared."
 	}
 	return row
 }

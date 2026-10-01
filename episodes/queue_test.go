@@ -215,3 +215,35 @@ func TestReconcileSchedulesEarlierWithheldEpisodes(t *testing.T) {
 		t.Errorf("episode = %+v after the retry", stored)
 	}
 }
+
+func TestHiddenEpisodesAreNotQueued(t *testing.T) {
+	setup := newTestSetup(t)
+	processor := &fakeProcessor{}
+	setup.withProcessor(t, processor)
+	ctx := context.Background()
+	hidden := setup.addBacklog(t, "/ok.mp3?hidden")
+	shown := setup.addBacklog(t, "/ok.mp3?shown")
+	if _, err := setup.store.ReplaceFeedRules(ctx, setup.feed.ID, nil, func(episode models.Episode) bool {
+		return episode.ID == hidden.ID
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if queued, err := setup.pipeline.Queue(ctx, setup.feed.ID, 0); err != nil || queued != 1 {
+		t.Errorf("Queue: queued %d, %v; want only the episode shown", queued, err)
+	}
+	if queued, err := setup.pipeline.QueueEpisode(ctx, setup.feed.ID, hidden.ID); err != nil || queued {
+		t.Errorf("QueueEpisode on a hidden episode: %v, %v", queued, err)
+	}
+	for setup.processOne(t) {
+	}
+	if stored := setup.reload(t, shown); stored.CacheFile == "" {
+		t.Errorf("shown episode not prepared: %+v", stored)
+	}
+	if stored := setup.reload(t, hidden); stored.CacheFile != "" || stored.NextAttemptAt != nil {
+		t.Errorf("hidden episode prepared or queued: %+v", stored)
+	}
+	if view := setup.viewOfEpisode(t, hidden); view.Status != StatusHidden {
+		t.Errorf("hidden episode's status: %s", view.Status)
+	}
+}

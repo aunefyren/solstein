@@ -109,13 +109,14 @@ func (store *Store) MarkFullyServed(ctx context.Context, episodeID uuid.UUID, at
 // UpdateEpisode saves every field of an existing episode except
 // released_at, which only MarkReleased sets: a download or stream that
 // loaded the episode before it was released would otherwise clear it again
-// when it saves. It returns ErrEpisodeNotFound if the episode doesn't
+// when it saves. hidden is left out for the same reason: only the feed's
+// rules set it (ReplaceFeedRules). It returns ErrEpisodeNotFound if the episode doesn't
 // exist, rather than creating it.
 func (store *Store) UpdateEpisode(ctx context.Context, episode *models.Episode) error {
 	if episode.ID == uuid.Nil {
 		return ErrEpisodeNotFound
 	}
-	result := store.withContext(ctx).Model(episode).Select("*").Omit("id", "created_at", "released_at").Updates(episode)
+	result := store.withContext(ctx).Model(episode).Select("*").Omit("id", "created_at", "released_at", "hidden").Updates(episode)
 	if result.Error != nil {
 		return fmt.Errorf("update episode: %w", result.Error)
 	}

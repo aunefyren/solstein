@@ -24,21 +24,23 @@ import (
 // for (see docs/episodes.md). Failed episodes are published too, and served
 // by streaming from the source instead of from the cache, so one bad
 // download can't hold back a feed forever. A failed episode the processor's
-// failure policy withholds is left out, but doesn't hold newer ones back.
+// failure policy withholds is left out, but doesn't hold newer ones back,
+// and so is one the feed's rules hide.
 //
 // Otherwise (stream and original mode) nothing needs preparing, so
 // everything is published at once.
 //
 // A feed is never left without episodes: ABS counts a feed with no items as
 // a failed check and turns auto-download off after 24 of them. If nothing
-// else would be published, the oldest episode is (the oldest not withheld,
-// if there is one), and is streamed from the source until it is cached.
+// else would be published, the oldest episode is (the oldest neither
+// withheld nor hidden, if there is one), and is streamed from the source
+// until it is cached.
 func publishedEpisodes(episodes []models.Episode, prepare, prepareAhead bool) map[uuid.UUID]bool {
 	published := make(map[uuid.UUID]bool, len(episodes))
 	holding := false
 	for _, episode := range episodes {
 		switch {
-		case episode.Withheld:
+		case episode.Withheld, episode.Hidden:
 		case !prepare, episode.Backlog && !prepareAhead:
 			published[episode.ID] = true
 		case holding:
@@ -51,7 +53,7 @@ func publishedEpisodes(episodes []models.Episode, prepare, prepareAhead bool) ma
 	if len(published) == 0 && len(episodes) > 0 {
 		oldest := episodes[0]
 		for _, episode := range episodes {
-			if !episode.Withheld {
+			if !episode.Withheld && !episode.Hidden {
 				oldest = episode
 				break
 			}
