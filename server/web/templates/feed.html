@@ -10,9 +10,12 @@
     <input type="hidden" name="from" value="feed">
     {{if .RegionDiffAvailable}}{{template "setting" (setting "region_diff" "Region diff" .Feed.ID .Feed.RegionDiff)}}{{end}}
     {{template "setting" (setting "prepare_ahead" "Prepare ahead" .Feed.ID .Feed.PrepareAhead)}}
+    {{template "setting" (setting "serve_dropped" "Serve dropped episodes" .Feed.ID .Feed.ServeDropped)}}
+    {{template "setting" (setting "delete_dropped" "Delete dropped episodes" .Feed.ID .Feed.DeleteDropped)}}
     <button class="button button--primary" type="submit">Save</button>
   </form>
-  <p class="meta">In use now: {{if .RegionDiffAvailable}}region diff {{if .Feed.RegionDiff.InUse}}on{{else}}off{{end}}, {{end}}prepare ahead {{if .Feed.PrepareAhead.InUse}}on{{else}}off{{end}}.</p>
+  <p class="meta">In use now: {{if .RegionDiffAvailable}}region diff {{if .Feed.RegionDiff.InUse}}on{{else}}off{{end}}, {{end}}prepare ahead {{if .Feed.PrepareAhead.InUse}}on{{else}}off{{end}}, serve dropped episodes {{if .Feed.ServeDropped.InUse}}on{{else}}off{{end}}, delete dropped episodes {{if .Feed.DeleteDropped.InUse}}on{{else}}off{{end}}.</p>
+  <p class="meta">Dropped episodes are those the source no longer lists. Served, they stay in the feed and are kept for good, cached file and all; an episode can be set on its own below. Deleted, they go a day after they drop out, unless they are served.</p>
 </section>
 <section class="section" id="rules">
   <h2>Rules</h2>
@@ -102,24 +105,35 @@
       <tr id="episode-{{.ID}}">
         <td data-label="Episode">
           <div class="data-table__title">{{.Title}}</div>
-          <p class="meta">{{.Published}}{{with .Length}} · {{.}}{{end}}{{if .Backlog}} · backlog{{end}}{{with .Rule}} · {{.}}{{end}}</p>
+          <p class="meta">{{.Published}}{{with .Length}} · {{.}}{{end}}{{if .Backlog}} · backlog{{end}}{{with .Rule}} · {{.}}{{end}}{{with .Dropped}} · no longer in the source since {{.}}{{end}}</p>
         </td>
         <td data-label="Status">
           <span class="badge badge--{{.Badge}}">{{.BadgeText}}</span>
           <p class="meta">{{.Detail}}</p>
           {{with .Served}}<p class="meta">{{.}}</p>{{end}}
+          {{if .Dropped}}<p class="meta">{{if .InFeed}}Still in the served feed, and kept for good.{{else}}Not in the served feed.{{end}}</p>{{end}}
+          {{with .Warning}}<p><span class="badge badge--warn">Check</span> {{.}}</p>{{end}}
         </td>
         <td data-label="Result">
           {{with .Result}}<p>{{.}}</p>{{end}}
           {{with .Error}}<p class="meta">{{.}}</p>{{end}}
           {{if not (or .Result .Error)}}<p class="meta">Nothing yet.</p>{{end}}
         </td>
-        <td{{if or .CanRetry .CanPrepare}} data-label="Action"{{end}}>
+        <td{{if or .CanRetry .CanPrepare .Dropped}} data-label="Action"{{end}}>
           {{if or .CanRetry .CanPrepare}}<form method="post" action="/ui/feeds/{{$.Content.Feed.ID}}/episodes/{{.ID}}/queue" data-live-submit>
             <input type="hidden" name="show" value="{{$.Content.Filter}}">
             <button class="button button--secondary" type="submit">{{if .CanRetry}}Retry{{else}}Prepare{{end}}</button>
           </form>
           {{if .ClientHasIt}}<p class="meta">A client already downloaded this episode; it won't fetch a cleaned copy.</p>{{end}}{{end}}
+          {{if .Dropped}}<form class="data-table__form" method="post" action="/ui/feeds/{{$.Content.Feed.ID}}/episodes/{{.ID}}/serve" data-live-submit>
+            <input type="hidden" name="show" value="{{$.Content.Filter}}">
+            {{template "setting" (setting "serve" "Serve" .ID .Serve)}}
+            <button class="button button--secondary" type="submit">Save</button>
+          </form>
+          <form method="post" action="/ui/feeds/{{$.Content.Feed.ID}}/episodes/{{.ID}}/delete" data-live-submit>
+            <input type="hidden" name="show" value="{{$.Content.Filter}}">
+            <button class="button button--secondary" type="submit">Delete<span class="visually-hidden"> {{.Title}}</span></button>
+          </form>{{end}}
         </td>
       </tr>
     {{else}}

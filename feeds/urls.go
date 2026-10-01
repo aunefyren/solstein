@@ -70,6 +70,13 @@ var extensionsByType = map[string]string{
 	"video/mp4":   "mp4",
 }
 
+// typesByExtension is the MIME type for each audio extension, for an
+// enclosure Solstein writes itself.
+var typesByExtension = map[string]string{
+	"mp3": "audio/mpeg", "m4a": "audio/mp4", "aac": "audio/aac", "ogg": "audio/ogg",
+	"opus": "audio/opus", "flac": "audio/flac", "wav": "audio/wav", "mp4": "video/mp4",
+}
+
 // AudioExtension picks the file extension for an episode URL: the source
 // URL's own extension when it is an audio one, else one matching the MIME
 // type, else mp3 (as ABS assumes).

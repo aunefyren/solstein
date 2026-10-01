@@ -62,6 +62,24 @@ type Episode struct {
 	// the rules set it (database.ReplaceFeedRules, and when the episode is
 	// stored), never UpdateEpisode.
 	Hidden bool `json:"hidden" gorm:"not null;default:false"`
+	// DroppedAt is when the source feed stopped listing the episode; nil
+	// while it lists it. A dropped episode is served only where
+	// serve_dropped_episodes (or the feed's, or the episode's own Serve)
+	// says so (see feeds.Service.ServesDropped). Only a poll sets it
+	// (database.SyncEpisodes), never UpdateEpisode.
+	DroppedAt *time.Time `json:"dropped_at"`
+	// Serve overrides, for this episode once dropped, whether it is still
+	// served: "on", "off", or empty to follow the feed. Set by hand, or to
+	// "off" when the source answers that the audio is gone (ServeWarning
+	// says so). Never written by UpdateEpisode.
+	Serve string `json:"serve" gorm:"not null;default:''"`
+	// ServeWarning says why Serve was switched off by Solstein itself; empty
+	// otherwise. Never written by UpdateEpisode.
+	ServeWarning string `json:"serve_warning" gorm:"not null;default:''"`
+	// SourceItem is the episode's <item> as the source last listed it, so
+	// it can still be served once dropped. Empty for episodes stored before
+	// it was kept. Only polls write it, never UpdateEpisode.
+	SourceItem []byte `json:"-"`
 	// ProcessNote says what a processor did, e.g. how much it removed.
 	ProcessNote string `json:"process_note"`
 	// PreparedWith describes the settings the episode's file was made with

@@ -129,6 +129,20 @@ type Config struct {
 	// models.Feed.PrepareAhead.
 	PrepareAhead bool `json:"prepare_ahead"`
 
+	// ServeDroppedEpisodes keeps serving episodes a source feed no longer
+	// lists (a feed of only the latest few, an episode taken down), from
+	// what Solstein kept of them; such an episode is then kept for good,
+	// its cached file exempt from cache_retention_days, the size cap and
+	// cache_evict_after_serve. Off by default: the served feed lists what
+	// the source lists. Per feed: models.Feed.ServeDropped, per episode
+	// models.Episode.Serve.
+	ServeDroppedEpisodes bool `json:"serve_dropped_episodes"`
+	// DeleteDroppedEpisodes deletes the episodes a source no longer lists,
+	// with their cached files, a day after they drop out, unless they are
+	// served. Off by default: they are kept (out of the feed) in case the
+	// source lists them again. Per feed: models.Feed.DeleteDropped.
+	DeleteDroppedEpisodes bool `json:"delete_dropped_episodes"`
+
 	// ProcessingWaitSeconds is how long a client waiting for an episode that
 	// is being prepared on request is held before it gets 503 and
 	// Retry-After, while the work carries on. The default, 20, stays inside

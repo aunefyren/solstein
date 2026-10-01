@@ -190,6 +190,7 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stdou
 	}
 	var processor episodes.Processor
 	feedOptions.PrepareAhead = cfg.PrepareAhead
+	feedOptions.ServeDropped, feedOptions.DeleteDropped = cfg.ServeDroppedEpisodes, cfg.DeleteDroppedEpisodes
 	if regionDiff != nil {
 		processor = regionDiff
 		feedOptions.RegionDiffAvailable = true
@@ -311,7 +312,7 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stdou
 
 	// The poller, pipeline and housekeeper stop with ctx; they are waited for before the
 	// database closes.
-	housekeeper := episodes.NewHousekeeper(store, cache, time.Duration(cfg.CacheRetentionDays)*24*time.Hour, int64(cfg.CacheMaxSizeMB)<<20, cfg.CacheEvictAfterServe, nil)
+	housekeeper := episodes.NewHousekeeper(store, cache, time.Duration(cfg.CacheRetentionDays)*24*time.Hour, int64(cfg.CacheMaxSizeMB)<<20, cfg.CacheEvictAfterServe, nil).WithDropped(feedService, pipeline)
 
 	var background sync.WaitGroup
 	background.Go(func() { pipeline.Run(ctx) })

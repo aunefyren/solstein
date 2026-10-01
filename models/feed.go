@@ -32,6 +32,16 @@ type Feed struct {
 	// every episode out of the feed until its file is ready, and prepare the
 	// backlog up front instead of when a client asks.
 	PrepareAhead string `json:"prepare_ahead"`
+	// ServeDropped is "on" or "off", or empty to follow
+	// serve_dropped_episodes: keep serving episodes the source no longer
+	// lists. On, they are never deleted and their cached files never
+	// expire.
+	ServeDropped string `json:"serve_dropped"`
+	// DeleteDropped is "on" or "off", or empty to follow
+	// delete_dropped_episodes: delete episodes the source no longer lists,
+	// with their cached files, a day after they drop out. Ignored while they
+	// are served.
+	DeleteDropped string `json:"delete_dropped"`
 
 	LastPolledAt  *time.Time `json:"last_polled_at"`
 	LastSuccessAt *time.Time `json:"last_success_at"`

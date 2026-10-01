@@ -1,6 +1,7 @@
 package database
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"time"
@@ -45,8 +46,16 @@ func (store *Store) CreateSubscription(ctx context.Context, feed *models.Feed, d
 // SyncEpisodes stores the episodes of a poll: those whose GUID the feed
 // doesn't have yet are added, with their hidden flag from the feed's rules,
 // and returned. Existing episodes keep their state and cache; only their
-// title and stated duration follow the source, and their hidden flag the
-// rules, should either change (see applyHiding). The rules are read in the
+// title, stated duration and source item follow the source, and their
+// hidden flag the rules, should either change (see applyHiding).
+//
+// A stored episode the poll doesn't list any more is marked dropped (at
+// hiding.Now), and one listed again unmarked. A poll listing no episodes at
+// all drops nothing: a source that briefly serves an empty feed shouldn't
+// make every episode look gone (and, with delete_dropped_episodes, be
+// deleted).
+//
+// The rules are read in the
 // same transaction, which holds the write lock from its start, so a poll
 // and a rule change never interleave: an episode is never stored with rules
 // that were replaced meanwhile.
@@ -74,6 +83,15 @@ func (store *Store) SyncEpisodes(ctx context.Context, feedID uuid.UUID, episodes
 			}
 			seen[episode.GUID] = true
 			if stored, ok := known[episode.GUID]; ok {
+				if stored.DroppedAt != nil || (len(episode.SourceItem) > 0 && !bytes.Equal(stored.SourceItem, episode.SourceItem)) {
+					fields := map[string]any{"dropped_at": nil}
+					if len(episode.SourceItem) > 0 {
+						fields["source_item"] = episode.SourceItem
+					}
+					if err := tx.Model(&models.Episode{}).Where("id = ?", stored.ID).Updates(fields).Error; err != nil {
+						return fmt.Errorf("update episode source item: %w", err)
+					}
+				}
 				if stored.Title != episode.Title || stored.SourceSeconds != episode.SourceSeconds {
 					stored.Title, stored.SourceSeconds = episode.Title, episode.SourceSeconds
 					if err := tx.Model(&models.Episode{}).Where("id = ?", stored.ID).
@@ -90,6 +108,23 @@ func (store *Store) SyncEpisodes(ctx context.Context, feedID uuid.UUID, episodes
 		}
 		if _, err := applyHiding(tx, changed, hide, hiding); err != nil {
 			return err
+		}
+		if len(seen) > 0 {
+			var dropped []uuid.UUID
+			for _, stored := range existing {
+				if !seen[stored.GUID] && stored.DroppedAt == nil {
+					dropped = append(dropped, stored.ID)
+				}
+			}
+			if len(dropped) > 0 {
+				at := hiding.Now
+				if at.IsZero() {
+					at = time.Now().UTC()
+				}
+				if err := tx.Model(&models.Episode{}).Where("id IN ?", dropped).Update("dropped_at", at).Error; err != nil {
+					return fmt.Errorf("mark dropped episodes: %w", err)
+				}
+			}
 		}
 		if len(added) > 0 {
 			if err := tx.CreateInBatches(added, 200).Error; err != nil {

@@ -18,6 +18,12 @@ type Rewrite struct {
 	FeedURL string
 	// Item decides what happens to each item. Nil keeps every item unchanged.
 	Item func(Item) ItemChange
+	// Append adds items to the end of the channel, after its own: whole
+	// <item> elements in UTF-8, as Item.Raw holds them or MinimalItem makes
+	// them. They are rewritten like the feed's own items (Item is called for
+	// them too), and their prefixes resolve against the feed they are added
+	// to.
+	Append [][]byte
 }
 
 // ItemChange is what to do with one item. The zero value keeps it unchanged.
@@ -47,6 +53,11 @@ func (rewrite Rewrite) Apply(data []byte) ([]byte, error) {
 	data, err := normalise(data)
 	if err != nil {
 		return nil, err
+	}
+	if len(rewrite.Append) > 0 {
+		if data, err = appendItems(data, rewrite.Append); err != nil {
+			return nil, err
+		}
 	}
 	// First pass: read every item, because an item's <guid> can come after
 	// its <enclosure> and the change for an item depends on both.
@@ -225,6 +236,85 @@ func (rewrite Rewrite) Apply(data []byte) ([]byte, error) {
 
 	copyUpTo(int64(len(data)))
 	return output.Bytes(), nil
+}
+
+// appendItems inserts items after the channel's last item, or at the end of
+// the channel when it has none, each on its own line with the indentation
+// the last item has.
+func appendItems(data []byte, items [][]byte) ([]byte, error) {
+	walker := newWalker(data)
+	at, indent := int64(-1), []byte("\n")
+	previousEnd := int64(0) // end of the last token that isn't text
+	for {
+		tok, err := walker.next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		depth := walker.depth()
+		switch tok.value.(type) {
+		case xml.StartElement:
+			if depth == 3 && walker.is(1, "", "channel") && tok.frame.space == "" && tok.frame.local == "item" {
+				if gap := data[previousEnd:tok.start]; len(bytes.TrimSpace(gap)) == 0 && len(gap) > 0 {
+					indent = bytes.Clone(gap)
+				}
+			}
+		case xml.EndElement:
+			switch {
+			case depth == 2 && tok.frame.space == "" && tok.frame.local == "item" && walker.is(1, "", "channel"):
+				at = tok.end
+			case depth == 1 && tok.frame.space == "" && tok.frame.local == "channel" && at < 0:
+				at = tok.start
+			}
+		}
+		if _, text := tok.value.(xml.CharData); !text {
+			previousEnd = tok.end
+		}
+	}
+	if at < 0 {
+		return nil, ErrNotRSS
+	}
+	var output bytes.Buffer
+	output.Write(data[:at])
+	for _, item := range items {
+		output.Write(indent)
+		output.Write(item)
+	}
+	output.Write(data[at:])
+	return output.Bytes(), nil
+}
+
+// MinimalItem builds an <item> from what is known of an episode, for one
+// whose own element wasn't kept: its title, GUID (not a permalink), date,
+// audio and, when known, duration. The iTunes prefix is declared on the item
+// itself, so it works whatever the feed it goes into binds.
+func MinimalItem(title, guid string, publishedAt *time.Time, enclosureURL, enclosureType string, length int64, duration string) []byte {
+	var output bytes.Buffer
+	output.WriteString(`<item xmlns:itunes="` + itunesNS + `"><title>`)
+	xml.EscapeText(&output, []byte(title))
+	output.WriteString(`</title><guid isPermaLink="false">`)
+	xml.EscapeText(&output, []byte(guid))
+	output.WriteString(`</guid>`)
+	if publishedAt != nil {
+		output.WriteString(`<pubDate>` + publishedAt.UTC().Format(time.RFC1123Z) + `</pubDate>`)
+	}
+	attrs := []xml.Attr{{Name: xml.Name{Local: "url"}, Value: enclosureURL}}
+	if enclosureType != "" {
+		attrs = append(attrs, xml.Attr{Name: xml.Name{Local: "type"}, Value: enclosureType})
+	}
+	if length > 0 {
+		attrs = append(attrs, xml.Attr{Name: xml.Name{Local: "length"}, Value: strconv.FormatInt(length, 10)})
+	}
+	writeStart(&output, xml.Name{Local: "enclosure"}, attrs, true)
+	if duration != "" {
+		output.WriteString(`<itunes:duration>`)
+		xml.EscapeText(&output, []byte(duration))
+		output.WriteString(`</itunes:duration>`)
+	}
+	output.WriteString(`</item>`)
+	return output.Bytes()
 }
 
 // setAttribute sets a no-namespace attribute, adding it if missing. It

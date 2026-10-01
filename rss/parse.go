@@ -32,6 +32,10 @@ type Item struct {
 	EpisodeType string
 	// Enclosure is the audio, or nil for items without any.
 	Enclosure *Enclosure
+	// Raw is the whole <item> element as it is in the feed (converted to
+	// UTF-8), for adding it to another copy of the feed later (see
+	// Rewrite.Append). It shares memory with the parsed data.
+	Raw []byte
 }
 
 // Enclosure is an item's audio file.
@@ -61,6 +65,7 @@ func parse(data []byte) (Feed, error) {
 		collect    bool
 		sawRoot    bool
 		sawChannel bool
+		itemStart  int64
 	)
 
 	for {
@@ -88,6 +93,7 @@ func parse(data []byte) (Feed, error) {
 				collect = true
 			case depth == 3 && walker.is(1, "", "channel") && tok.frame.space == "" && tok.frame.local == "item":
 				item = &Item{Index: len(feed.Items)}
+				itemStart = tok.start
 				media = nil
 			case depth == 4 && item != nil:
 				switch {
@@ -130,6 +136,7 @@ func parse(data []byte) (Feed, error) {
 				if item.Enclosure == nil && media != nil {
 					item.Enclosure = media
 				}
+				item.Raw = data[itemStart:tok.end]
 				item.Key = item.GUID
 				if item.Key == "" && item.Enclosure != nil {
 					item.Key = item.Enclosure.URL

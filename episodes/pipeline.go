@@ -77,6 +77,9 @@ const queueLease = 3 * time.Hour
 var (
 	// ErrPermanent marks failures a retry won't fix. Processors wrap it too.
 	ErrPermanent = errors.New("permanent failure")
+	// ErrSourceGone marks a source that answered the audio isn't there any
+	// more (404 Not Found, 410 Gone). It is permanent too.
+	ErrSourceGone = errors.New("the source no longer has the audio")
 	// ErrBusy means an episode can't be prepared on request right now: a
 	// worker is just taking it, or the pipeline is shutting down.
 	ErrBusy = errors.New("episode is being prepared elsewhere")
@@ -486,6 +489,7 @@ func (pipeline *Pipeline) recordOutcome(ctx context.Context, feed models.Feed, e
 
 	episode.LastError = err.Error()
 	episode.FailedAttempts++
+	noteGone(ctx, pipeline.store, now, feed, episode, err)
 	action := "download"
 	if processing {
 		action = "process"
@@ -700,6 +704,9 @@ func checkResponse(response *http.Response) error {
 	status := response.StatusCode
 	if status < 200 || status > 299 {
 		err := fmt.Errorf("source answered %s", response.Status)
+		if status == http.StatusNotFound || status == http.StatusGone {
+			return fmt.Errorf("%w: %w", ErrPermanent, sourceGone{status: response.Status})
+		}
 		if status >= 400 && status < 500 && status != http.StatusRequestTimeout && status != http.StatusTooManyRequests {
 			return fmt.Errorf("%w: %w", ErrPermanent, err)
 		}

@@ -110,13 +110,15 @@ func (store *Store) MarkFullyServed(ctx context.Context, episodeID uuid.UUID, at
 // released_at, which only MarkReleased sets: a download or stream that
 // loaded the episode before it was released would otherwise clear it again
 // when it saves. hidden is left out for the same reason: only the feed's
-// rules set it (ReplaceFeedRules). It returns ErrEpisodeNotFound if the episode doesn't
-// exist, rather than creating it.
+// rules set it (ReplaceFeedRules); so are dropped_at and source_item, which
+// only polls set (SyncEpisodes), and serve and serve_warning (SetEpisodeServe).
+// It returns ErrEpisodeNotFound if the episode doesn't exist, rather than
+// creating it.
 func (store *Store) UpdateEpisode(ctx context.Context, episode *models.Episode) error {
 	if episode.ID == uuid.Nil {
 		return ErrEpisodeNotFound
 	}
-	result := store.withContext(ctx).Model(episode).Select("*").Omit("id", "created_at", "released_at", "hidden").Updates(episode)
+	result := store.withContext(ctx).Model(episode).Select("*").Omit("id", "created_at", "released_at", "hidden", "dropped_at", "source_item", "serve", "serve_warning").Updates(episode)
 	if result.Error != nil {
 		return fmt.Errorf("update episode: %w", result.Error)
 	}
@@ -124,4 +126,45 @@ func (store *Store) UpdateEpisode(ctx context.Context, episode *models.Episode) 
 		return ErrEpisodeNotFound
 	}
 	return nil
+}
+
+// SetEpisodeServe sets whether an episode the source dropped is still
+// served ("on", "off", or empty to follow its feed), and the warning saying
+// why, if Solstein switched it off itself. It returns ErrEpisodeNotFound if
+// the feed has no such episode.
+func (store *Store) SetEpisodeServe(ctx context.Context, feedID, episodeID uuid.UUID, serve, warning string) error {
+	result := store.withContext(ctx).Model(&models.Episode{}).
+		Where("id = ? AND feed_id = ?", episodeID, feedID).
+		Updates(map[string]any{"serve": serve, "serve_warning": warning})
+	if result.Error != nil {
+		return fmt.Errorf("set episode serve: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrEpisodeNotFound
+	}
+	return nil
+}
+
+// DeleteEpisode removes one episode of a feed; its cache file is the
+// caller's to remove. It returns ErrEpisodeNotFound if the feed has no such
+// episode.
+func (store *Store) DeleteEpisode(ctx context.Context, feedID, episodeID uuid.UUID) error {
+	result := store.withContext(ctx).Where("id = ? AND feed_id = ?", episodeID, feedID).Delete(&models.Episode{})
+	if result.Error != nil {
+		return fmt.Errorf("delete episode: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrEpisodeNotFound
+	}
+	return nil
+}
+
+// ListDropped returns every episode its source no longer lists, of every
+// feed.
+func (store *Store) ListDropped(ctx context.Context) ([]models.Episode, error) {
+	var episodes []models.Episode
+	if err := store.withContext(ctx).Where("dropped_at IS NOT NULL").Find(&episodes).Error; err != nil {
+		return nil, fmt.Errorf("list dropped episodes: %w", err)
+	}
+	return episodes, nil
 }

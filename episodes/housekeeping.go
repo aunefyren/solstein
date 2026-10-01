@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"aunefyren/solstein/database"
+	"aunefyren/solstein/feeds"
 	"aunefyren/solstein/logger"
 	"aunefyren/solstein/models"
 
@@ -34,6 +35,13 @@ type Housekeeper struct {
 	maxSize         int64 // bytes; 0 means no cap (cache_max_size_mb)
 	evictAfterServe bool
 	now             func() time.Time
+
+	// Set by WithDropped: the feeds' settings for episodes their source no
+	// longer lists, the pipeline to check their links with, and the ones
+	// checked this run.
+	feeds    *feeds.Service
+	pipeline *Pipeline
+	checked  map[uuid.UUID]bool
 }
 
 // NewHousekeeper builds a Housekeeper. now may be nil for time.Now.
@@ -60,19 +68,32 @@ func (housekeeper *Housekeeper) Run(ctx context.Context) {
 	}
 }
 
-// Sweep does one round of clean-up.
+// Sweep does one round of clean-up. A dropped episode that is still served
+// keeps its cached file whatever the retention, the size cap or
+// cache_evict_after_serve say: its source may not have the audio any more.
 func (housekeeper *Housekeeper) Sweep(ctx context.Context) error {
-	expired, err := housekeeper.expire(ctx)
+	deleted, err := housekeeper.sweepDropped(ctx)
 	if err != nil {
 		return err
 	}
-	served, err := housekeeper.evictServed(ctx)
+	kept, err := housekeeper.keptFor(ctx)
 	if err != nil {
 		return err
 	}
-	overCap, err := housekeeper.enforceSizeCap(ctx)
+	expired, err := housekeeper.expire(ctx, kept)
 	if err != nil {
 		return err
+	}
+	served, err := housekeeper.evictServed(ctx, kept)
+	if err != nil {
+		return err
+	}
+	overCap, err := housekeeper.enforceSizeCap(ctx, kept)
+	if err != nil {
+		return err
+	}
+	if deleted > 0 {
+		logger.Log.Info(fmt.Sprintf("Clean-up deleted %d episodes their sources no longer list.", deleted))
 	}
 	orphans, freed, err := housekeeper.removeOrphans(ctx)
 	if err != nil {
@@ -107,20 +128,20 @@ func (housekeeper *Housekeeper) removeCached(ctx context.Context, episode models
 // expire deletes cache copies older than the retention period. The episode
 // stays published: a later play streams it from the source, and in cache
 // mode caches it again.
-func (housekeeper *Housekeeper) expire(ctx context.Context) (int, error) {
+func (housekeeper *Housekeeper) expire(ctx context.Context, kept func(models.Episode) bool) (int, error) {
 	cutoff := housekeeper.now().UTC().Add(-housekeeper.retention)
 	episodes, err := housekeeper.store.ListCachedBefore(ctx, cutoff)
 	if err != nil {
 		return 0, err
 	}
-	return housekeeper.removeEach(ctx, episodes)
+	return housekeeper.removeEach(ctx, without(episodes, kept))
 }
 
 // evictServed deletes cache copies of episodes a client has already
 // downloaded in full, when cache_evict_after_serve is on: not needed for
 // that any more, though a second client (or the same one asking again) then
 // costs a fresh download, or, for a processed feed, reprocessing.
-func (housekeeper *Housekeeper) evictServed(ctx context.Context) (int, error) {
+func (housekeeper *Housekeeper) evictServed(ctx context.Context, kept func(models.Episode) bool) (int, error) {
 	if !housekeeper.evictAfterServe {
 		return 0, nil
 	}
@@ -128,13 +149,14 @@ func (housekeeper *Housekeeper) evictServed(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return housekeeper.removeEach(ctx, episodes)
+	return housekeeper.removeEach(ctx, without(episodes, kept))
 }
 
 // enforceSizeCap deletes cache copies, oldest cached first, until the total
 // is back under cache_max_size_mb (0 means no cap). It runs after expire
-// and evictServed, so it only has to look at what they left.
-func (housekeeper *Housekeeper) enforceSizeCap(ctx context.Context) (int, error) {
+// and evictServed, so it only has to look at what they left. Files kept
+// count towards the total, but are never evicted.
+func (housekeeper *Housekeeper) enforceSizeCap(ctx context.Context, kept func(models.Episode) bool) (int, error) {
 	if housekeeper.maxSize <= 0 {
 		return 0, nil
 	}
@@ -151,6 +173,9 @@ func (housekeeper *Housekeeper) enforceSizeCap(ctx context.Context) (int, error)
 		if total <= housekeeper.maxSize {
 			break
 		}
+		if kept != nil && kept(episode) {
+			continue
+		}
 		ok, err := housekeeper.removeCached(ctx, episode)
 		if err != nil {
 			return removed, err
@@ -161,6 +186,20 @@ func (housekeeper *Housekeeper) enforceSizeCap(ctx context.Context) (int, error)
 		}
 	}
 	return removed, nil
+}
+
+// without leaves out the episodes kept says to keep; nil keeps none.
+func without(episodes []models.Episode, kept func(models.Episode) bool) []models.Episode {
+	if kept == nil {
+		return episodes
+	}
+	var rest []models.Episode
+	for _, episode := range episodes {
+		if !kept(episode) {
+			rest = append(rest, episode)
+		}
+	}
+	return rest
 }
 
 // removeEach removes a list of episodes' cache copies, counting only the
