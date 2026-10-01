@@ -5,7 +5,7 @@ These documents describe Solstein **as it is built**. Anything planned, in progr
 | Document | Covers |
 |---|---|
 | [`architecture.md`](architecture.md) | What Solstein is, the core and its modules, how modules plug in, storage, background work |
-| [`feeds.md`](feeds.md) | Subscribing, feed records and settings, the feed API, polling, feed rewriting, publish rules |
+| [`feeds.md`](feeds.md) | Subscribing, feed records and settings, the feed API, polling, feed rewriting, publish rules, rules (hide and tag episodes) |
 | [`episodes.md`](episodes.md) | Delivery modes, the episode pipeline, processors in the pipeline, serving audio, housekeeping |
 | [`security.md`](security.md) | Tokens and signed URLs, network settings, outbound safeguards, keeping the home address out, secrets |
 | [`exits.md`](exits.md) | The exits (VPN) module: providers, tunnels, Proton, exits and server selection |

@@ -147,3 +147,13 @@ func TestParseDate(t *testing.T) {
 		}
 	}
 }
+
+func TestParseEpisodeType(t *testing.T) {
+	feed, err := Parse([]byte(`<rss xmlns:it="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel><item><guid>a</guid><it:episodeType> bonus </it:episodeType><it:duration>1:00</it:duration></item><item><guid>b</guid></item></channel></rss>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if feed.Items[0].EpisodeType != "bonus" || feed.Items[0].Duration != "1:00" || feed.Items[1].EpisodeType != "" {
+		t.Errorf("items = %+v", feed.Items)
+	}
+}

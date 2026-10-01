@@ -18,7 +18,7 @@ server/            Gin router, access checks, prefix feed route, feed API, episo
 server/web/        the web UI's templates and stylesheet, embedded in the binary; built to docs/style-guide.md
 auth/              core: sign-in users, argon2id passwords, TOTP, issued tokens (sessions), attempt limits
 console/           `solstein user …`: adding and resetting sign-in users on the console
-models/            persisted records (Base with UUID ID, Feed, Episode, FeedDocument) and their GORM mapping
+models/            persisted records (Base with UUID ID, Feed, Episode, FeedDocument, FeedRule) and their GORM mapping
 database/          SQLite via GORM: Store with named query functions, one file per model
 feeds/             core: source URLs, subscribe, refresh, poller, render (publish rules, signed URLs)
 episodes/          core: download pipeline, processor hook, cache, serving audio (cache, stream, tee), housekeeping

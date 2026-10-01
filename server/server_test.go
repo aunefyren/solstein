@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -698,6 +699,7 @@ func TestOpenAPICoversEveryRoute(t *testing.T) {
 		"/api/v1/feeds/:feedID":         "/api/v1/feeds/{feedID}",
 		"/api/v1/feeds/:feedID/retry":   "/api/v1/feeds/{feedID}/retry",
 		"/api/v1/feeds/:feedID/prepare": "/api/v1/feeds/{feedID}/prepare",
+		"/api/v1/feeds/:feedID/rules":   "/api/v1/feeds/{feedID}/rules",
 		"/api/v1/retry":                 "/api/v1/retry",
 		"/":                             "/",
 		"/ui":                           "/ui",
@@ -707,6 +709,7 @@ func TestOpenAPICoversEveryRoute(t *testing.T) {
 		"/ui/exits":                     "/ui/exits",
 		"/ui/feeds/:feedID/retry":       "/ui/feeds/{feedID}/retry",
 		"/ui/feeds/:feedID/prepare":     "/ui/feeds/{feedID}/prepare",
+		"/ui/feeds/:feedID/rules":       "/ui/feeds/{feedID}/rules",
 		"/ui/feeds/:feedID/episodes/:episodeID/queue": "/ui/feeds/{feedID}/episodes/{episodeID}/queue",
 		"/ui/login":                "/ui/login",
 		"/ui/login/password":       "/ui/login/password",
@@ -859,6 +862,7 @@ func TestStoreFailures(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/v1/feeds"},
 		{http.MethodGet, "/api/v1/feeds/" + feedID},
+		{http.MethodGet, "/api/v1/feeds/" + feedID + "/rules"},
 		{http.MethodPost, "/api/v1/retry"},
 		{http.MethodGet, feedSignedPath},
 		{http.MethodGet, episodeSignedPath},
@@ -867,5 +871,59 @@ func TestStoreFailures(t *testing.T) {
 		if recorder := do(router, c.method, c.target, "", bearer); recorder.Code != http.StatusInternalServerError {
 			t.Errorf("%s %s: %d %s, want 500", c.method, c.target, recorder.Code, recorder.Body)
 		}
+	}
+}
+
+func TestRulesAPI(t *testing.T) {
+	host := startPodcastHost(t)
+	router := newTestRouter(t, nil)
+	bearer := map[string]string{"Authorization": "Bearer " + testToken, "Content-Type": "application/json"}
+	feedID := createFeed(t, router, host.URL+"/feed")
+	rulesPath := "/api/v1/feeds/" + feedID + "/rules"
+
+	if recorder := do(router, http.MethodGet, rulesPath, "", bearer); recorder.Code != http.StatusOK || recorder.Body.String() != `{"rules":[]}` {
+		t.Errorf("no rules yet: %d %s", recorder.Code, recorder.Body)
+	}
+	tag := `{"rules": [{"title_matches": "^one$", "action": "tag", "episode_type": "bonus"}, {"max_seconds": 600, "action": "hide"}]}`
+	recorder := do(router, http.MethodPut, rulesPath, tag, bearer)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("PUT: %d %s", recorder.Code, recorder.Body)
+	}
+	want := `{"rules":[{"title_matches":"^one$","min_seconds":0,"max_seconds":0,"action":"tag","episode_type":"bonus"},{"title_matches":"","min_seconds":0,"max_seconds":600,"action":"hide"}]}`
+	for _, response := range []*httptest.ResponseRecorder{recorder, do(router, http.MethodGet, rulesPath, "", bearer)} {
+		var got, expected any
+		json.Unmarshal(response.Body.Bytes(), &got)
+		json.Unmarshal([]byte(want), &expected)
+		if !reflect.DeepEqual(got, expected) {
+			t.Errorf("rules = %s, want %s", response.Body, want)
+		}
+	}
+	feed := do(router, http.MethodGet, signedFeedPath(t, router, host.URL+"/feed"), "", nil)
+	if !strings.Contains(feed.Body.String(), `<itunes:episodeType xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">bonus</itunes:episodeType></item>`) {
+		t.Errorf("served feed not tagged:\n%s", feed.Body)
+	}
+
+	cases := []struct {
+		name, method, target, body string
+		headers                    map[string]string
+		status                     int
+	}{
+		{"invalid rule", http.MethodPut, rulesPath, `{"rules": [{"action": "tag"}]}`, bearer, http.StatusBadRequest},
+		{"bad body", http.MethodPut, rulesPath, `[`, bearer, http.StatusBadRequest},
+		{"unknown feed", http.MethodPut, "/api/v1/feeds/00000000-0000-0000-0000-000000000001/rules", `{"rules": []}`, bearer, http.StatusNotFound},
+		{"unknown feed, GET", http.MethodGet, "/api/v1/feeds/00000000-0000-0000-0000-000000000001/rules", "", bearer, http.StatusNotFound},
+		{"without token", http.MethodPut, rulesPath, `{"rules": []}`, map[string]string{"Content-Type": "application/json"}, http.StatusUnauthorized},
+	}
+	for _, c := range cases {
+		if recorder := do(router, c.method, c.target, c.body, c.headers); recorder.Code != c.status {
+			t.Errorf("%s: %d %s, want %d", c.name, recorder.Code, recorder.Body, c.status)
+		}
+	}
+	// A refused change leaves the rules as they were; an empty list clears them.
+	if recorder := do(router, http.MethodGet, rulesPath, "", bearer); !strings.Contains(recorder.Body.String(), `"bonus"`) {
+		t.Errorf("rules after refused changes: %s", recorder.Body)
+	}
+	if recorder := do(router, http.MethodPut, rulesPath, `{"rules": []}`, bearer); recorder.Code != http.StatusOK || recorder.Body.String() != `{"rules":[]}` {
+		t.Errorf("clear: %d %s", recorder.Code, recorder.Body)
 	}
 }

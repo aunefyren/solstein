@@ -45,6 +45,9 @@ const (
 	// StatusPublishedWithAds failed, and the failure policy published it
 	// unprocessed.
 	StatusPublishedWithAds Status = "published-with-ads"
+	// StatusHidden is left out of the feed by one of its rules, and not
+	// prepared in the background.
+	StatusHidden Status = "hidden"
 )
 
 // EpisodeView is an episode as the web UI shows it.
@@ -94,6 +97,8 @@ func viewOf(episode models.Episode, prepares, working bool, now time.Time) Episo
 	switch {
 	case working || episode.State == models.EpisodeAcquiring || episode.State == models.EpisodeProcessing:
 		view.Status = StatusWorking
+	case episode.Hidden:
+		view.Status = StatusHidden
 	case episode.State == models.EpisodeDiscovered && later && episode.FailedAttempts > 0:
 		view.Status, view.NextAttempt = StatusRetrying, *episode.NextAttemptAt
 	case episode.State == models.EpisodeDiscovered:
@@ -130,7 +135,8 @@ func viewOf(episode models.Episode, prepares, working bool, now time.Time) Episo
 // QueueEpisode queues one episode for the background, as RetryFailed and
 // Queue do for a whole feed: a failed one to be tried again, one published
 // without its file to be prepared. It reports whether it was queued: false
-// when it's neither (it has its file, or is waiting already).
+// when it's neither (it has its file, or is waiting already), or a rule
+// hides it.
 func (pipeline *Pipeline) QueueEpisode(ctx context.Context, feedID, episodeID uuid.UUID) (bool, error) {
 	feed, err := pipeline.store.GetFeed(ctx, feedID)
 	if err != nil {
@@ -145,6 +151,9 @@ func (pipeline *Pipeline) QueueEpisode(ctx context.Context, feedID, episodeID uu
 	}
 	if pipeline.preparing(episode.ID) {
 		return false, ErrEpisodeBusy
+	}
+	if episode.Hidden {
+		return false, nil
 	}
 	queue, purpose := pipeline.store.QueueUncachedEpisodes, "prepared"
 	if episode.State == models.EpisodeFailed {

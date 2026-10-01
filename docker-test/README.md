@@ -19,18 +19,34 @@ what a show turned out to need — belongs in this harness; that goes in
 - `.env` at the repo root with at least `PROTON_KEY_1` (the maintainer's
   Proton test keys; never opened or printed, only referenced by
   `env_file: ../.env`). `docs/development.md` and `docs/exits.md` describe it.
-- Docker with Compose v2.
+- Docker with Compose v2, and `curl`, `openssl` and `python3` on the host for `bootstrap.sh`.
 
 ## Run it
 
 ```
 ./setup.sh                        # first time only: creates ./data, seeds config.json
 docker compose up -d --build
+./bootstrap.sh                    # first time only: users, library, data/credentials.md
 ```
 
-Solstein: `http://localhost:8080` (auth token in `data/solstein/config.json`,
-`auth_token`, generated on first start — never committed). Audiobookshelf:
-`http://localhost:13378` (first visit runs its setup wizard).
+**Credentials are in `data/credentials.md`**, written by `bootstrap.sh`
+(gitignored with the rest of `data/`; made readable only by you where the
+file system has Unix permissions, which a Windows drive under `/mnt/c`
+doesn't, so there it is as private as the folder): the Solstein
+web UI user `tester` and the Audiobookshelf root user `root`, each with a
+random password, and Solstein's API token (`auth_token` in
+`data/solstein/config.json`, generated on first start). Nothing in the
+harness has a fixed or committed password. `bootstrap.sh` does
+Audiobookshelf's setup wizard through its API and creates a **Podcasts**
+library on `/podcasts`; it refuses to run twice on the same `data/`.
+
+Solstein: `http://localhost:8080` (web UI at `/ui`). Audiobookshelf:
+`http://localhost:13378`.
+
+Lost the credentials file? `rm -rf data`, then the three steps again; or,
+keeping everything else, add another Solstein user with
+`docker exec st-solstein /app/solstein user add <name>` (prints a one-time
+password).
 
 Tear down (keeps `./data`, so the next run picks up where this left off):
 
@@ -38,7 +54,8 @@ Tear down (keeps `./data`, so the next run picks up where this left off):
 docker compose down
 ```
 
-`rm -rf data` to start completely clean (a fresh Solstein token, a fresh ABS).
+`rm -rf data` to start completely clean (a fresh Solstein token, a fresh ABS,
+new credentials from `bootstrap.sh`).
 
 ## The shipped config: one key, region diff, on-request processing
 
@@ -87,17 +104,17 @@ curl -s -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
 ```
 
 The response's `feed_url` is what to give Audiobookshelf — it carries a
-signature instead of the raw token. In ABS: **Libraries → new Podcast
-library** (folder `/podcasts` is already mounted) **→ Add Podcast → paste
-`feed_url`**. Don't switch on auto-download until a backlog has been
+signature instead of the raw token. In ABS, signed in as `root`: the
+**Podcasts** library (made by `bootstrap.sh`, on `/podcasts`) **→ Add
+Podcast → paste `feed_url`**. Don't switch on auto-download until a backlog has been
 prepared or cleaned; select episodes explicitly to control how many run
 through region diff at once (the point of this harness is usually 10–20).
 
 ## The web UI
 
-Off in `config.template.json`; set `"web_ui": {"enabled": true}` in
-`data/solstein/config.json` and restart to try it at
-`http://localhost:8080/ui`. It needs a user, added on the console:
+On in `config.template.json`, at `http://localhost:8080/ui`; sign in as
+`tester` with the password in `data/credentials.md`. More users are added on
+the console:
 
 ```
 docker exec st-solstein /app/solstein user add <name>   # prints a one-time password

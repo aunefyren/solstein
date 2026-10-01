@@ -288,3 +288,95 @@ func TestRewritePubDate(t *testing.T) {
 		t.Errorf("reparsed date = %v", reparsed.Items[0].PublishedAt)
 	}
 }
+
+func TestRewriteEpisodeType(t *testing.T) {
+	const itunes = `xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"`
+	cases := []struct {
+		name, input, want string
+	}{
+		{
+			name:  "added after the last child, lined up with the others",
+			input: "<rss " + itunes + "><channel>\n  <item>\n    <guid>a</guid>\n    <enclosure url=\"u\"/>\n  </item>\n</channel></rss>",
+			want:  "<rss " + itunes + "><channel>\n  <item>\n    <guid>a</guid>\n    <enclosure url=\"u\"/>\n    <itunes:episodeType>bonus</itunes:episodeType>\n  </item>\n</channel></rss>",
+		},
+		{
+			name:  "replaced where it is",
+			input: "<rss " + itunes + "><channel><item><itunes:episodeType>full</itunes:episodeType><guid>a</guid></item></channel></rss>",
+			want:  "<rss " + itunes + "><channel><item><itunes:episodeType>bonus</itunes:episodeType><guid>a</guid></item></channel></rss>",
+		},
+		{
+			name:  "self-closing one filled in",
+			input: "<rss " + itunes + "><channel><item><guid>a</guid><itunes:episodeType/></item></channel></rss>",
+			want:  "<rss " + itunes + "><channel><item><guid>a</guid><itunes:episodeType>bonus</itunes:episodeType></item></channel></rss>",
+		},
+		{
+			name:  "the feed's own prefix",
+			input: `<rss xmlns:it="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel><item><guid>a</guid></item></channel></rss>`,
+			want:  `<rss xmlns:it="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel><item><guid>a</guid><it:episodeType>bonus</it:episodeType></item></channel></rss>`,
+		},
+		{
+			name:  "namespace declared when the feed has none",
+			input: `<rss><channel><item><guid>a</guid></item></channel></rss>`,
+			want:  `<rss><channel><item><guid>a</guid><itunes:episodeType xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">bonus</itunes:episodeType></item></channel></rss>`,
+		},
+		{
+			name:  "itunes prefix bound elsewhere is shadowed locally",
+			input: `<rss xmlns:itunes="urn:other"><channel><item><guid>a</guid></item></channel></rss>`,
+			want:  `<rss xmlns:itunes="urn:other"><channel><item><guid>a</guid><itunes:episodeType xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">bonus</itunes:episodeType></item></channel></rss>`,
+		},
+		{
+			name:  "empty item",
+			input: "<rss " + itunes + "><channel><item></item></channel></rss>",
+			want:  "<rss " + itunes + "><channel><item><itunes:episodeType>bonus</itunes:episodeType></item></channel></rss>",
+		},
+		{
+			name:  "self-closing item left alone",
+			input: "<rss " + itunes + "><channel><item/></channel></rss>",
+			want:  "<rss " + itunes + "><channel><item/></channel></rss>",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			output, err := Rewrite{Item: func(Item) ItemChange { return ItemChange{EpisodeType: "bonus"} }}.Apply([]byte(c.input))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(output) != c.want {
+				t.Errorf("output =\n%s\nwant\n%s", output, c.want)
+			}
+			if _, err := Parse(output); err != nil {
+				t.Errorf("output doesn't parse: %v", err)
+			}
+		})
+	}
+}
+
+func TestRewriteEpisodeTypeOnlyWhereAsked(t *testing.T) {
+	data := readFixture(t, "show.xml")
+	output, err := Rewrite{Item: func(item Item) ItemChange {
+		if item.Key == "ep-3" {
+			return ItemChange{EpisodeType: "trailer", Duration: "1:00"}
+		}
+		return ItemChange{}
+	}}.Apply(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed, err := Parse(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, _ := Parse(data)
+	for i, item := range feed.Items {
+		want := original.Items[i].EpisodeType
+		if item.Key == "ep-3" {
+			want = "trailer"
+		}
+		if item.EpisodeType != want {
+			t.Errorf("item %s: episode type %q, want %q", item.Key, item.EpisodeType, want)
+		}
+	}
+	if strings.Count(string(output), "episodeType>trailer<") != 1 {
+		t.Errorf("want exactly one trailer:\n%s", output)
+	}
+}

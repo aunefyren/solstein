@@ -343,6 +343,49 @@ code,
 .data-table--exits th:nth-child(3) { width: 22%; }
 .data-table--exits th:nth-child(4) { width: 28%; }
 
+.data-table--rules thead th:nth-child(1) { width: 14%; }
+.data-table--rules thead th:nth-child(2) { width: 22%; }
+.data-table--rules thead th:nth-child(3) { width: 10%; }
+.data-table--rules thead th:nth-child(4) { width: 10%; }
+.data-table--rules thead th:nth-child(5) { width: 19%; }
+.data-table--rules thead th:nth-child(6) { width: 13%; }
+.data-table--rules thead th:nth-child(7) { width: 12%; }
+
+/* A table that is a form: every row's cells hold its fields. */
+.data-table--edit td {
+  padding: var(--space-2) var(--space-3);
+  vertical-align: middle;
+}
+
+.data-table--edit input[type="text"],
+.data-table--edit select {
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font: inherit;
+}
+
+/* The row's name is in the fields' labels; shown only on stacked cards. */
+.data-table--edit .data-table__title {
+  display: none;
+}
+
+/* A group of rows set apart under its own heading, e.g. adding a rule. */
+.data-table__group th {
+  padding-top: var(--space-4);
+  background: var(--color-bg);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text);
+  font-size: var(--text-md);
+}
+
+.data-table__group td {
+  background: var(--color-bg);
+}
+
 @media (max-width: 44rem) {
   .data-table,
   .data-table tbody,
@@ -377,6 +420,39 @@ code,
     display: block;
     color: var(--color-muted);
     font-size: var(--text-sm);
+  }
+
+  /* The row's name heads its card, above the first cell's column name. */
+  .data-table--edit td:first-child {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .data-table--edit td:first-child .data-table__title {
+    display: block;
+    order: -1;
+    margin-bottom: var(--space-2);
+  }
+
+  .data-table__group tr:first-child {
+    margin-bottom: var(--space-2);
+    background: none;
+    border: 0;
+  }
+
+  .data-table__group th {
+    display: block;
+    padding: var(--space-2) 0 0;
+    background: none;
+    border: 0;
+  }
+
+  .data-table__group td {
+    background: none;
+  }
+
+  .data-table--edit td:empty {
+    display: none;
   }
 }
 
@@ -420,6 +496,35 @@ code,
 .button--secondary {
   background: var(--color-surface);
   color: var(--color-text);
+}
+
+/* Checkbox */
+
+.checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+}
+
+.checkbox input {
+  margin: 0;
+  accent-color: var(--color-accent);
+}
+
+/* Form footer */
+
+.form-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  margin-top: var(--space-3);
+}
+
+.form-footer .meta {
+  margin: 0;
 }
 
 /* Form */

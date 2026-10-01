@@ -27,6 +27,9 @@ type Item struct {
 	PublishedAt *time.Time
 	// Duration is <itunes:duration> as written.
 	Duration string
+	// EpisodeType is <itunes:episodeType> as written ("full", "bonus",
+	// "trailer"), empty when the item has none.
+	EpisodeType string
 	// Enclosure is the audio, or nil for items without any.
 	Enclosure *Enclosure
 }
@@ -89,7 +92,7 @@ func parse(data []byte) (Feed, error) {
 			case depth == 4 && item != nil:
 				switch {
 				case tok.frame.space == "" && (tok.frame.local == "guid" || tok.frame.local == "title" || tok.frame.local == "pubDate"),
-					tok.frame.space == itunesNS && tok.frame.local == "duration":
+					tok.frame.space == itunesNS && (tok.frame.local == "duration" || tok.frame.local == "episodeType"):
 					text.Reset()
 					collect = true
 				case tok.frame.space == "" && tok.frame.local == "enclosure" && item.Enclosure == nil:
@@ -112,8 +115,10 @@ func parse(data []byte) (Feed, error) {
 			case depth == 3 && collect && item != nil:
 				content := strings.TrimSpace(text.String())
 				switch {
-				case tok.frame.space == itunesNS:
+				case tok.frame.space == itunesNS && tok.frame.local == "duration":
 					item.Duration = content
+				case tok.frame.space == itunesNS:
+					item.EpisodeType = content
 				case tok.frame.local == "guid":
 					item.GUID = content
 				case tok.frame.local == "title":

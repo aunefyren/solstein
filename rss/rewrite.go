@@ -35,6 +35,10 @@ type ItemChange struct {
 	Duration string
 	// PublishedAt, when set, replaces the item's <pubDate>.
 	PublishedAt *time.Time
+	// EpisodeType, when non-empty, sets <itunes:episodeType> ("full",
+	// "bonus", "trailer"), adding the element after the item's last child
+	// when it has none.
+	EpisodeType string
 }
 
 // Apply rewrites a feed. Bytes outside the changed values are copied through
@@ -61,6 +65,13 @@ func (rewrite Rewrite) Apply(data []byte) ([]byte, error) {
 		textFrom  = int64(-1) // start of the text being replaced, or -1
 		textDepth int         // depth of the element whose text is replaced
 		textValue string
+		// For adding <itunes:episodeType> to the current item: whether it
+		// has one already, the whitespace before its first child (copied,
+		// so the new element lines up), and where its last child ends.
+		hasEpisodeType bool
+		itemOpenEnd    int64
+		childIndent    []byte
+		lastChildEnd   int64
 	)
 	copyUpTo := func(offset int64) {
 		output.Write(data[cursor:offset])
@@ -98,6 +109,11 @@ func (rewrite Rewrite) Apply(data []byte) ([]byte, error) {
 					change = rewrite.Item(item)
 				}
 				source = ""
+				hasEpisodeType, itemOpenEnd, childIndent, lastChildEnd = false, tok.end, nil, -1
+				if tok.selfClosing {
+					// <item/> has nowhere to add an element to.
+					change.EpisodeType = ""
+				}
 				if item.Enclosure != nil {
 					source = item.Enclosure.URL
 				}
@@ -127,6 +143,18 @@ func (rewrite Rewrite) Apply(data []byte) ([]byte, error) {
 			case depth == 3 && inChannel && rewrite.FeedURL != "" && tok.frame.space == itunesNS && tok.frame.local == "new-feed-url":
 				text, hasText = rewrite.FeedURL, true
 			case depth >= 4 && itemIndex >= 0 && walker.is(2, "", "item"):
+				if depth == 4 && childIndent == nil {
+					childIndent = []byte{}
+					if gap := data[itemOpenEnd:tok.start]; len(bytes.TrimSpace(gap)) == 0 {
+						childIndent = gap
+					}
+				}
+				if depth == 4 && tok.frame.space == itunesNS && tok.frame.local == "episodeType" {
+					hasEpisodeType = true
+					if change.EpisodeType != "" {
+						text, hasText = change.EpisodeType, true
+					}
+				}
 				if depth == 4 && change.Duration != "" && tok.frame.space == itunesNS && tok.frame.local == "duration" {
 					text, hasText = change.Duration, true
 				}
@@ -177,7 +205,19 @@ func (rewrite Rewrite) Apply(data []byte) ([]byte, error) {
 				cursor = tok.start
 				textFrom = -1
 			}
+			if depth == 3 && itemIndex >= 0 && walker.is(2, "", "item") {
+				lastChildEnd = tok.end
+			}
 			if depth == 2 && tok.frame.space == "" && tok.frame.local == "item" {
+				if change.EpisodeType != "" && !hasEpisodeType {
+					at := tok.start
+					if lastChildEnd >= 0 {
+						at = lastChildEnd
+					}
+					copyUpTo(at)
+					output.Write(childIndent)
+					writeEpisodeType(&output, walker, change.EpisodeType)
+				}
 				change, source = ItemChange{}, ""
 			}
 		}
@@ -231,6 +271,27 @@ func replaceAttributeValue(attrs []xml.Attr, from, to string) ([]xml.Attr, bool)
 		return attrs, false
 	}
 	return result, true
+}
+
+// writeEpisodeType writes a new <itunes:episodeType> element, with the
+// prefix the feed binds the iTunes namespace to, or declaring it on the
+// element when the feed doesn't bind it at all.
+func writeEpisodeType(output *bytes.Buffer, walker *walker, value string) {
+	prefix, declared := "itunes", true
+	if walker.resolve(prefix) != itunesNS {
+		prefix, declared = walker.prefixFor(itunesNS)
+		if !declared {
+			prefix = "itunes"
+		}
+	}
+	name := prefix + ":episodeType"
+	output.WriteString("<" + name)
+	if !declared {
+		output.WriteString(` xmlns:` + prefix + `="` + itunesNS + `"`)
+	}
+	output.WriteByte('>')
+	xml.EscapeText(output, []byte(value))
+	output.WriteString("</" + name + ">")
 }
 
 // writeStart writes a start tag with its prefixes as they were in the source.

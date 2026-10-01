@@ -502,6 +502,73 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1/feeds/{feedID}/rules:
+    parameters:
+      - $ref: "#/components/parameters/FeedID"
+    get:
+      tags: [Feed API]
+      summary: A feed's rules
+      description: The feed's rules, in the order they are tried. A feed without rules has an empty list.
+      operationId: getFeedRules
+      responses:
+        "200":
+          $ref: "#/components/responses/Rules"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [Feed API]
+      summary: Replace a feed's rules
+      description: |
+        Replaces the feed's rules with the list given; an empty list removes
+        them. Rules are tried in order and the first one an episode matches
+        decides: `hide` leaves it out of the served feed and keeps it from
+        being prepared in the background, `tag` sets its
+        `<itunes:episodeType>`, adding the element when the source has none.
+        Episodes already stored are hidden or shown to match at once; one
+        no longer hidden is prepared as a new one would be. An invalid list
+        is refused as a whole, and the rules stay as they were.
+      operationId: replaceFeedRules
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Rules"
+            examples:
+              tagBonusClips:
+                summary: Short clips as bonus, the rest as full episodes
+                value:
+                  rules:
+                    - max_seconds: 3600
+                      action: tag
+                      episode_type: bonus
+                    - action: tag
+                      episode_type: full
+              hideTrailers:
+                value:
+                  rules:
+                    - title_matches: "^trailer"
+                      action: hide
+      responses:
+        "200":
+          $ref: "#/components/responses/Rules"
+        "400":
+          description: Invalid body, or an invalid rule (the error names which).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /:
     get:
       tags: [Web UI]
@@ -609,6 +676,71 @@ paths:
           description: To `/ui/feeds/{feedID}?done=prepare&count=<queued>`.
         "400":
           description: The feed's episodes aren't prepared (stream or original mode).
+        "404":
+          description: No such feed.
+
+  /ui/feeds/{feedID}/rules:
+    parameters:
+      - $ref: "#/components/parameters/FeedID"
+    post:
+      tags: [Web UI]
+      summary: Save a feed's rules
+      description: |
+        The feed page's rule editor: as `PUT /api/v1/feeds/{feedID}/rules`,
+        the whole list at once. Rows are numbered from 0; a row marked
+        `remove`, or with every field empty (the editor's new row left
+        blank), is left out, and the rest are saved in the order of their
+        `position` (ties keep the rows' order). The last row is the new
+        rule (marked `rule-{n}-new`), whose position n means "before rule
+        n" (one past the last: at the end). Lengths are `M:SS` or `H:MM:SS`, empty for no limit.
+      operationId: postUIFeedRules
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                check:
+                  type: string
+                  description: Set (the "Check without saving" button) to check the rules and show what they would do without saving them; the answer is then `200` with the page.
+                rules:
+                  type: integer
+                  description: How many rows the form has.
+                rule-{n}-position:
+                  type: integer
+                  description: Where row n goes, from 1.
+                rule-{n}-title:
+                  type: string
+                  description: The title pattern (regular expression, ignoring case); empty matches any title.
+                rule-{n}-at-least:
+                  type: string
+                  examples: ["20:00"]
+                rule-{n}-at-most:
+                  type: string
+                  examples: ["1:00:00"]
+                rule-{n}-action:
+                  type: string
+                  enum: [hide, "tag:full", "tag:bonus", "tag:trailer"]
+                rule-{n}-remove:
+                  type: string
+                  enum: ["on"]
+                rule-{n}-new:
+                  type: string
+                  enum: ["1"]
+                  description: Marks the new rule's row, whose position n means "before rule n".
+      responses:
+        "200":
+          description: With `check`, the feed page showing what the rules would do; nothing saved.
+          content:
+            text/html: {}
+        "303":
+          description: To `/ui/feeds/{feedID}?done=rules#rules`.
+        "400":
+          description: The feed page again, with what is wrong and the rows as sent.
+          content:
+            text/html: {}
         "404":
           description: No such feed.
 
@@ -1142,6 +1274,12 @@ components:
         type: string
 
   responses:
+    Rules:
+      description: The feed's rules, in the order they are tried.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Rules"
     Queued:
       description: How many episodes were queued.
       content:
@@ -1231,6 +1369,45 @@ components:
             $ref: "#/components/schemas/Error"
 
   schemas:
+    Rules:
+      type: object
+      required: [rules]
+      properties:
+        rules:
+          type: array
+          maxItems: 50
+          items:
+            $ref: "#/components/schemas/Rule"
+
+    Rule:
+      type: object
+      description: |
+        Which episodes a rule matches, and what it does with them. Every
+        condition given must hold; a rule without conditions matches every
+        episode, so it can end the list as a catch-all.
+      required: [action]
+      properties:
+        title_matches:
+          type: string
+          maxLength: 500
+          description: A regular expression (Go syntax, case-insensitive) the episode's title must contain a match for; empty matches any title.
+          examples: ["^trailer", " / "]
+        min_seconds:
+          type: integer
+          minimum: 0
+          description: The episode's length must be at least this; 0 means no lower bound. The length is the source's stated duration, else the processed file's; an episode with neither never matches a rule with a length bound.
+        max_seconds:
+          type: integer
+          minimum: 0
+          description: The episode's length must be at most this; 0 means no upper bound.
+        action:
+          type: string
+          enum: [hide, tag]
+        episode_type:
+          type: string
+          enum: [full, bonus, trailer]
+          description: What `tag` sets as `<itunes:episodeType>`. Only with `tag`, and required with it.
+
     Error:
       type: object
       required: [error]

@@ -303,7 +303,9 @@ func (service *Service) Refresh(ctx context.Context, feed *models.Feed) (added [
 	if service.DeliveryMode(*feed) == "cache" || service.Processed(*feed) {
 		state = models.EpisodeDiscovered
 	}
-	return service.store.AddNewEpisodes(ctx, feed.ID, episodesFromItems(parsed.Items, state, false))
+	// The rules are read in the same transaction that stores the episodes,
+	// so a rule change saved meanwhile can't be missed.
+	return service.store.SyncEpisodes(ctx, feed.ID, episodesFromItems(parsed.Items, state, false), service.hiding(*feed))
 }
 
 // Render builds the feed served to clients from the stored source document
@@ -314,6 +316,10 @@ func (service *Service) Render(ctx context.Context, feed models.Feed, urls URLs)
 		return nil, err
 	}
 	episodes, err := service.store.ListEpisodes(ctx, feed.ID)
+	if err != nil {
+		return nil, err
+	}
+	feedRules, err := service.loadRules(ctx, feed)
 	if err != nil {
 		return nil, err
 	}
@@ -361,7 +367,7 @@ func (service *Service) Render(ctx context.Context, feed models.Feed, urls URLs)
 			if !ok || !published[episode.ID] {
 				return rss.ItemChange{Omit: true}
 			}
-			var change rss.ItemChange
+			change := rss.ItemChange{EpisodeType: feedRules.episodeType(episode)}
 			if date, ok := servedDate[episode.ID]; ok {
 				change.PublishedAt = &date
 			}

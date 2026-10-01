@@ -35,6 +35,8 @@ func TestViewOf(t *testing.T) {
 		{"withheld, retry due", models.Episode{State: models.EpisodeFailed, Withheld: true, NextAttemptAt: &earlier}, true, false, StatusQueued, false, false},
 		{"given up", models.Episode{State: models.EpisodeFailed, Withheld: true, LateRetries: len(withheldRetryDelays)}, true, false, StatusGivenUp, true, false},
 		{"published with ads", models.Episode{State: models.EpisodeFailed}, true, false, StatusPublishedWithAds, true, false},
+		{"hidden", models.Episode{State: models.EpisodeDiscovered, Hidden: true}, true, false, StatusHidden, false, false},
+		{"hidden backlog", models.Episode{State: models.EpisodeReady, Backlog: true, Hidden: true}, true, false, StatusHidden, false, false},
 		{"published with ads, retrying now", models.Episode{State: models.EpisodeFailed}, true, true, StatusWorking, false, false},
 	}
 	for _, c := range cases {

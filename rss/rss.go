@@ -16,7 +16,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 
 	"golang.org/x/text/encoding/charmap"
@@ -130,6 +132,23 @@ func (walker *walker) resolve(prefix string) string {
 		}
 	}
 	return ""
+}
+
+// prefixFor returns a prefix bound to the namespace URI where the walk is
+// now, one not shadowed by a nearer declaration, or false if there is none.
+// The default namespace doesn't count: an element written with it would
+// have no prefix, and clients look elements up by prefix.
+func (walker *walker) prefixFor(uri string) (string, bool) {
+	for i := len(walker.stack) - 1; i >= 0; i-- {
+		// Sorted, so a feed binding the namespace twice on one element
+		// always gets the same prefix.
+		for _, prefix := range slices.Sorted(maps.Keys(walker.stack[i].namespaces)) {
+			if walker.stack[i].namespaces[prefix] == uri && prefix != "" && walker.resolve(prefix) == uri {
+				return prefix, true
+			}
+		}
+	}
+	return "", false
 }
 
 // depth is the number of open elements, including one just started.

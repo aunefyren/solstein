@@ -56,7 +56,8 @@ func (pipeline *Pipeline) queueEpisodes(ctx context.Context, feedID uuid.UUID, n
 	}
 	var ids []uuid.UUID
 	for _, episode := range list {
-		if !pipeline.preparing(episode.ID) {
+		// A hidden episode is never prepared in the background.
+		if !pipeline.preparing(episode.ID) && !episode.Hidden {
 			ids = append(ids, episode.ID)
 		}
 	}

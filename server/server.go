@@ -160,6 +160,8 @@ func newRouter(options Options) (*gin.Engine, error) {
 		api.POST("/feeds/:feedID/retry", handlers.apiRetryFailed)
 		api.POST("/retry", handlers.apiRetryAllFailed)
 		api.POST("/feeds/:feedID/prepare", handlers.apiPrepare)
+		api.GET("/feeds/:feedID/rules", handlers.apiGetRules)
+		api.PUT("/feeds/:feedID/rules", handlers.apiSetRules)
 	}
 
 	if cfg.WebUI.Enabled {

@@ -3,6 +3,7 @@ package server
 import (
 	stdcontext "context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"aunefyren/solstein/database"
@@ -323,4 +324,84 @@ func (handlers *handlers) loadFeed(context *gin.Context) (models.Feed, bool) {
 		return models.Feed{}, false
 	}
 	return feed, true
+}
+
+// rulesBody is a feed's rules, in the order they are tried, as the API
+// takes and returns them.
+type rulesBody struct {
+	Rules []feeds.Rule `json:"rules"`
+}
+
+func (handlers *handlers) apiGetRules(context *gin.Context) {
+	feed, ok := handlers.loadFeed(context)
+	if !ok {
+		return
+	}
+	rules, err := handlers.feeds.Rules(context.Request.Context(), feed.ID)
+	if err != nil {
+		logger.Log.Error("Failed to load the rules of feed '" + feed.Title + "'. Error: " + err.Error())
+		context.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load rules."})
+		context.Abort()
+		return
+	}
+	context.JSON(http.StatusOK, rulesBody{Rules: nonNil(rules)})
+}
+
+// apiSetRules replaces a feed's rules. Episodes already stored are hidden or
+// shown to match at once; one no longer hidden is prepared as it would have
+// been.
+func (handlers *handlers) apiSetRules(context *gin.Context) {
+	var request rulesBody
+	if err := context.ShouldBindJSON(&request); err != nil {
+		context.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body: " + err.Error()})
+		context.Abort()
+		return
+	}
+	feed, ok := handlers.loadFeed(context)
+	if !ok {
+		return
+	}
+	err := handlers.setRules(context.Request.Context(), feed, request.Rules)
+	if errors.Is(err, feeds.ErrInvalidSettings) {
+		context.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		context.Abort()
+		return
+	}
+	if errors.Is(err, database.ErrFeedNotFound) {
+		context.JSON(http.StatusNotFound, gin.H{"error": "Feed not found."}) // deleted meanwhile
+		context.Abort()
+		return
+	}
+	if err != nil {
+		logger.Log.Error("Failed to save the rules of feed '" + feed.Title + "'. Error: " + err.Error())
+		context.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save rules."})
+		context.Abort()
+		return
+	}
+	context.JSON(http.StatusOK, rulesBody{Rules: nonNil(request.Rules)})
+}
+
+// setRules saves a feed's rules and has the episodes they stop hiding
+// prepared. The API and the web UI both save rules through it. Invalid
+// rules return feeds.ErrInvalidSettings, and nothing is saved.
+func (handlers *handlers) setRules(ctx stdcontext.Context, feed models.Feed, rules []feeds.Rule) error {
+	shown, err := handlers.feeds.SetRules(ctx, feed.ID, rules)
+	if err != nil {
+		return err
+	}
+	logger.Log.Info(fmt.Sprintf("Saved %s for feed '%s'.", plural(len(rules), "rule"), feed.Title))
+	if shown > 0 && handlers.episodes != nil {
+		// Shown again, they are queued where the feed prepares ahead
+		// (feeds.Service.SetRules); the workers look now.
+		handlers.episodes.Wake()
+	}
+	return nil
+}
+
+// nonNil makes an empty list encode as [] rather than null.
+func nonNil[T any](list []T) []T {
+	if list == nil {
+		return []T{}
+	}
+	return list
 }
