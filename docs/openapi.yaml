@@ -1548,6 +1548,10 @@ components:
           type: string
           enum: ["", "on", "off"]
           description: Compare downloads that share no MP3 frame (the host re-encodes around its ads) by their loudness over time; empty follows `region_diff.compare_by_audio` (on by default).
+        region_diff_remove_repeated_ads:
+          type: string
+          enum: ["", "on", "off"]
+          description: Also remove audio both regions share when it is a byte-identical copy of an ad removed elsewhere in the episode; empty follows `region_diff.remove_repeated_ads` (on by default).
         prepare_ahead:
           type: string
           enum: ["", "on", "off"]

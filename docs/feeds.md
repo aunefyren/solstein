@@ -38,6 +38,7 @@ What a new subscription does:
 | `region_diff_on_failure` | `publish`, `hide` | `region_diff.on_failure` |
 | `region_diff_trim_break_markers` | `on`, `off` | `region_diff.trim_break_markers` |
 | `region_diff_compare_by_audio` | `on`, `off` | `region_diff.compare_by_audio` |
+| `region_diff_remove_repeated_ads` | `on`, `off` | `region_diff.remove_repeated_ads` |
 | `prepare_ahead` | `on`, `off` | `prepare_ahead` |
 | `serve_dropped` | `on`, `off` | `serve_dropped_episodes` ([Dropped episodes](#dropped-episodes)) |
 | `delete_dropped` | `on`, `off` | `delete_dropped_episodes` ([Dropped episodes](#dropped-episodes)) |

@@ -22,12 +22,19 @@ jobs:
             goos: darwin
     steps:
     - uses: actions/checkout@v7
+    # The Go version comes from go.mod (the toolchain line if there is one),
+    # so upgrading Go there with `go get` upgrades the release build too.
+    - name: Go version from go.mod
+      id: go
+      run: |
+        version=$(awk '$1 == "toolchain" {sub(/^go/, "", $2); print $2; found = 1; exit} $1 == "go" {go = $2} END {if (!found) print go}' go.mod)
+        echo "version=$version" >> "$GITHUB_OUTPUT"
     - uses: wangyoucao577/go-release-action@v1.55
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         goos: ${{ matrix.goos }}
         goarch: ${{ matrix.goarch }}
-        goversion: "1.26.3"
+        goversion: ${{ steps.go.outputs.version }}
         binary_name: "solstein"
         ldflags: "-s -w -X main.version=${{ github.event.release.tag_name }}"
         extra_files: README.md LICENSE

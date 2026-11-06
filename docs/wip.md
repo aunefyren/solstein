@@ -33,7 +33,7 @@ Five of 115 "It Was A Sh*t Show" episodes failed as implausible in production wi
 
 ### `TestDiffLiveDownloads` fails on the local `config/live` pair (open)
 
-Found 2026-09-28 (it skips where those downloads aren't present, so CI never runs it): with `TrimBreakMarkers` it finds six break markers where it wants four (`36461-36548` and `72829-72916` extra, the chimes the test says are encoded into the show after the mid-rolls and should stay), so trimming removes 6 × 87 frames. Fails the same on `HEAD` without the 2026-09-28 duration-check change, so it predates it. Either the marker trimming changed since the test was written or the expectation is stale; not looked into.
+Found 2026-09-28 (it skips where those downloads aren't present, so CI never runs it): with `TrimBreakMarkers` it finds six break markers where it wants four (`36461-36548` and `72829-72916` extra, the chimes the test says are encoded into the show after the mid-rolls and should stay), so trimming removes 6 × 87 frames. Fails the same on `HEAD` without the 2026-09-28 duration-check change, so it predates it. Either the marker trimming changed since the test was written or the expectation is stale; not looked into. Possibly related: "Do you trust me?" of the same show (replicated on `docker-test` 2026-11-06, [`region-diff.md`](region-diff.md), Repeated ads) has one chime at each mid-roll, before it, not the two (before and after) `region-diff.md` (Break markers) describes from 2026-09-25, so the show's break layout may have changed since that pair was downloaded.
 
 ### Open questions
 

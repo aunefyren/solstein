@@ -28,6 +28,9 @@ type Feed struct {
 	// RegionDiffCompareByAudio is "on" or "off", or empty to follow
 	// region_diff.compare_by_audio.
 	RegionDiffCompareByAudio string `json:"region_diff_compare_by_audio"`
+	// RegionDiffRemoveRepeatedAds is "on" or "off", or empty to follow
+	// region_diff.remove_repeated_ads.
+	RegionDiffRemoveRepeatedAds string `json:"region_diff_remove_repeated_ads"`
 	// PrepareAhead is "on" or "off", or empty to follow prepare_ahead: keep
 	// every episode out of the feed until its file is ready, and prepare the
 	// backlog up front instead of when a client asks.

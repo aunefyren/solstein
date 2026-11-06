@@ -108,7 +108,10 @@ func TestSweepEvictsFullyServedEpisodes(t *testing.T) {
 func TestSweepRemovesStrayFiles(t *testing.T) {
 	setup := newTestSetup(t)
 	ctx := context.Background()
-	housekeeper := NewHousekeeper(setup.store, setup.cache, 14*24*time.Hour, 0, false, nil)
+	// The real clock, as stray files are judged by their modification time,
+	// but a retention the pipeline's fixed test date (2026-09-24) can't
+	// outlast: the cached episode would expire, and this tests strays only.
+	housekeeper := NewHousekeeper(setup.store, setup.cache, 100*365*24*time.Hour, 0, false, nil)
 
 	episode := setup.addEpisode(t, "/ok.mp3")
 	setup.processOne(t)

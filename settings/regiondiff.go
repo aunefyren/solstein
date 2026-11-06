@@ -78,6 +78,11 @@ type RegionDiff struct {
 	// downloads fail as they did before it existed. A pointer so a missing
 	// field can default to on.
 	CompareByAudio *bool `json:"compare_by_audio"`
+	// RemoveRepeatedAds also removes audio both regions share when it is a
+	// byte-identical copy of an ad removed elsewhere in the episode (hosts
+	// often play one ad in several breaks). On by default; a pointer so a
+	// missing field can default to on.
+	RemoveRepeatedAds *bool `json:"remove_repeated_ads"`
 	// MaxEpisodeMB caps each of a processor's own downloads (home, partner,
 	// each fallback and each batched episode), which are held in memory
 	// whole: raising it costs peak memory, roughly 2–2.5× this per pair
@@ -86,6 +91,11 @@ type RegionDiff struct {
 	// episodes are permanently withheld ("episode is larger than N MB",
 	// docs/wip.md).
 	MaxEpisodeMB int `json:"max_episode_mb"`
+}
+
+// RemovesRepeatedAds is RemoveRepeatedAds, on when unset.
+func (regionDiff RegionDiff) RemovesRepeatedAds() bool {
+	return regionDiff.RemoveRepeatedAds == nil || *regionDiff.RemoveRepeatedAds
 }
 
 // ComparesByAudio is CompareByAudio, on when unset.
@@ -116,6 +126,10 @@ func (regionDiff *RegionDiff) applyDefaults() {
 	if regionDiff.CompareByAudio == nil {
 		on := true
 		regionDiff.CompareByAudio = &on
+	}
+	if regionDiff.RemoveRepeatedAds == nil {
+		on := true
+		regionDiff.RemoveRepeatedAds = &on
 	}
 	if regionDiff.MaxEpisodeMB == 0 {
 		regionDiff.MaxEpisodeMB = defaultMaxEpisodeMB
