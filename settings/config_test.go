@@ -209,7 +209,7 @@ func TestValidate(t *testing.T) {
 		{name: "region diff defaults", modify: func(cfg *Config) {}, check: func(t *testing.T, cfg Config) {
 			on := true
 			want := RegionDiff{Exits: []string{}, FallbackExits: []string{}, MinSharedSeconds: 2, MaxRemovedShare: 0.3,
-				OnFailure: "publish", PairDownloads: "auto", CompareByAudio: &on, MaxEpisodeMB: 512}
+				OnFailure: "publish", PairDownloads: "auto", CompareByAudio: &on, RemoveRepeatedAds: &on, MaxEpisodeMB: 512}
 			if !reflect.DeepEqual(cfg.RegionDiff, want) {
 				t.Errorf("region diff = %+v", cfg.RegionDiff)
 			}
@@ -357,5 +357,24 @@ func TestDisableDirectMigrates(t *testing.T) {
 		if strings.Contains(string(saved), "disable_direct") {
 			t.Errorf("%s: disable_direct written back", c.json)
 		}
+	}
+}
+
+func TestRemoveRepeatedAdsDefaultsOn(t *testing.T) {
+	for _, c := range []struct {
+		json string
+		want bool
+	}{{`{}`, true}, {`{"remove_repeated_ads": true}`, true}, {`{"remove_repeated_ads": false}`, false}} {
+		var regionDiff RegionDiff
+		if err := json.Unmarshal([]byte(c.json), &regionDiff); err != nil {
+			t.Fatal(err)
+		}
+		regionDiff.applyDefaults()
+		if regionDiff.RemovesRepeatedAds() != c.want || regionDiff.RemoveRepeatedAds == nil {
+			t.Errorf("%s: removes repeated ads %v, want %v (written out: %v)", c.json, regionDiff.RemovesRepeatedAds(), c.want, regionDiff.RemoveRepeatedAds != nil)
+		}
+	}
+	if !(RegionDiff{}).RemovesRepeatedAds() {
+		t.Error("unset should mean on")
 	}
 }

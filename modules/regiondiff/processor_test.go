@@ -964,3 +964,34 @@ func TestProcessorPairDownloadsAuto(t *testing.T) {
 		t.Error("auto chose in turn with nothing to say the tunnels are short")
 	}
 }
+
+func TestProcessorRemovesRepeatedAdsPerFeed(t *testing.T) {
+	home, other, _ := repeatedAdEpisode()
+	source := &fakeSource{downloads: map[string][]byte{"norway": home, "sweden": other}}
+	processor, err := NewProcessor(ProcessorOptions{Exits: [2]string{"norway", "sweden"}, Diff: DefaultOptions()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process := func(feed models.Feed) episodes.Processed {
+		t.Helper()
+		job := source.job()
+		job.Feed = feed
+		processed, err := processor.Process(context.Background(), job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return processed
+	}
+	// On by default; a feed switches it off.
+	if note := process(models.Feed{}).Note; note != "removed 1m26s of ads in 3 breaks, comparing norway with sweden, including 2 repeated ads (31s)" {
+		t.Errorf("note = %q", note)
+	}
+	if note := process(models.Feed{RegionDiffRemoveRepeatedAds: "off"}).Note; strings.Contains(note, "repeated") {
+		t.Errorf("removed repeats for a feed that switched it off: %q", note)
+	}
+	// Off globally; a feed switches it on.
+	processor.options.Diff.RemoveRepeatedAds = false
+	if note := process(models.Feed{RegionDiffRemoveRepeatedAds: "on"}).Note; !strings.Contains(note, "2 repeated ads") {
+		t.Errorf("note = %q", note)
+	}
+}

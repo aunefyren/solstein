@@ -144,14 +144,15 @@ func TestRecipe(t *testing.T) {
 		"global":         processor.Recipe(models.Feed{}),
 		"feed pair":      processor.Recipe(models.Feed{RegionDiffExits: []string{"norway", "denmark"}}),
 		"markers":        processor.Recipe(models.Feed{RegionDiffTrimBreakMarkers: "on"}),
+		"repeats kept":   processor.Recipe(models.Feed{RegionDiffRemoveRepeatedAds: "off"}),
 		"failure policy": processor.Recipe(models.Feed{RegionDiffOnFailure: "publish"}),
 	}
-	if want := "v4 norway→sweden, fallback germany, shared ≥3s, removed ≤40%"; recipes["global"] != want {
+	if want := "v5 norway→sweden, fallback germany, shared ≥3s, removed ≤40%"; recipes["global"] != want {
 		t.Errorf("recipe = %q, want %q", recipes["global"], want)
 	}
 	// Anything that changes the cleaned file changes the recipe; the failure
 	// policy doesn't change a cleaned file.
-	if recipes["feed pair"] == recipes["global"] || recipes["markers"] == recipes["global"] {
+	if recipes["feed pair"] == recipes["global"] || recipes["markers"] == recipes["global"] || recipes["repeats kept"] == recipes["global"] {
 		t.Errorf("recipes don't tell settings apart: %q", recipes)
 	}
 	if recipes["failure policy"] != recipes["global"] {

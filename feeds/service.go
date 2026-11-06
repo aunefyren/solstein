@@ -46,6 +46,8 @@ type Settings struct {
 	RegionDiffTrimBreakMarkers string `json:"region_diff_trim_break_markers"`
 	// RegionDiffCompareByAudio is "on", "off" or empty.
 	RegionDiffCompareByAudio string `json:"region_diff_compare_by_audio"`
+	// RegionDiffRemoveRepeatedAds is "on", "off" or empty.
+	RegionDiffRemoveRepeatedAds string `json:"region_diff_remove_repeated_ads"`
 	// PrepareAhead is "on", "off" or empty.
 	PrepareAhead string `json:"prepare_ahead"`
 	// ServeDropped and DeleteDropped are "on", "off" or empty.
@@ -56,17 +58,18 @@ type Settings struct {
 // SettingsOf returns a feed's per-feed settings.
 func SettingsOf(feed models.Feed) Settings {
 	return Settings{
-		Exit:                       feed.Exit,
-		DeliveryMode:               feed.DeliveryMode,
-		PollIntervalMinutes:        feed.PollIntervalMinutes,
-		RegionDiff:                 feed.RegionDiff,
-		RegionDiffExits:            feed.RegionDiffExits,
-		RegionDiffOnFailure:        feed.RegionDiffOnFailure,
-		RegionDiffTrimBreakMarkers: feed.RegionDiffTrimBreakMarkers,
-		RegionDiffCompareByAudio:   feed.RegionDiffCompareByAudio,
-		PrepareAhead:               feed.PrepareAhead,
-		ServeDropped:               feed.ServeDropped,
-		DeleteDropped:              feed.DeleteDropped,
+		Exit:                        feed.Exit,
+		DeliveryMode:                feed.DeliveryMode,
+		PollIntervalMinutes:         feed.PollIntervalMinutes,
+		RegionDiff:                  feed.RegionDiff,
+		RegionDiffExits:             feed.RegionDiffExits,
+		RegionDiffOnFailure:         feed.RegionDiffOnFailure,
+		RegionDiffTrimBreakMarkers:  feed.RegionDiffTrimBreakMarkers,
+		RegionDiffCompareByAudio:    feed.RegionDiffCompareByAudio,
+		RegionDiffRemoveRepeatedAds: feed.RegionDiffRemoveRepeatedAds,
+		PrepareAhead:                feed.PrepareAhead,
+		ServeDropped:                feed.ServeDropped,
+		DeleteDropped:               feed.DeleteDropped,
 	}
 }
 
@@ -143,6 +146,9 @@ func (service *Service) ValidateSettings(feedSettings Settings) error {
 	}
 	if !slices.Contains(regionDiffSwitches, feedSettings.RegionDiffCompareByAudio) {
 		return fmt.Errorf("%w: region_diff_compare_by_audio must be \"on\", \"off\" or empty (follow the global setting)", ErrInvalidSettings)
+	}
+	if !slices.Contains(regionDiffSwitches, feedSettings.RegionDiffRemoveRepeatedAds) {
+		return fmt.Errorf("%w: region_diff_remove_repeated_ads must be \"on\", \"off\" or empty (follow the global setting)", ErrInvalidSettings)
 	}
 	if !slices.Contains(regionDiffSwitches, feedSettings.PrepareAhead) {
 		return fmt.Errorf("%w: prepare_ahead must be \"on\", \"off\" or empty (follow the global setting)", ErrInvalidSettings)
@@ -278,18 +284,19 @@ func (service *Service) Subscribe(ctx context.Context, rawSourceURL string, feed
 		return models.Feed{}, false, err
 	}
 	feed = models.Feed{
-		SourceURL:                  sourceURL,
-		Exit:                       feedSettings.Exit,
-		DeliveryMode:               feedSettings.DeliveryMode,
-		PollIntervalMinutes:        feedSettings.PollIntervalMinutes,
-		RegionDiff:                 feedSettings.RegionDiff,
-		RegionDiffExits:            feedSettings.RegionDiffExits,
-		RegionDiffOnFailure:        feedSettings.RegionDiffOnFailure,
-		RegionDiffTrimBreakMarkers: feedSettings.RegionDiffTrimBreakMarkers,
-		RegionDiffCompareByAudio:   feedSettings.RegionDiffCompareByAudio,
-		PrepareAhead:               feedSettings.PrepareAhead,
-		ServeDropped:               feedSettings.ServeDropped,
-		DeleteDropped:              feedSettings.DeleteDropped,
+		SourceURL:                   sourceURL,
+		Exit:                        feedSettings.Exit,
+		DeliveryMode:                feedSettings.DeliveryMode,
+		PollIntervalMinutes:         feedSettings.PollIntervalMinutes,
+		RegionDiff:                  feedSettings.RegionDiff,
+		RegionDiffExits:             feedSettings.RegionDiffExits,
+		RegionDiffOnFailure:         feedSettings.RegionDiffOnFailure,
+		RegionDiffTrimBreakMarkers:  feedSettings.RegionDiffTrimBreakMarkers,
+		RegionDiffCompareByAudio:    feedSettings.RegionDiffCompareByAudio,
+		RegionDiffRemoveRepeatedAds: feedSettings.RegionDiffRemoveRepeatedAds,
+		PrepareAhead:                feedSettings.PrepareAhead,
+		ServeDropped:                feedSettings.ServeDropped,
+		DeleteDropped:               feedSettings.DeleteDropped,
 	}
 
 	result, err := service.fetch(ctx, feed)

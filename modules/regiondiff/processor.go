@@ -173,8 +173,9 @@ func (processor *Processor) HideOnFailure(feed models.Feed) bool {
 // shared runs are kept without a clean frame to start or end on (Dovetail).
 // 3: a result longer than the stated duration is no longer implausible.
 // 4: downloads that share no frames (the host re-encodes) are compared by
-// audio, and cuts keep silent frames for the bit reservoir.
-const algorithmVersion = 4
+// audio, and cuts keep silent frames for the bit reservoir. 5: copies of an
+// ad removed elsewhere are removed too (remove_repeated_ads).
+const algorithmVersion = 5
 
 // Recipe describes the settings that shape a feed's cleaned episodes, for
 // episodes.Processor. The failure policy is left out: it doesn't change a
@@ -189,6 +190,9 @@ func (processor *Processor) Recipe(feed models.Feed) string {
 	recipe += fmt.Sprintf(", shared ≥%s, removed ≤%g%%", options.MinShared, options.MaxRemovedShare*100)
 	if !processor.comparesByAudio(feed) {
 		recipe += ", not by audio"
+	}
+	if !processor.removesRepeats(feed) {
+		recipe += ", repeated ads kept"
 	}
 	if processor.trimsMarkers(feed) {
 		return recipe + ", markers trimmed"
@@ -341,6 +345,7 @@ func (processor *Processor) finishPair(ctx context.Context, job episodes.Job, pa
 	options.ExpectedDuration = job.ExpectedDuration
 	options.TrimBreakMarkers = processor.trimsMarkers(job.Feed)
 	options.CompareByAudio = processor.comparesByAudio(job.Feed)
+	options.RemoveRepeatedAds = processor.removesRepeats(job.Feed)
 	against := other
 	comparison := NewComparison(home.Data, options)
 	result, err := comparison.With(ctx, other.Data)
@@ -428,6 +433,13 @@ func (processor *Processor) finishPair(ctx context.Context, job episodes.Job, pa
 		removed.Round(time.Second), plural(len(result.Removed), "break"), pair[0], compared)
 	if result.ByAudio {
 		note += " by audio, as the host re-encodes"
+	}
+	if len(result.Repeats) > 0 {
+		var repeats time.Duration
+		for _, repeat := range result.Repeats {
+			repeats += repeat.Duration
+		}
+		note += fmt.Sprintf(", including %s (%s)", plural(len(result.Repeats), "repeated ad"), repeats.Round(time.Second))
 	}
 	if len(result.Markers) > 0 {
 		var markers time.Duration
@@ -531,6 +543,17 @@ func (processor *Processor) comparesByAudio(feed models.Feed) bool {
 		return false
 	}
 	return processor.options.Diff.CompareByAudio
+}
+
+// removesRepeats is the feed's remove_repeated_ads switch, or the global one.
+func (processor *Processor) removesRepeats(feed models.Feed) bool {
+	switch feed.RegionDiffRemoveRepeatedAds {
+	case "on":
+		return true
+	case "off":
+		return false
+	}
+	return processor.options.Diff.RemoveRepeatedAds
 }
 
 // trimsMarkers is the feed's trim_break_markers switch, or the global one.

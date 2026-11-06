@@ -4,7 +4,7 @@ How to write code in Solstein: layout, conventions, dependencies, build, test an
 
 ## Toolchain
 
-- Go 1.26, module path `aunefyren/solstein`.
+- Go as `go.mod` states it (its `go` line, or a `toolchain` line if there is one), module path `aunefyren/solstein`. Upgrade with `go get go@<version>` (or `go get toolchain@…`): CI, CodeQL and the release build read the version from `go.mod` (`setup-go`'s `go-version-file`, and a step in `release.yaml` for go-release-action), so nothing else needs changing for them. The Dockerfile's builder image (`golang:<version>-alpine`) still names a version: one older than `go.mod` still builds, as the `go` command downloads the newer toolchain (`GOTOOLCHAIN=auto`, its default), but costs that download on every image build, so raise it with `go.mod`.
 - Single static binary: `CGO_ENABLED=0` everywhere, including local builds and Docker. Any dependency that needs CGO is out (so SQLite, if used, goes through `modernc.org/sqlite`).
 - Target platforms: `linux/amd64`, `linux/arm64`, `linux/arm/v7` (matching Pønskelisten's image), plus native builds for local development on Windows/macOS.
 
@@ -120,7 +120,7 @@ Notes:
 - **Live tests** (`modules/exits/live_test.go`, build tag `live`) run against real Proton servers, ifconfig.co and Acast; never in CI. Run them in a Go container with the keys from `.env`, which is never opened or printed:
   ```
   docker run --rm --env-file .env -e LIVE_OUTPUT_DIR=/src/config/live \
-    -v <repo>:/src -v solstein-gomod:/go/pkg/mod -w /src golang:1.26 \
+    -v <repo>:/src -v solstein-gomod:/go/pkg/mod -w /src golang:1.27 \
     go test -tags live -run Live -v -count=1 ./modules/exits/
   ```
   They print countries, sizes and hashes, never keys or the host's own IP. Downloads go to `config/live/` (gitignored).
