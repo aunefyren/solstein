@@ -66,6 +66,11 @@ Notes:
 - **MP3:** frame parsing (sync word, header, frame length, Xing/LAME/ID3 handling) is small enough to own, and the diff needs exact byte-level control.
 - **MP3 loudness:** comparing downloads a host re-encodes needs their audio, but only its loudness over time, not sound. go-mp3 (pure Go, so no CGO) has the frame decoding, but its API only decodes to PCM: 44 s for an 86-minute episode, 71% of it synthesis. Its reading, Huffman and requantisation code is copied in instead and stopped before synthesis: about 7 s. `minimp3` would be faster but needs CGO. Copied code keeps its licence headers, each copied file notes that it is part of the copy, and `mp3/spectrum/README.md` lists every change; update it when the copy changes.
 - Run `go mod tidy` after adding or removing imports; commit `go.sum`.
+- **gvisor follows wireguard, never `-u`.** gvisor has no tagged releases, so `go get -u ./...` moves it to the newest commit on its master branch, which is developed with Bazel and doesn't build with `go` (seen 2026-11-06: `found packages stack … and bridge (bridge_test.go)` in `pkg/tcpip/stack`). After upgrading, put it back to the version wireguard requires, then tidy:
+  ```
+  go get gvisor.dev/gvisor@$(go mod graph | awk '$1 ~ /^golang.zx2c4.com\/wireguard@/ && $2 ~ /^gvisor.dev\/gvisor@/ {sub(/.*@/, "", $2); print $2}')
+  go mod tidy
+  ```
 
 ## Code conventions
 
