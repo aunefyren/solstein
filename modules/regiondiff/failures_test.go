@@ -78,3 +78,15 @@ func TestWithoutQuery(t *testing.T) {
 		t.Errorf("withoutQuery of a bad URL = %q", got)
 	}
 }
+
+func TestCutsLabelsRepeatedAds(t *testing.T) {
+	second := time.Second
+	result := Result{
+		Kept:    []Segment{{Start: 0, End: 10, Duration: 10 * second}, {Start: 30, End: 40, Duration: 10 * second}},
+		Removed: []Segment{{Start: 10, End: 30, Duration: 20 * second}},
+		Repeats: []Segment{{Start: 10, End: 25, Duration: 15 * second}},
+	}
+	if list := cuts(result); len(list) != 1 || list[0].label != " (includes a repeated ad)" {
+		t.Errorf("cuts = %+v", list)
+	}
+}

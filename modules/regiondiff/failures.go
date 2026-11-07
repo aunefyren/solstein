@@ -71,13 +71,26 @@ func cuts(result Result) []cut {
 	for _, marker := range result.Markers {
 		markers[marker.Start] = true
 	}
+	// A repeated ad usually joins the removed audio next to it, so a
+	// segment is labelled when it holds one, not only when it starts with it.
+	holdsRepeat := func(segment Segment) bool {
+		for _, repeat := range result.Repeats {
+			if repeat.Start >= segment.Start && repeat.End <= segment.End {
+				return true
+			}
+		}
+		return false
+	}
 	var list []cut
 	var at time.Duration
 	for _, segment := range segments {
 		if removed[segment.Start] {
 			label := ""
-			if markers[segment.Start] {
+			switch {
+			case markers[segment.Start]:
 				label = " (break marker)"
+			case holdsRepeat(segment):
+				label = " (includes a repeated ad)"
 			}
 			list = append(list, cut{segment: segment, at: at, label: label})
 		}

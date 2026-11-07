@@ -46,6 +46,10 @@ const (
 	// Identical stretches inside ad breaks — silence, jingles — are a few
 	// seconds at most.
 	unanchoredMinimum = 30 * time.Second
+	// minRepeatedAd is the shortest piece removeRepeats takes for an ad:
+	// ads run 15 s or more, break markers a few seconds (and are left to
+	// trimMarkers).
+	minRepeatedAd = 10 * time.Second
 )
 
 // Options tunes the diff and its sanity checks.
@@ -66,11 +70,15 @@ type Options struct {
 	// regions share, repeated at the edges of the show segments (see
 	// trimMarkers).
 	TrimBreakMarkers bool
+	// RemoveRepeatedAds also removes shared pieces that are byte-identical
+	// to an ad removed elsewhere: an ad both regions got (see
+	// removeRepeats).
+	RemoveRepeatedAds bool
 }
 
 // DefaultOptions are the decided defaults (see docs/region-diff.md).
 func DefaultOptions() Options {
-	return Options{MinShared: 2 * time.Second, MaxRemovedShare: 0.3, DurationTolerance: 0.05, CompareByAudio: true}
+	return Options{MinShared: 2 * time.Second, MaxRemovedShare: 0.3, DurationTolerance: 0.05, CompareByAudio: true, RemoveRepeatedAds: true}
 }
 
 // Segment is a range of frames of the home download, [Start, End).
@@ -89,6 +97,9 @@ type Result struct {
 	// Markers are the break markers removed with TrimBreakMarkers; they
 	// are part of Removed too.
 	Markers []Segment
+	// Repeats are the shared pieces removed with RemoveRepeatedAds, as
+	// copies of an ad removed elsewhere; they are part of Removed too.
+	Repeats []Segment
 	// Durations of the home download, the other one and the output. The
 	// output's includes the silent frames kept at cuts (see write).
 	HomeDuration, OtherDuration, Duration time.Duration
@@ -233,16 +244,30 @@ func frameDiff(homeFile, otherFile mp3.File, options Options) (Result, error) {
 	if len(result.Removed) == 0 && otherShared == len(otherFile.Frames) {
 		return result, ErrIdentical
 	}
+	asSegments := func(pieces []run) []Segment {
+		var list []Segment
+		for _, piece := range pieces {
+			list = append(list, Segment{Start: piece.home, End: piece.home + piece.length, Duration: time.Duration(piece.length) * frameDuration})
+		}
+		return list
+	}
+	// Repeats first: a repeated ad cut out next to a chime leaves the chime
+	// at an open edge, where trimMarkers can then find it.
+	if options.RemoveRepeatedAds {
+		var repeats []run
+		kept, repeats = removeRepeats(kept, homeFile, otherFile, homeHashes, otherHashes, max(minimum, 1), frameDuration)
+		result.Repeats = asSegments(repeats)
+	}
 	if options.TrimBreakMarkers {
 		var markers []run
 		kept, markers = trimMarkers(kept, homeFile, frameDuration)
+		result.Markers = asSegments(markers)
+	}
+	if len(result.Repeats) > 0 || len(result.Markers) > 0 {
 		result.Kept, result.Removed = segments(kept, homeFile)
 		result.Duration = 0
 		for _, segment := range result.Kept {
 			result.Duration += segment.Duration
-		}
-		for _, marker := range markers {
-			result.Markers = append(result.Markers, Segment{Start: marker.home, End: marker.home + marker.length, Duration: time.Duration(marker.length) * frameDuration})
 		}
 	}
 	result.OtherExtra, result.OtherBreaks = otherGaps(kept, len(otherFile.Frames), frameDuration)
@@ -459,6 +484,102 @@ func toSegmentBoundaries(candidate run, frames []mp3.Frame, unanchored int) (run
 	}
 	shift := start - candidate.home
 	return run{home: start, other: candidate.other + shift, length: end - start}, true
+}
+
+// removeRepeats removes from the kept runs the pieces that are copies of an
+// ad. The diff keeps whatever both regions got, so an ad served in both
+// stays in wherever the audio on both sides of it is shared too: right
+// after a break's opening chime, say, with the next ad differing. Hosts
+// often play the same ad in several breaks of an episode, though (Acast:
+// one in every break), and where one copy is next to audio the regions
+// don't share, the diff removes that copy. Every other copy of the same
+// bytes is that ad too.
+//
+// The ads are the whole spliced pieces (from a clean frame to the next, or
+// a file's start or end) of at least minRepeatedAd that no kept run covers,
+// in either download: the home download's removed audio, and the other
+// download's audio the home one lacks. A whole piece inside a kept run that
+// is byte-identical to one of them is removed. Cutting whole pieces leaves
+// no decode error either side, as a cut at a break doesn't. What is left of
+// a run shorter than minimum frames goes too, as the diff drops a shared
+// run that short. It returns the kept runs and the pieces removed.
+func removeRepeats(kept []run, home, other mp3.File, homeHashes, otherHashes []uint64, minimum int, frameDuration time.Duration) ([]run, []run) {
+	shortest := int(minRepeatedAd / frameDuration)
+	type piece struct {
+		file       *mp3.File
+		start, end int
+	}
+	// pieces lists the whole pieces of [from, to) in file that are long
+	// enough, each with a hash of its frames.
+	pieces := func(file *mp3.File, hashes []uint64, from, to int, each func(piece, uint64)) {
+		cleanAt := func(i int) bool { return i == 0 || i == len(file.Frames) || file.Frames[i].MainDataBegin == 0 }
+		start := -1
+		for i := from; i <= to; i++ {
+			if !cleanAt(i) {
+				continue
+			}
+			if start >= 0 && i-start >= shortest {
+				var h uint64 = 14695981039346656037
+				for _, value := range hashes[start:i] {
+					h = (h ^ value) * 1099511628211
+				}
+				each(piece{file, start, i}, h)
+			}
+			start = i
+		}
+	}
+	ads := map[uint64][]piece{}
+	collect := func(p piece, h uint64) { ads[h] = append(ads[h], p) }
+	homePosition, otherPosition := 0, 0
+	for _, segment := range append(append([]run{}, kept...), run{home: len(home.Frames), other: len(other.Frames)}) {
+		if segment.home > homePosition {
+			pieces(&home, homeHashes, homePosition, segment.home, collect)
+		}
+		if segment.other > otherPosition {
+			pieces(&other, otherHashes, otherPosition, segment.other, collect)
+		}
+		homePosition, otherPosition = segment.home+segment.length, segment.other+segment.length
+	}
+	if len(ads) == 0 {
+		return kept, nil
+	}
+
+	same := func(a, b piece) bool {
+		if a.end-a.start != b.end-b.start {
+			return false
+		}
+		for i := range a.end - a.start {
+			if !bytes.Equal(a.file.FrameBytes(a.file.Frames[a.start+i]), b.file.FrameBytes(b.file.Frames[b.start+i])) {
+				return false
+			}
+		}
+		return true
+	}
+	var result, repeats []run
+	for _, candidate := range kept {
+		var cut []run
+		pieces(&home, homeHashes, candidate.home, candidate.home+candidate.length, func(p piece, h uint64) {
+			for _, ad := range ads[h] {
+				if same(p, ad) {
+					cut = append(cut, run{home: p.start, length: p.end - p.start})
+					return
+				}
+			}
+		})
+		if len(cut) == 0 {
+			result = append(result, candidate)
+			continue
+		}
+		repeats = append(repeats, cut...)
+		start := candidate.home
+		for _, piece := range append(cut, run{home: candidate.home + candidate.length}) {
+			if piece.home-start >= minimum {
+				result = append(result, run{home: start, other: candidate.other + start - candidate.home, length: piece.home - start})
+			}
+			start = piece.home + piece.length
+		}
+	}
+	return result, repeats
 }
 
 // trimMarkers removes break markers from the kept runs: the chimes or

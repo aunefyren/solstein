@@ -545,3 +545,85 @@ func TestDiffKeptFailures(t *testing.T) {
 			(result.HomeDuration - result.Duration).Round(time.Second), expected)
 	}
 }
+
+// The shape found live on Acast ("Corner Piece", docs/region-diff.md): each
+// break is a chime and then ads, one ad (x) plays in every break of both
+// regions, and in the mid-rolls it comes right after the chime in both, so
+// the shared run from the show runs on through it.
+func repeatedAdEpisode() (home, other, x []byte) {
+	chime := audio(87, 99)
+	x = audio(600, 40) // 15.7 s
+	long1, long2, long3 := audio(3000, 1), audio(3000, 2), audio(3000, 3)
+	home = join(tag("h"), x, audio(500, 11), chime, long1, chime, x, audio(500, 12), long2, chime, x, audio(500, 13), long3)
+	other = join(tag("o"), chime, audio(500, 21), x, chime, long1, chime, x, audio(500, 22), long2, chime, x, audio(500, 23), long3)
+	return home, other, x
+}
+
+func TestDiffRemovesRepeatedAds(t *testing.T) {
+	home, other, x := repeatedAdEpisode()
+	chime := audio(87, 99)
+	long1, long2, long3 := audio(3000, 1), audio(3000, 2), audio(3000, 3)
+
+	result := mustDiff(t, home, other)
+	if want := join(tag("h"), chime, long1, chime, long2, chime, long3); !bytes.Equal(result.Output, want) {
+		t.Errorf("output is %d bytes, want %d: the chimes and the show, without x", len(result.Output), len(want))
+	}
+	if len(result.Repeats) != 2 || result.Repeats[0].End-result.Repeats[0].Start != 600 {
+		t.Errorf("repeats = %+v, want the two mid-roll copies of x", result.Repeats)
+	}
+	// They are part of the removed audio, merged with the ads after them.
+	if len(result.Removed) != 3 {
+		t.Errorf("removed = %+v, want the three breaks", result.Removed)
+	}
+	if parsed, err := mp3.Parse(result.Output); err != nil || parsed.Skipped != 0 {
+		t.Errorf("output doesn't parse cleanly: %v", err)
+	}
+
+	// Off, the copies next to the chimes stay, as before.
+	options := DefaultOptions()
+	options.RemoveRepeatedAds = false
+	kept, err := Diff(home, other, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept.Repeats) != 0 || bytes.Count(kept.Output, x) != 2 {
+		t.Errorf("with it off: repeats %+v, x %d times in the output; want none and 2", kept.Repeats, bytes.Count(kept.Output, x))
+	}
+}
+
+func TestDiffRemovesAnAdRepeatedInTheOtherDownload(t *testing.T) {
+	// The home download has x once, where the diff keeps it; the other
+	// download also has it in a break of its own, which no kept run covers.
+	chime := audio(87, 99)
+	x := audio(600, 40)
+	long1, long2 := audio(3000, 1), audio(3000, 2)
+	home := join(tag("h"), long1, chime, x, audio(500, 12), long2)
+	other := join(tag("o"), x, audio(500, 21), long1, chime, x, audio(500, 22), long2)
+
+	result := mustDiff(t, home, other)
+	if want := join(tag("h"), long1, chime, long2); !bytes.Equal(result.Output, want) {
+		t.Errorf("output is %d bytes, want %d: x removed", len(result.Output), len(want))
+	}
+	if len(result.Repeats) != 1 {
+		t.Errorf("repeats = %+v", result.Repeats)
+	}
+}
+
+func TestDiffKeepsShortRepeatsAndShowAudio(t *testing.T) {
+	// A shared piece under minRepeatedAd is left alone even where a copy of
+	// it was removed: a break marker or a show's sting, not an ad.
+	chime := audio(87, 99)
+	sting := audio(300, 41) // 7.8 s
+	long1, long2 := audio(3000, 1), audio(3000, 2)
+	home := join(tag("h"), sting, audio(500, 11), chime, long1, chime, sting, audio(500, 12), long2)
+	other := join(tag("o"), audio(500, 21), chime, long1, chime, sting, audio(500, 22), long2)
+	result := mustDiff(t, home, other)
+	if len(result.Repeats) != 0 || !bytes.Contains(result.Output, sting) {
+		t.Errorf("repeats = %+v; a piece under %s was taken for an ad", result.Repeats, minRepeatedAd)
+	}
+
+	// Show audio the diff keeps isn't touched when nothing removed matches.
+	if result := mustDiff(t, join(tag("h"), audio(500, 11), long1, audio(500, 12), long2), join(tag("o"), audio(500, 21), long1, audio(500, 22), long2)); len(result.Repeats) != 0 {
+		t.Errorf("repeats = %+v without any repeated ad", result.Repeats)
+	}
+}

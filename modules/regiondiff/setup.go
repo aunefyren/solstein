@@ -68,6 +68,7 @@ func Setup(config settings.RegionDiff, available []string, locator Locator, conf
 	diff.MaxRemovedShare = config.MaxRemovedShare
 	diff.TrimBreakMarkers = config.TrimBreakMarkers
 	diff.CompareByAudio = config.ComparesByAudio()
+	diff.RemoveRepeatedAds = config.RemovesRepeatedAds()
 	processor, err := NewProcessor(ProcessorOptions{
 		Enabled:       config.Enabled,
 		Exits:         [2]string{config.Exits[0], config.Exits[1]},
@@ -166,6 +167,9 @@ func (processor *Processor) Summary() string {
 	}
 	if options.Diff.TrimBreakMarkers {
 		summary += "; break markers are trimmed"
+	}
+	if !options.Diff.RemoveRepeatedAds {
+		summary += "; copies of a removed ad elsewhere in the episode are kept"
 	}
 	if !options.Diff.CompareByAudio {
 		summary += "; downloads a host re-encodes are not compared by audio"

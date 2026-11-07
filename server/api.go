@@ -103,17 +103,18 @@ func (handlers *handlers) apiGetFeed(context *gin.Context) {
 // updateFeedRequest has pointer fields so an omitted field is left alone and
 // an empty one clears the override.
 type updateFeedRequest struct {
-	Exit                       *string   `json:"exit"`
-	DeliveryMode               *string   `json:"delivery_mode"`
-	PollIntervalMinutes        *int      `json:"poll_interval_minutes"`
-	RegionDiff                 *string   `json:"region_diff"`
-	RegionDiffExits            *[]string `json:"region_diff_exits"`
-	RegionDiffOnFailure        *string   `json:"region_diff_on_failure"`
-	RegionDiffTrimBreakMarkers *string   `json:"region_diff_trim_break_markers"`
-	RegionDiffCompareByAudio   *string   `json:"region_diff_compare_by_audio"`
-	PrepareAhead               *string   `json:"prepare_ahead"`
-	ServeDropped               *string   `json:"serve_dropped"`
-	DeleteDropped              *string   `json:"delete_dropped"`
+	Exit                        *string   `json:"exit"`
+	DeliveryMode                *string   `json:"delivery_mode"`
+	PollIntervalMinutes         *int      `json:"poll_interval_minutes"`
+	RegionDiff                  *string   `json:"region_diff"`
+	RegionDiffExits             *[]string `json:"region_diff_exits"`
+	RegionDiffOnFailure         *string   `json:"region_diff_on_failure"`
+	RegionDiffTrimBreakMarkers  *string   `json:"region_diff_trim_break_markers"`
+	RegionDiffCompareByAudio    *string   `json:"region_diff_compare_by_audio"`
+	RegionDiffRemoveRepeatedAds *string   `json:"region_diff_remove_repeated_ads"`
+	PrepareAhead                *string   `json:"prepare_ahead"`
+	ServeDropped                *string   `json:"serve_dropped"`
+	DeleteDropped               *string   `json:"delete_dropped"`
 }
 
 func (handlers *handlers) apiUpdateFeed(context *gin.Context) {
@@ -150,6 +151,9 @@ func (handlers *handlers) apiUpdateFeed(context *gin.Context) {
 	}
 	if request.RegionDiffCompareByAudio != nil {
 		feed.RegionDiffCompareByAudio = *request.RegionDiffCompareByAudio
+	}
+	if request.RegionDiffRemoveRepeatedAds != nil {
+		feed.RegionDiffRemoveRepeatedAds = *request.RegionDiffRemoveRepeatedAds
 	}
 	if request.PrepareAhead != nil {
 		feed.PrepareAhead = *request.PrepareAhead
