@@ -1,7 +1,15 @@
+# The Go version to build with. The image workflows pass go.mod's; this default
+# is for local builds (docker-test), so keep it in step with go.mod: the golang
+# images set GOTOOLCHAIN=local, so an older Go fails instead of downloading the
+# one go.mod asks for.
+ARG GO_VERSION=1.27.3
+
 # ---------- Build ----------
 # Runs on the build host's own platform and cross-compiles (CGO is off), so the
-# multi-arch images don't compile under QEMU emulation.
-FROM --platform=$BUILDPLATFORM golang:1.26.3-alpine AS builder
+# multi-arch images don't compile under QEMU emulation. That needs BuildKit
+# (docker buildx, docker compose build): the legacy builder leaves
+# $BUILDPLATFORM empty.
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS builder
 ARG TARGETOS
 ARG TARGETARCH
 ARG TARGETVARIANT
@@ -15,8 +23,10 @@ RUN go mod download
 
 COPY . .
 
-# TARGETVARIANT is "v7" for linux/arm/v7 (GOARM=7) and empty elsewhere.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${TARGETVARIANT#v} \
+# GOARM comes from the variant (linux/arm/v7 -> 7) and only applies to
+# GOARCH=arm: a variant on another architecture (linux/arm64/v8) isn't a GOARM.
+RUN if [ "${TARGETARCH}" = "arm" ]; then export GOARM="${TARGETVARIANT#v}"; fi && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /app/solstein .
 
 # ---------- Runtime ----------

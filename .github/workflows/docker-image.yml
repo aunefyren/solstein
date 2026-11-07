@@ -13,6 +13,14 @@ jobs:
 
     steps:
     - uses: actions/checkout@v7
+    # The builder image's Go is go.mod's (the toolchain line if there is one):
+    # the golang images set GOTOOLCHAIN=local, so an older one fails rather
+    # than downloading the newer toolchain.
+    - name: Go version from go.mod
+      id: go
+      run: |
+        version=$(awk '$1 == "toolchain" {sub(/^go/, "", $2); print $2; found = 1; exit} $1 == "go" {go = $2} END {if (!found) print go}' go.mod)
+        echo "version=$version" >> "$GITHUB_OUTPUT"
     - name: Set up Docker metadata
       id: meta
       uses: docker/metadata-action@v6
@@ -48,5 +56,6 @@ jobs:
         # workflow ever edits or commits source files to stamp it.
         build-args: |
           VERSION=${{ github.ref_name }}
+          GO_VERSION=${{ steps.go.outputs.version }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
